@@ -9,5 +9,11 @@
     "**/*.tsx",
     ".expo/types/**/*.ts",
     "expo-env.d.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "HIT_Frontend",
+    "HIT_Backend",
+    "dist"
   ]
 }
