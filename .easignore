@@ -1,0 +1,19 @@
+# Dependencies (EAS installs these fresh on the build server)
+node_modules/
+
+# Build outputs
+dist/
+web-build/
+.expo/
+android/
+ios/
+
+# Logs & caches
+*.log
+.metro-health-check*
+.DS_Store
+
+# Env (secrets should be set via EAS, not uploaded)
+.env
+.env.local
+.env.*.local

@@ -1,0 +1,73 @@
+{
+  "expo": {
+    "name": "HomeInTown",
+    "slug": "homeintownin-xkxchtmbzm9cwzubt-p77",
+    "owner": "homeintown.in",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "hitmobile",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": false,
+    "backgroundColor": "#FAF7F2",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "in.homeintown.mobile",
+      "buildNumber": "1",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "HomeInTown needs your location to verify field workforce check-ins.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "HomeInTown needs your location to verify field workforce check-ins.",
+        "NSPhotoLibraryUsageDescription": "HomeInTown needs photo access to upload references to leads.",
+        "NSMicrophoneUsageDescription": "HomeInTown needs microphone access for voice notes."
+      }
+    },
+    "android": {
+      "package": "in.homeintown.mobile",
+      "versionCode": 1,
+      "permissions": [
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.INTERNET",
+        "android.permission.VIBRATE"
+      ],
+      "adaptiveIcon": {
+        "backgroundColor": "#B45309"
+      }
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "HomeInTown needs your location to verify field workforce check-ins."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "HomeInTown needs photo access to upload references to leads."
+        }
+      ],
+      "expo-asset",
+      "expo-font"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "apiUrl": "https://sales-website-backend-624770114041.asia-south1.run.app/api",
+      "router": {
+        "origin": false
+      },
+      "eas": {
+        "projectId": "4f300b43-9e84-4d83-810b-741930f5f09e"
+      }
+    }
+  }
+}
