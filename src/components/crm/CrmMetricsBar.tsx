@@ -130,18 +130,18 @@ const s = StyleSheet.create({
     marginBottom: 8,
   },
   value: {
-    fontSize: 28,
+    fontSize: 27,
     fontWeight: '800',
     letterSpacing: -0.5,
   },
   label: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '700',
     letterSpacing: 0.8,
     marginTop: 2,
   },
   sub: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '500',
   },
 });

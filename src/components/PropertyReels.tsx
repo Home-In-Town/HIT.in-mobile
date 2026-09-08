@@ -168,7 +168,7 @@ export default function PropertyReels({ onProjectPress }: Props) {
 
 const s = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
-  emptyText: { fontSize: 15, color: colors.muted },
+  emptyText: { fontSize: 14, color: colors.muted },
   card: {
     borderRadius: 20,
     overflow: 'hidden',
@@ -190,7 +190,7 @@ const s = StyleSheet.create({
   },
   topRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
   statusBadge: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8 },
-  statusText: { fontSize: 10, fontWeight: '800', letterSpacing: 0.5 },
+  statusText: { fontSize: 9, fontWeight: '800', letterSpacing: 0.5 },
   matchBadge: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -204,14 +204,14 @@ const s = StyleSheet.create({
     width: 6, height: 6, borderRadius: 3,
     backgroundColor: colors.green,
   },
-  matchText: { fontSize: 10, fontWeight: '700', color: colors.greenText },
+  matchText: { fontSize: 9, fontWeight: '700', color: colors.greenText },
   bottomInfo: { gap: 6 },
-  cardName: { fontSize: 22, fontWeight: 'bold', color: '#fff', textShadowColor: 'rgba(0,0,0,0.6)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 4 },
+  cardName: { fontSize: 21, fontWeight: 'bold', color: '#fff', textShadowColor: 'rgba(0,0,0,0.6)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 4 },
   infoRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  infoText: { fontSize: 13, color: 'rgba(255,255,255,0.85)' },
+  infoText: { fontSize: 12, color: 'rgba(255,255,255,0.85)' },
   priceRow: { flexDirection: 'row', alignItems: 'baseline', gap: 6 },
-  priceText: { fontSize: 18, fontWeight: 'bold', color: '#fff' },
-  priceSubText: { fontSize: 12, color: 'rgba(255,255,255,0.7)' },
+  priceText: { fontSize: 17, fontWeight: 'bold', color: '#fff' },
+  priceSubText: { fontSize: 11, color: 'rgba(255,255,255,0.7)' },
   tagsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   tag: {
     flexDirection: 'row',
@@ -223,7 +223,7 @@ const s = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.25)',
   },
-  tagText: { fontSize: 10, fontWeight: '700', color: '#fff' },
+  tagText: { fontSize: 9, fontWeight: '700', color: '#fff' },
   shareBtnOverlay: {
     padding: 7, borderRadius: 10,
     backgroundColor: 'rgba(0,0,0,0.45)',

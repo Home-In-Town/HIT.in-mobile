@@ -119,29 +119,29 @@ function GridCard({ p, onPublish, onDelete, onCopyLink, onDetails, publishing, d
 const gc = StyleSheet.create({
   card: { flex: 1, backgroundColor: colors.white, borderRadius: 20, overflow: 'hidden', borderWidth: 1, borderColor: colors.line, shadowColor: '#000', shadowOpacity: 0.04, shadowRadius: 8, shadowOffset: { width: 0, height: 3 }, elevation: 2 },
   head: { paddingHorizontal: 16, paddingTop: 14, paddingBottom: 10 },
-  name: { fontSize: 17, fontWeight: '800', color: colors.ink, letterSpacing: -0.3, marginBottom: 4 },
+  name: { fontSize: 16, fontWeight: '800', color: colors.ink, letterSpacing: -0.3, marginBottom: 4 },
   locationRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  locationText: { fontSize: 12, color: colors.muted2, fontWeight: '600', flex: 1 },
+  locationText: { fontSize: 11, color: colors.muted2, fontWeight: '600', flex: 1 },
   img: { width: '100%', height: 150 },
   noImg: { backgroundColor: colors.cream, alignItems: 'center', justifyContent: 'center', gap: 6 },
-  noImgText: { fontSize: 10, color: colors.muted, fontWeight: '700', letterSpacing: 1 },
+  noImgText: { fontSize: 9, color: colors.muted, fontWeight: '700', letterSpacing: 1 },
   body: { padding: 16, gap: 12 },
   pubRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   pubBadge: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8, borderWidth: 1 },
   pubBadgeLive: { backgroundColor: colors.greenBg, borderColor: colors.greenBorder },
   pubBadgeDraft: { backgroundColor: colors.cream, borderColor: colors.line },
-  pubBadgeText: { fontSize: 10, fontWeight: '800', letterSpacing: 0.5, textTransform: 'uppercase' },
-  price: { fontSize: 19, fontWeight: '800', color: colors.ink, letterSpacing: -0.5 },
+  pubBadgeText: { fontSize: 9, fontWeight: '800', letterSpacing: 0.5, textTransform: 'uppercase' },
+  price: { fontSize: 18, fontWeight: '800', color: colors.ink, letterSpacing: -0.5 },
   infoGrid: { flexDirection: 'row', gap: 10 },
   infoBox: { flex: 1, backgroundColor: colors.cream, borderRadius: 12, borderWidth: 1, borderColor: colors.line, padding: 10 },
-  infoLabel: { fontSize: 9, fontWeight: '800', color: colors.muted, letterSpacing: 1, marginBottom: 3 },
-  infoValue: { fontSize: 12.5, fontWeight: '800', color: colors.ink },
+  infoLabel: { fontSize: 8, fontWeight: '800', color: colors.muted, letterSpacing: 1, marginBottom: 3 },
+  infoValue: { fontSize: 11.5, fontWeight: '800', color: colors.ink },
   reraStrip: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.brandTint, borderWidth: 1, borderColor: `${colors.brand}22`, paddingVertical: 8, paddingHorizontal: 12, borderRadius: 10 },
-  reraText: { fontSize: 10, fontWeight: '800', color: colors.brand, letterSpacing: 1.5 },
+  reraText: { fontSize: 9, fontWeight: '800', color: colors.brand, letterSpacing: 1.5 },
   actions: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 12, borderTopWidth: 1, borderTopColor: colors.line, backgroundColor: `${colors.cream}80` },
   actionBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 11, borderRadius: 12 },
   detailsBtn: { backgroundColor: colors.brand },
-  detailsBtnText: { fontSize: 14, fontWeight: '800', color: '#fff' },
+  detailsBtnText: { fontSize: 13, fontWeight: '800', color: '#fff' },
   iconAction: { width: 46, height: 46, alignItems: 'center', justifyContent: 'center', borderRadius: 12, borderWidth: 1 },
   approveAction: { backgroundColor: colors.greenBg, borderColor: colors.greenBorder },
   linkAction: { backgroundColor: colors.white, borderColor: colors.line },
@@ -197,15 +197,15 @@ const lr = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: colors.white, borderRadius: 14, borderWidth: 1, borderColor: colors.line, padding: 10 },
   thumb: { width: 72, height: 72, borderRadius: 10 },
   noThumb: { backgroundColor: colors.slateBg, alignItems: 'center', justifyContent: 'center' },
-  name: { fontSize: 14, fontWeight: '700', color: colors.ink, flex: 1 },
+  name: { fontSize: 13, fontWeight: '700', color: colors.ink, flex: 1 },
   badge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
-  badgeText: { fontSize: 9, fontWeight: '800' },
-  sub: { fontSize: 11, color: colors.muted2 },
-  price: { fontSize: 13, fontWeight: '800', color: colors.brand },
+  badgeText: { fontSize: 8, fontWeight: '800' },
+  sub: { fontSize: 10, color: colors.muted2 },
+  price: { fontSize: 12, fontWeight: '800', color: colors.brand },
   actions: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   btn: { padding: 9, borderRadius: 10, borderWidth: 1 },
   detailsBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: colors.brand, paddingHorizontal: 12, paddingVertical: 9, borderRadius: 10 },
-  detailsText: { fontSize: 12.5, fontWeight: '800', color: '#fff' },
+  detailsText: { fontSize: 11.5, fontWeight: '800', color: '#fff' },
 });
 
 // ── Main Screen ────────────────────────────────────────────
@@ -289,7 +289,7 @@ export default function ProjectsScreen() {
         <Search size={15} color={colors.muted} />
         <TextInput value={search} onChangeText={setSearch} placeholder="Search name or city..."
           placeholderTextColor={colors.muted} style={s.searchInput} />
-        {search ? <Pressable onPress={() => setSearch('')} hitSlop={8}><Text style={{ color: colors.muted, fontSize: 18 }}>×</Text></Pressable> : null}
+        {search ? <Pressable onPress={() => setSearch('')} hitSlop={8}><Text style={{ color: colors.muted, fontSize: 17 }}>×</Text></Pressable> : null}
       </View>
 
       <View style={s.filterBar}>
@@ -397,17 +397,17 @@ export default function ProjectsScreen() {
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.cream },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 14, backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.line },
-  title: { fontSize: 22, fontWeight: '800', color: colors.ink },
-  sub: { fontSize: 12, color: colors.muted, marginTop: 1 },
+  title: { fontSize: 21, fontWeight: '800', color: colors.ink },
+  sub: { fontSize: 11, color: colors.muted, marginTop: 1 },
   iconBtn: { padding: 9, borderRadius: 10, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.white },
   addBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: colors.brand, paddingHorizontal: 14, paddingVertical: 9, borderRadius: 10 },
-  addBtnText: { color: '#fff', fontWeight: '700', fontSize: 13 },
+  addBtnText: { color: '#fff', fontWeight: '700', fontSize: 12 },
   searchWrap: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6, backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 11 },
-  searchInput: { flex: 1, fontSize: 14, color: colors.ink },
+  searchInput: { flex: 1, fontSize: 13, color: colors.ink },
   filterBar: { paddingTop: 6, paddingBottom: 12, marginHorizontal: -16 },
   filterContent: { gap: 8, paddingHorizontal: 16, alignItems: 'center' },
   pill: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', height: 34, paddingHorizontal: 16, borderRadius: 17, backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line },
   pillActive: { backgroundColor: colors.brand, borderColor: colors.brand },
-  pillText: { fontSize: 12.5, fontWeight: '700', color: colors.muted2 },
+  pillText: { fontSize: 11.5, fontWeight: '700', color: colors.muted2 },
   pillTextActive: { color: '#fff' },
 });

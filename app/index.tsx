@@ -11,7 +11,7 @@ export default function Index() {
   if (status === 'loading') {
     return (
       <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.cream }}>
-        <Text style={{ fontSize: 22, fontWeight: 'bold', color: colors.brand, marginBottom: 12 }}>HomeInTown</Text>
+        <Text style={{ fontSize: 21, fontWeight: 'bold', color: colors.brand, marginBottom: 12 }}>HomeInTown</Text>
         <ActivityIndicator size="large" color={colors.brand} />
       </View>
     );

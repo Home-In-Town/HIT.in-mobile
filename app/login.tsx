@@ -196,11 +196,11 @@ export default function LoginScreen() {
               </View>
 
               <Field icon={<Phone size={20} color={MUTED} />}>
-                <TextInput placeholder="Mobile Number" placeholderTextColor={MUTED} keyboardType="phone-pad" value={phone} onChangeText={setPhone} style={[s.input, { fontSize: 18, fontFamily: 'monospace' }]} />
+                <TextInput placeholder="Mobile Number" placeholderTextColor={MUTED} keyboardType="phone-pad" value={phone} onChangeText={setPhone} style={[s.input, { fontSize: 17, fontFamily: 'monospace' }]} />
               </Field>
 
               <Field icon={<Lock size={20} color={MUTED} />}>
-                <TextInput placeholder="Enter MPIN" placeholderTextColor={MUTED} secureTextEntry maxLength={6} keyboardType="number-pad" value={mpin} onChangeText={setMpin} style={[s.input, { fontSize: 20 }]} />
+                <TextInput placeholder="Enter MPIN" placeholderTextColor={MUTED} secureTextEntry maxLength={6} keyboardType="number-pad" value={mpin} onChangeText={setMpin} style={[s.input, { fontSize: 19 }]} />
               </Field>
 
               <PrimaryButton loading={loading} onPress={onLogin} label="Login" icon={<ArrowRight size={20} color="#fff" />} />
@@ -255,12 +255,12 @@ export default function LoginScreen() {
               <View style={{ flexDirection: 'row', gap: 12 }}>
                 <View style={{ flex: 1 }}>
                   <Field icon={<Lock size={16} color={MUTED} />} compact>
-                    <TextInput placeholder="Set MPIN" placeholderTextColor={MUTED} secureTextEntry maxLength={6} keyboardType="number-pad" value={mpin} onChangeText={setMpin} style={[s.input, { fontSize: 14 }]} />
+                    <TextInput placeholder="Set MPIN" placeholderTextColor={MUTED} secureTextEntry maxLength={6} keyboardType="number-pad" value={mpin} onChangeText={setMpin} style={[s.input, { fontSize: 13 }]} />
                   </Field>
                 </View>
                 <View style={{ flex: 1 }}>
                   <Field icon={<Lock size={16} color={MUTED} />} compact>
-                    <TextInput placeholder="Confirm" placeholderTextColor={MUTED} secureTextEntry maxLength={6} keyboardType="number-pad" value={confirmMpin} onChangeText={setConfirmMpin} style={[s.input, { fontSize: 14 }]} />
+                    <TextInput placeholder="Confirm" placeholderTextColor={MUTED} secureTextEntry maxLength={6} keyboardType="number-pad" value={confirmMpin} onChangeText={setConfirmMpin} style={[s.input, { fontSize: 13 }]} />
                   </Field>
                 </View>
               </View>
@@ -281,7 +281,7 @@ export default function LoginScreen() {
                 <Text style={s.subtext}>Enter your registered phone number</Text>
               </View>
               <Field icon={<Phone size={20} color={MUTED} />}>
-                <TextInput placeholder="Mobile Number" placeholderTextColor={MUTED} keyboardType="phone-pad" value={forgotPhone} onChangeText={setForgotPhone} style={[s.input, { fontSize: 18, fontFamily: 'monospace' }]} />
+                <TextInput placeholder="Mobile Number" placeholderTextColor={MUTED} keyboardType="phone-pad" value={forgotPhone} onChangeText={setForgotPhone} style={[s.input, { fontSize: 17, fontFamily: 'monospace' }]} />
               </Field>
               <PrimaryButton loading={loading} onPress={onForgot} label="Send OTP" icon={<ArrowRight size={20} color="#fff" />} />
               <Pressable onPress={() => setScreen('login')} style={{ alignItems: 'center' }}>
@@ -332,10 +332,10 @@ export default function LoginScreen() {
               </View>
               <View style={{ gap: 16 }}>
                 <Field icon={<Lock size={20} color={MUTED} />}>
-                  <TextInput placeholder="Enter New MPIN" placeholderTextColor={MUTED} secureTextEntry maxLength={6} keyboardType="number-pad" value={mpin} onChangeText={setMpin} style={[s.input, { fontSize: 20 }]} />
+                  <TextInput placeholder="Enter New MPIN" placeholderTextColor={MUTED} secureTextEntry maxLength={6} keyboardType="number-pad" value={mpin} onChangeText={setMpin} style={[s.input, { fontSize: 19 }]} />
                 </Field>
                 <Field icon={<Lock size={20} color={MUTED} />}>
-                  <TextInput placeholder="Confirm New MPIN" placeholderTextColor={MUTED} secureTextEntry maxLength={6} keyboardType="number-pad" value={confirmMpin} onChangeText={setConfirmMpin} style={[s.input, { fontSize: 20 }]} />
+                  <TextInput placeholder="Confirm New MPIN" placeholderTextColor={MUTED} secureTextEntry maxLength={6} keyboardType="number-pad" value={confirmMpin} onChangeText={setConfirmMpin} style={[s.input, { fontSize: 19 }]} />
                 </Field>
               </View>
               <PrimaryButton loading={loading} onPress={onReset} label="Save New MPIN" />
@@ -380,36 +380,36 @@ const s = StyleSheet.create({
   logoHeader: { alignItems: 'center', marginBottom: 24 },
   logoRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   logoBox: { width: 44, height: 44, borderRadius: 16, backgroundColor: colors.brand, alignItems: 'center', justifyContent: 'center' },
-  logoLetter: { color: '#fff', fontWeight: 'bold', fontSize: 20 },
-  logoTitle: { fontSize: 20, fontWeight: 'bold', color: colors.ink },
-  logoSub: { fontSize: 10, fontWeight: 'bold', color: colors.brand, letterSpacing: 2 },
+  logoLetter: { color: '#fff', fontWeight: 'bold', fontSize: 19 },
+  logoTitle: { fontSize: 19, fontWeight: 'bold', color: colors.ink },
+  logoSub: { fontSize: 9, fontWeight: 'bold', color: colors.brand, letterSpacing: 2 },
   card: {
     width: '100%', maxWidth: 448, alignSelf: 'center', padding: 24, borderRadius: 24,
     backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line,
     shadowColor: colors.brand, shadowOpacity: 0.05, shadowRadius: 20, shadowOffset: { width: 0, height: 10 }, elevation: 3,
   },
   centerGap: { alignItems: 'center', gap: 8 },
-  h1: { fontSize: 34, fontWeight: 'bold', color: colors.ink },
-  h2: { fontSize: 28, fontWeight: 'bold', color: colors.ink },
+  h1: { fontSize: 33, fontWeight: 'bold', color: colors.ink },
+  h2: { fontSize: 27, fontWeight: 'bold', color: colors.ink },
   subtext: { color: colors.muted2 },
   field: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.cream, borderWidth: 1, borderColor: colors.line, borderRadius: 16, paddingHorizontal: 16 },
   input: { flex: 1, color: colors.ink, paddingVertical: 14 },
   rowBetween: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 4 },
-  linkBrand: { color: colors.brand, fontSize: 14, fontWeight: 'bold' },
+  linkBrand: { color: colors.brand, fontSize: 13, fontWeight: 'bold' },
   linkBrandInline: { color: colors.brand, fontWeight: 'bold' },
-  mutedSm: { color: colors.muted, fontSize: 14 },
+  mutedSm: { color: colors.muted, fontSize: 13 },
   boldMono: { color: colors.ink, fontWeight: 'bold', fontFamily: 'monospace' },
   roleBtn: { flex: 1, paddingVertical: 12, borderRadius: 16, borderWidth: 2, alignItems: 'center' },
   roleBtnActive: { borderColor: colors.brand, backgroundColor: colors.brandTint },
   roleBtnInactive: { borderColor: colors.line },
-  roleBtnText: { fontWeight: 'bold', fontSize: 12 },
+  roleBtnText: { fontWeight: 'bold', fontSize: 11 },
   companyField: { borderRadius: 16, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.cream, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16 },
   iconCircle: { width: 80, height: 80, backgroundColor: colors.brandTint, borderRadius: 24, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.brand + '33' },
-  otpInput: { width: '100%', backgroundColor: colors.cream, borderWidth: 2, borderColor: colors.line, borderRadius: 16, paddingVertical: 20, textAlign: 'center', fontSize: 34, fontWeight: 'bold', color: colors.brand },
+  otpInput: { width: '100%', backgroundColor: colors.cream, borderWidth: 2, borderColor: colors.line, borderRadius: 16, paddingVertical: 20, textAlign: 'center', fontSize: 33, fontWeight: 'bold', color: colors.brand },
   primaryBtn: {
     width: '100%', backgroundColor: colors.brand, borderRadius: 16, paddingVertical: 16,
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
     shadowColor: colors.brand, shadowOpacity: 0.2, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 2,
   },
-  primaryBtnText: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
+  primaryBtnText: { color: '#fff', fontWeight: 'bold', fontSize: 15 },
 });

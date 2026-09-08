@@ -265,11 +265,11 @@ export default function HumanLeadManager() {
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                   <Text style={s.leadName} numberOfLines={1}>{lead.name}</Text>
                   <View style={{ backgroundColor: sc.bg, borderColor: sc.border, borderWidth: 1, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 }}>
-                    <Text style={{ color: sc.text, fontSize: 9, fontWeight: '700' }}>{lead.stage}</Text>
+                    <Text style={{ color: sc.text, fontSize: 8, fontWeight: '700' }}>{lead.stage}</Text>
                   </View>
                   {(() => { const lt = leadTypeColor(lead.leadType); return (
                     <View style={{ backgroundColor: lt.bg, borderColor: lt.border, borderWidth: 1, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 }}>
-                      <Text style={{ color: lt.text, fontSize: 9, fontWeight: '700', textTransform: 'uppercase' }}>{lead.leadType}</Text>
+                      <Text style={{ color: lt.text, fontSize: 8, fontWeight: '700', textTransform: 'uppercase' }}>{lead.leadType}</Text>
                     </View>
                   ); })()}
                 </View>
@@ -310,7 +310,7 @@ export default function HumanLeadManager() {
                 {lead.stage === 'Site Visit Scheduled' && !alert && lead.siteVisitDate && (
                   <View style={s.alertRow}>
                     <Calendar size={12} color="#0E7490" />
-                    <Text style={{ fontSize: 10, fontWeight: '500', color: '#0E7490' }}>{lead.siteVisitDate} at {lead.siteVisitTime}</Text>
+                    <Text style={{ fontSize: 9, fontWeight: '500', color: '#0E7490' }}>{lead.siteVisitDate} at {lead.siteVisitTime}</Text>
                   </View>
                 )}
               </View>
@@ -324,7 +324,7 @@ export default function HumanLeadManager() {
         {!loading && !loadError && filteredLeads.length === 0 && (
           <View style={s.centerPad}>
             <Text style={s.mutedSm}>No leads found</Text>
-            <Text style={[s.mutedSm, { marginTop: 4, fontSize: 12 }]}>Add a lead to get started.</Text>
+            <Text style={[s.mutedSm, { marginTop: 4, fontSize: 11 }]}>Add a lead to get started.</Text>
           </View>
         )}
       </View>
@@ -342,7 +342,7 @@ export default function HumanLeadManager() {
             )}
             <ScrollView style={{ maxHeight: 280 }} contentContainerStyle={{ gap: 8 }}>
               <Pressable onPress={() => assigningLead && handleAssign(assigningLead.id, null)} style={s.agentRow}>
-                <Text style={{ fontSize: 14, fontWeight: '600', color: colors.muted2 }}>Unassigned</Text>
+                <Text style={{ fontSize: 13, fontWeight: '600', color: colors.muted2 }}>Unassigned</Text>
                 {!assigningLead?.assignedAgent && <Text style={s.brandBold}>Current</Text>}
               </Pressable>
               {teamAgents.length === 0 && (
@@ -354,9 +354,9 @@ export default function HumanLeadManager() {
                   <Pressable key={a.id} onPress={() => assigningLead && handleAssign(assigningLead.id, a.id)} style={[s.agentRow, isCurrent && { borderColor: colors.brand, backgroundColor: colors.brandTint }]}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                       <View style={s.agentAvatar}>
-                        <Text style={{ fontSize: 11, fontWeight: 'bold', color: colors.brand }}>{a.name.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()}</Text>
+                        <Text style={{ fontSize: 10, fontWeight: 'bold', color: colors.brand }}>{a.name.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()}</Text>
                       </View>
-                      <Text style={{ fontSize: 14, fontWeight: '600', color: colors.ink }}>{a.name}</Text>
+                      <Text style={{ fontSize: 13, fontWeight: '600', color: colors.ink }}>{a.name}</Text>
                     </View>
                     {isCurrent && <Text style={s.brandBold}>Current</Text>}
                   </Pressable>
@@ -378,11 +378,11 @@ export default function HumanLeadManager() {
             {schedulingLead && (
               <View style={s.leadChip}>
                 <View style={s.chipAvatar}>
-                  <Text style={{ fontSize: 12, fontWeight: 'bold', color: colors.brand }}>{schedulingLead.name.split(' ').map((n) => n[0]).join('')}</Text>
+                  <Text style={{ fontSize: 11, fontWeight: 'bold', color: colors.brand }}>{schedulingLead.name.split(' ').map((n) => n[0]).join('')}</Text>
                 </View>
                 <View>
-                  <Text style={{ fontSize: 14, fontWeight: 'bold', color: colors.ink }}>{schedulingLead.name}</Text>
-                  <Text style={{ fontSize: 10, color: colors.muted }}>{schedulingLead.project}</Text>
+                  <Text style={{ fontSize: 13, fontWeight: 'bold', color: colors.ink }}>{schedulingLead.name}</Text>
+                  <Text style={{ fontSize: 9, color: colors.muted }}>{schedulingLead.project}</Text>
                 </View>
               </View>
             )}
@@ -528,55 +528,55 @@ const s = StyleSheet.create({
   outerCard: { backgroundColor: colors.white, borderRadius: 16, borderWidth: 1, borderColor: colors.line, overflow: 'hidden' },
   header: { padding: 16, borderBottomWidth: 1, borderBottomColor: colors.line },
   headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
-  headerTitle: { fontSize: 18, fontWeight: 'bold', color: colors.ink },
-  headerSub: { fontSize: 12, color: colors.muted, marginTop: 2 },
+  headerTitle: { fontSize: 17, fontWeight: 'bold', color: colors.ink },
+  headerSub: { fontSize: 11, color: colors.muted, marginTop: 2 },
   advBtn: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: colors.line },
-  advBtnText: { fontSize: 10, fontWeight: 'bold', color: colors.muted2 },
+  advBtnText: { fontSize: 9, fontWeight: 'bold', color: colors.muted2 },
   addBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 8, backgroundColor: colors.brand, borderRadius: 8 },
-  addBtnText: { color: '#fff', fontSize: 12, fontWeight: 'bold' },
+  addBtnText: { color: '#fff', fontSize: 11, fontWeight: 'bold' },
   searchBar: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.cream, borderWidth: 1, borderColor: colors.line, borderRadius: 12, paddingHorizontal: 12, marginBottom: 12 },
-  searchInput: { flex: 1, paddingVertical: 10, paddingHorizontal: 8, fontSize: 14, color: colors.ink },
+  searchInput: { flex: 1, paddingVertical: 10, paddingHorizontal: 8, fontSize: 13, color: colors.ink },
   filterPill: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
-  filterPillText: { fontSize: 11, fontWeight: 'bold' },
+  filterPillText: { fontSize: 10, fontWeight: 'bold' },
   pill: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
   pillActive: { backgroundColor: colors.brand },
   pillInactive: { backgroundColor: colors.cream, borderWidth: 1, borderColor: colors.line },
-  pillText: { fontSize: 11, fontWeight: 'bold' },
+  pillText: { fontSize: 10, fontWeight: 'bold' },
   centerPad: { paddingVertical: 48, alignItems: 'center' },
-  mutedSm: { fontSize: 14, color: colors.muted },
-  brandBold: { fontSize: 12, fontWeight: 'bold', color: colors.brand },
+  mutedSm: { fontSize: 13, color: colors.muted },
+  brandBold: { fontSize: 11, fontWeight: 'bold', color: colors.brand },
   leadRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: colors.line, backgroundColor: colors.white },
   avatar: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.brand, alignItems: 'center', justifyContent: 'center' },
-  avatarText: { fontSize: 16, fontWeight: '800', color: '#fff' },
-  leadName: { fontSize: 14, fontWeight: '700', color: colors.ink, flexShrink: 1 },
-  leadProject: { fontSize: 12, color: colors.muted2, marginTop: 2 },
-  ownerLine: { fontSize: 10, color: colors.muted },
+  avatarText: { fontSize: 15, fontWeight: '800', color: '#fff' },
+  leadName: { fontSize: 13, fontWeight: '700', color: colors.ink, flexShrink: 1 },
+  leadProject: { fontSize: 11, color: colors.muted2, marginTop: 2 },
+  ownerLine: { fontSize: 9, color: colors.muted },
   ownerBold: { fontWeight: 'bold', color: colors.muted2 },
   assignBtn: { marginTop: 6, alignSelf: 'flex-start', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, backgroundColor: colors.cream, borderWidth: 1, borderColor: colors.line },
-  assignBtnText: { fontSize: 10, fontWeight: 'bold', color: colors.muted2 },
+  assignBtnText: { fontSize: 9, fontWeight: 'bold', color: colors.muted2 },
   alertRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 },
-  alertText: { fontSize: 10, fontWeight: 'bold', color: '#DC2626' },
+  alertText: { fontSize: 9, fontWeight: 'bold', color: '#DC2626' },
   alertScheduleBtn: { marginLeft: 4, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, backgroundColor: '#FEE2E2' },
-  alertScheduleText: { fontSize: 9, fontWeight: 'bold', color: '#B91C1C' },
-  dateText: { fontSize: 10, color: colors.muted },
+  alertScheduleText: { fontSize: 8, fontWeight: 'bold', color: '#B91C1C' },
+  dateText: { fontSize: 9, color: colors.muted },
   modalOverlayCenter: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.4)', padding: 16 },
   modalOverlayBottom: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.4)' },
   modalCard: { backgroundColor: colors.white, borderRadius: 16, borderWidth: 1, borderColor: colors.line, width: '100%', padding: 24 },
   modalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
-  modalTitle: { fontSize: 16, fontWeight: 'bold', color: colors.ink },
+  modalTitle: { fontSize: 15, fontWeight: 'bold', color: colors.ink },
   agentRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12, paddingVertical: 12, borderRadius: 12, borderWidth: 1, borderColor: colors.line },
   agentAvatar: { width: 32, height: 32, borderRadius: 999, backgroundColor: colors.brandTint, alignItems: 'center', justifyContent: 'center' },
   leadChip: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12, borderRadius: 12, backgroundColor: colors.cream, borderWidth: 1, borderColor: colors.line, marginBottom: 12 },
   chipAvatar: { width: 36, height: 36, borderRadius: 999, backgroundColor: colors.brandTint, alignItems: 'center', justifyContent: 'center' },
-  fieldLabel: { fontSize: 12, fontWeight: 'bold', color: colors.muted2, marginBottom: 4 },
-  textInput: { borderWidth: 1, borderColor: colors.line, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, color: colors.ink },
+  fieldLabel: { fontSize: 11, fontWeight: 'bold', color: colors.muted2, marginBottom: 4 },
+  textInput: { borderWidth: 1, borderColor: colors.line, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, fontSize: 13, color: colors.ink },
   cancelBtn: { flex: 1, paddingVertical: 10, borderRadius: 12, borderWidth: 1, borderColor: colors.line, alignItems: 'center' },
-  cancelBtnText: { fontSize: 14, fontWeight: 'bold', color: colors.muted2 },
+  cancelBtnText: { fontSize: 13, fontWeight: 'bold', color: colors.muted2 },
   confirmBtn: { flex: 1, paddingVertical: 10, borderRadius: 12, backgroundColor: colors.brand, alignItems: 'center' },
-  confirmBtnText: { fontSize: 14, fontWeight: 'bold', color: '#fff' },
+  confirmBtnText: { fontSize: 13, fontWeight: 'bold', color: '#fff' },
   sheet: { backgroundColor: colors.white, borderTopLeftRadius: 24, borderTopRightRadius: 24, maxHeight: '92%' },
   sheetHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 20, borderBottomWidth: 1, borderBottomColor: colors.line },
   leadTypeBtn: { flex: 1, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 12, borderWidth: 1, alignItems: 'center' },
-  leadTypeTitle: { fontSize: 12, fontWeight: 'bold' },
-  leadTypeSub: { fontSize: 9, marginTop: 2 },
+  leadTypeTitle: { fontSize: 11, fontWeight: 'bold' },
+  leadTypeSub: { fontSize: 8, marginTop: 2 },
 });

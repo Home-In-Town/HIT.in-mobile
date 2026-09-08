@@ -138,7 +138,7 @@ export default function LeadCourse() {
   if (loadError) {
     return (
       <View style={[s.card, { padding: 32, alignItems: 'center' }]}>
-        <Text style={{ fontSize: 14, fontWeight: '600', color: colors.ink, textAlign: 'center' }}>{loadError}</Text>
+        <Text style={{ fontSize: 13, fontWeight: '600', color: colors.ink, textAlign: 'center' }}>{loadError}</Text>
         <Pressable onPress={load} style={{ marginTop: 12 }}><Text style={s.brandBold}>Try again</Text></Pressable>
       </View>
     );
@@ -152,13 +152,13 @@ export default function LeadCourse() {
         <View style={{ padding: 24, backgroundColor: colors.night }}>
           <View style={s.premiumBadge}>
             <Sparkles size={12} color="#F5C77E" />
-            <Text style={{ fontSize: 10, fontWeight: 'bold', textTransform: 'uppercase', color: '#F5C77E', letterSpacing: 1 }}>Premium Course</Text>
+            <Text style={{ fontSize: 9, fontWeight: 'bold', textTransform: 'uppercase', color: '#F5C77E', letterSpacing: 1 }}>Premium Course</Text>
           </View>
-          <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#fff' }}>Learn How to Get Leads Faster</Text>
-          <Text style={{ fontSize: 12, marginTop: 8, lineHeight: 18, color: 'rgba(255,255,255,0.7)' }}>
+          <Text style={{ fontSize: 19, fontWeight: 'bold', color: '#fff' }}>Learn How to Get Leads Faster</Text>
+          <Text style={{ fontSize: 11, marginTop: 8, lineHeight: 18, color: 'rgba(255,255,255,0.7)' }}>
             A step-by-step playbook used by top agents — from building a lead magnet to closing 3x faster. Unlock the full book-style course below.
           </Text>
-          <Text style={{ fontSize: 11, marginTop: 12, color: 'rgba(255,255,255,0.5)' }}>{CHAPTERS.length} chapters · Step-by-step · Scripts & templates</Text>
+          <Text style={{ fontSize: 10, marginTop: 12, color: 'rgba(255,255,255,0.5)' }}>{CHAPTERS.length} chapters · Step-by-step · Scripts & templates</Text>
         </View>
 
         {/* Unlock options */}
@@ -170,10 +170,10 @@ export default function LeadCourse() {
             <View style={[s.unlockCard, { borderColor: colors.line, opacity: 0.8 }]}>
               <View style={[s.rowBetween, { marginBottom: 8 }]}>
                 <View style={s.unlockIcon}><CreditCard size={20} color={colors.brand} /></View>
-                <View style={{ paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999, backgroundColor: colors.line }}><Text style={{ fontSize: 9, fontWeight: 'bold', color: colors.muted2, textTransform: 'uppercase' }}>Coming soon</Text></View>
+                <View style={{ paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999, backgroundColor: colors.line }}><Text style={{ fontSize: 8, fontWeight: 'bold', color: colors.muted2, textTransform: 'uppercase' }}>Coming soon</Text></View>
               </View>
-              <Text style={{ fontSize: 18, fontWeight: 'bold', color: colors.ink }}>Pay ₹{PRICE.toLocaleString('en-IN')}</Text>
-              <Text style={{ fontSize: 12, color: colors.muted, marginTop: 4 }}>One-time payment for instant access. Online payment launching soon.</Text>
+              <Text style={{ fontSize: 17, fontWeight: 'bold', color: colors.ink }}>Pay ₹{PRICE.toLocaleString('en-IN')}</Text>
+              <Text style={{ fontSize: 11, color: colors.muted, marginTop: 4 }}>One-time payment for instant access. Online payment launching soon.</Text>
             </View>
 
             {/* Refer */}
@@ -182,8 +182,8 @@ export default function LeadCourse() {
                 <View style={s.unlockIcon}><Users size={20} color={colors.brand} /></View>
                 {method === 'refer' && <Badge />}
               </View>
-              <Text style={{ fontSize: 18, fontWeight: 'bold', color: colors.ink }}>Refer {REFERRAL_GOAL} people</Text>
-              <Text style={{ fontSize: 12, color: colors.muted, marginTop: 4 }}>Invite {REFERRAL_GOAL} people to HomeInTown. Free access when all {REFERRAL_GOAL} join.</Text>
+              <Text style={{ fontSize: 17, fontWeight: 'bold', color: colors.ink }}>Refer {REFERRAL_GOAL} people</Text>
+              <Text style={{ fontSize: 11, color: colors.muted, marginTop: 4 }}>Invite {REFERRAL_GOAL} people to HomeInTown. Free access when all {REFERRAL_GOAL} join.</Text>
             </Pressable>
           </View>
 
@@ -192,13 +192,13 @@ export default function LeadCourse() {
               {/* Progress */}
               <View style={[s.subCard, { backgroundColor: colors.cream }]}>
                 <View style={[s.rowBetween, { marginBottom: 8 }]}>
-                  <Text style={{ fontSize: 14, fontWeight: 'bold', color: colors.ink }}>Referral progress</Text>
-                  <Text style={{ fontSize: 14, fontWeight: 'bold', color: colors.brand }}>{referralCount} / {REFERRAL_GOAL} joined</Text>
+                  <Text style={{ fontSize: 13, fontWeight: 'bold', color: colors.ink }}>Referral progress</Text>
+                  <Text style={{ fontSize: 13, fontWeight: 'bold', color: colors.brand }}>{referralCount} / {REFERRAL_GOAL} joined</Text>
                 </View>
                 <View style={{ width: '100%', borderRadius: 999, backgroundColor: colors.line, overflow: 'hidden', marginBottom: 12, height: 10 }}>
                   <View style={{ height: '100%', backgroundColor: colors.brand, width: `${Math.min(100, (referralCount / REFERRAL_GOAL) * 100)}%` }} />
                 </View>
-                <Text style={{ fontSize: 11, color: colors.muted2 }}>
+                <Text style={{ fontSize: 10, color: colors.muted2 }}>
                   {info.remaining > 0
                     ? `${info.remaining} more ${info.remaining === 1 ? 'person needs' : 'people need'} to join to unlock for free.`
                     : 'Goal reached — unlocking your course…'}
@@ -209,17 +209,17 @@ export default function LeadCourse() {
               <View style={[s.subCard, { backgroundColor: '#fff' }]}>
                 <Text style={[s.sectionLabel, { marginBottom: 8 }]}>Your referral link</Text>
                 <View style={{ paddingHorizontal: 12, paddingVertical: 10, borderRadius: 12, backgroundColor: colors.cream, borderWidth: 1, borderColor: colors.line, marginBottom: 8 }}>
-                  <Text style={{ fontSize: 12, color: colors.muted2, fontFamily: 'monospace' }} numberOfLines={1}>{info.referralLink}</Text>
+                  <Text style={{ fontSize: 11, color: colors.muted2, fontFamily: 'monospace' }} numberOfLines={1}>{info.referralLink}</Text>
                 </View>
                 <View style={{ flexDirection: 'row', gap: 8 }}>
                   <Pressable onPress={handleShare} style={s.shareBtn}>
-                    <Text style={{ fontSize: 12, fontWeight: 'bold', color: colors.muted2 }}>Share link</Text>
+                    <Text style={{ fontSize: 11, fontWeight: 'bold', color: colors.muted2 }}>Share link</Text>
                   </Pressable>
                   <Pressable onPress={handleWhatsApp} style={s.waFullBtn}>
-                    <Text style={{ fontSize: 12, fontWeight: 'bold', color: '#fff' }}>WhatsApp</Text>
+                    <Text style={{ fontSize: 11, fontWeight: 'bold', color: '#fff' }}>WhatsApp</Text>
                   </Pressable>
                 </View>
-                <Text style={{ fontSize: 10, color: colors.muted, marginTop: 8 }}>Your code: <Text style={{ fontWeight: 'bold', color: colors.muted2 }}>{info.referralCode}</Text></Text>
+                <Text style={{ fontSize: 9, color: colors.muted, marginTop: 8 }}>Your code: <Text style={{ fontWeight: 'bold', color: colors.muted2 }}>{info.referralCode}</Text></Text>
               </View>
 
               {/* Referred people history */}
@@ -229,20 +229,20 @@ export default function LeadCourse() {
                   <Pressable onPress={load} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}><RefreshCw size={12} color={colors.brand} /><Text style={s.brandBold}>Refresh</Text></Pressable>
                 </View>
                 {info.referrals.length === 0 ? (
-                  <Text style={{ fontSize: 12, color: colors.muted, fontStyle: 'italic', paddingVertical: 16, textAlign: 'center' }}>No referrals yet. Share your link to get started.</Text>
+                  <Text style={{ fontSize: 11, color: colors.muted, fontStyle: 'italic', paddingVertical: 16, textAlign: 'center' }}>No referrals yet. Share your link to get started.</Text>
                 ) : (
                   <View style={{ gap: 8 }}>
                     {info.referrals.map((r) => (
                       <View key={r.id} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12, borderRadius: 12, backgroundColor: colors.cream, borderWidth: 1, borderColor: colors.line }}>
                         <View style={{ width: 36, height: 36, borderRadius: 999, backgroundColor: colors.brandTint, alignItems: 'center', justifyContent: 'center' }}>
-                          <Text style={{ fontSize: 12, fontWeight: 'bold', color: colors.brand }}>{r.name.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()}</Text>
+                          <Text style={{ fontSize: 11, fontWeight: 'bold', color: colors.brand }}>{r.name.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()}</Text>
                         </View>
                         <View style={{ flex: 1 }}>
-                          <Text style={{ fontSize: 14, fontWeight: 'bold', color: colors.ink }} numberOfLines={1}>{r.name}</Text>
-                          <Text style={{ fontSize: 11, color: colors.muted }}>{r.phone} · {new Date(r.joinedAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</Text>
+                          <Text style={{ fontSize: 13, fontWeight: 'bold', color: colors.ink }} numberOfLines={1}>{r.name}</Text>
+                          <Text style={{ fontSize: 10, color: colors.muted }}>{r.phone} · {new Date(r.joinedAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</Text>
                         </View>
                         <View style={[{ paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999, borderWidth: 1 }, r.joined ? { backgroundColor: '#ECFDF5', borderColor: '#A7F3D0' } : { backgroundColor: '#FFFBEB', borderColor: '#FDE68A' }]}>
-                          <Text style={{ fontSize: 9, fontWeight: 'bold', color: r.joined ? '#047857' : '#B45309' }}>{r.joined ? 'Joined' : 'Pending'}</Text>
+                          <Text style={{ fontSize: 8, fontWeight: 'bold', color: r.joined ? '#047857' : '#B45309' }}>{r.joined ? 'Joined' : 'Pending'}</Text>
                         </View>
                       </View>
                     ))}
@@ -252,7 +252,7 @@ export default function LeadCourse() {
             </View>
           )}
 
-          {!method && <Text style={{ fontSize: 12, color: colors.muted, textAlign: 'center', marginTop: 20 }}>Select an option above to continue.</Text>}
+          {!method && <Text style={{ fontSize: 11, color: colors.muted, textAlign: 'center', marginTop: 20 }}>Select an option above to continue.</Text>}
         </View>
       </View>
     );
@@ -264,8 +264,8 @@ export default function LeadCourse() {
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 16, borderBottomWidth: 1, borderBottomColor: colors.line }}>
         <View style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: colors.brand, alignItems: 'center', justifyContent: 'center' }}><BookOpen size={22} color="#fff" /></View>
         <View style={{ flex: 1 }}>
-          <Text style={{ fontSize: 16, fontWeight: 'bold', color: colors.ink }}>Get Leads Faster — The Playbook</Text>
-          <Text style={{ fontSize: 12, color: colors.muted }}>Read step by step. {CHAPTERS.length} chapters · unlocked</Text>
+          <Text style={{ fontSize: 15, fontWeight: 'bold', color: colors.ink }}>Get Leads Faster — The Playbook</Text>
+          <Text style={{ fontSize: 11, color: colors.muted }}>Read step by step. {CHAPTERS.length} chapters · unlocked</Text>
         </View>
       </View>
 
@@ -275,12 +275,12 @@ export default function LeadCourse() {
           return (
             <View key={ch.id} style={[s.chapterCard, isOpen ? { borderColor: colors.brand + '4D', backgroundColor: colors.cream } : { borderColor: colors.line }]}>
               <Pressable onPress={() => setOpenChapter(isOpen ? null : ch.id)} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14 }}>
-                <View style={{ width: 32, height: 32, borderRadius: 999, backgroundColor: colors.brand, alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold' }}>{ch.id}</Text></View>
+                <View style={{ width: 32, height: 32, borderRadius: 999, backgroundColor: colors.brand, alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#fff', fontSize: 13, fontWeight: 'bold' }}>{ch.id}</Text></View>
                 <View style={{ flex: 1 }}>
-                  <Text style={{ fontSize: 14, fontWeight: 'bold', color: colors.ink }}>{ch.title}</Text>
-                  <Text style={{ fontSize: 12, color: colors.muted }} numberOfLines={1}>{ch.subtitle}</Text>
+                  <Text style={{ fontSize: 13, fontWeight: 'bold', color: colors.ink }}>{ch.title}</Text>
+                  <Text style={{ fontSize: 11, color: colors.muted }} numberOfLines={1}>{ch.subtitle}</Text>
                 </View>
-                <Text style={{ fontSize: 10, fontWeight: 'bold', color: colors.muted }}>{ch.readTime}</Text>
+                <Text style={{ fontSize: 9, fontWeight: 'bold', color: colors.muted }}>{ch.readTime}</Text>
                 <ChevronDown size={16} color={colors.muted} style={{ transform: [{ rotate: isOpen ? '180deg' : '0deg' }] }} />
               </Pressable>
 
@@ -288,8 +288,8 @@ export default function LeadCourse() {
                 <View style={{ paddingHorizontal: 16, paddingBottom: 16, gap: 16, borderTopWidth: 1, borderTopColor: colors.line, paddingTop: 16 }}>
                   {ch.sections.map((sec, i) => (
                     <View key={i}>
-                      <Text style={{ fontSize: 14, fontWeight: 'bold', color: colors.ink, marginBottom: 4 }}>{sec.heading}</Text>
-                      <Text style={{ fontSize: 14, color: colors.muted2, lineHeight: 20 }}>{sec.body}</Text>
+                      <Text style={{ fontSize: 13, fontWeight: 'bold', color: colors.ink, marginBottom: 4 }}>{sec.heading}</Text>
+                      <Text style={{ fontSize: 13, color: colors.muted2, lineHeight: 20 }}>{sec.body}</Text>
                     </View>
                   ))}
 
@@ -298,17 +298,17 @@ export default function LeadCourse() {
                     {ch.keyTakeaways.map((t, i) => (
                       <View key={i} style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginBottom: 6 }}>
                         <Check size={14} color={colors.brand} style={{ marginTop: 1 }} />
-                        <Text style={{ fontSize: 12, color: colors.ink, flex: 1 }}>{t}</Text>
+                        <Text style={{ fontSize: 11, color: colors.ink, flex: 1 }}>{t}</Text>
                       </View>
                     ))}
                   </View>
 
                   <View style={[s.rowBetween, { paddingTop: 4 }]}>
                     <Pressable onPress={() => setOpenChapter(ch.id > 1 ? ch.id - 1 : ch.id)} disabled={ch.id === 1} style={[s.navBtn, { borderWidth: 1, borderColor: colors.line, opacity: ch.id === 1 ? 0.4 : 1 }]}>
-                      <Text style={{ fontSize: 12, fontWeight: 'bold', color: colors.muted2 }}>← Previous</Text>
+                      <Text style={{ fontSize: 11, fontWeight: 'bold', color: colors.muted2 }}>← Previous</Text>
                     </Pressable>
                     <Pressable onPress={() => setOpenChapter(ch.id < CHAPTERS.length ? ch.id + 1 : ch.id)} disabled={ch.id === CHAPTERS.length} style={[s.navBtn, { backgroundColor: colors.brand, opacity: ch.id === CHAPTERS.length ? 0.4 : 1 }]}>
-                      <Text style={{ fontSize: 12, fontWeight: 'bold', color: '#fff' }}>Next chapter →</Text>
+                      <Text style={{ fontSize: 11, fontWeight: 'bold', color: '#fff' }}>Next chapter →</Text>
                     </Pressable>
                   </View>
                 </View>
@@ -332,8 +332,8 @@ function Badge() {
 const s = StyleSheet.create({
   card: { backgroundColor: '#fff', borderRadius: 16, borderWidth: 1, borderColor: colors.line },
   rowBetween: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  sectionLabel: { fontSize: 10, fontWeight: 'bold', color: colors.muted, textTransform: 'uppercase', letterSpacing: 1 },
-  brandBold: { fontSize: 12, fontWeight: 'bold', color: colors.brand },
+  sectionLabel: { fontSize: 9, fontWeight: 'bold', color: colors.muted, textTransform: 'uppercase', letterSpacing: 1 },
+  brandBold: { fontSize: 11, fontWeight: 'bold', color: colors.brand },
   premiumBadge: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999, marginBottom: 12, backgroundColor: 'rgba(180,83,9,0.2)' },
   unlockCard: { padding: 16, borderRadius: 16, borderWidth: 2 },
   unlockIcon: { width: 40, height: 40, borderRadius: 12, backgroundColor: colors.brandTint, alignItems: 'center', justifyContent: 'center' },

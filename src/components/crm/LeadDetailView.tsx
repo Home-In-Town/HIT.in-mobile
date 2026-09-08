@@ -188,11 +188,11 @@ export default function LeadDetailView({ lead, onBack, stages, onStageChange, pr
       <View style={s.rowBetween}>
         <Pressable onPress={onBack} style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
           <ChevronLeft size={16} color={colors.muted2} />
-          <Text style={{ fontSize: 14, fontWeight: '600', color: colors.muted2 }}>Client Dashboard</Text>
+          <Text style={{ fontSize: 13, fontWeight: '600', color: colors.muted2 }}>Client Dashboard</Text>
         </Pressable>
         {canEditJourney && (
           <Pressable onPress={() => setIsEditing(!isEditing)} style={[s.editBtn, isEditing ? { backgroundColor: colors.brand } : { borderWidth: 1, borderColor: colors.line }]}>
-            <Text style={{ fontSize: 12, fontWeight: 'bold', color: isEditing ? '#fff' : colors.muted2 }}>{isEditing ? 'Done' : 'Edit'}</Text>
+            <Text style={{ fontSize: 11, fontWeight: 'bold', color: isEditing ? '#fff' : colors.muted2 }}>{isEditing ? 'Done' : 'Edit'}</Text>
           </Pressable>
         )}
       </View>
@@ -201,11 +201,11 @@ export default function LeadDetailView({ lead, onBack, stages, onStageChange, pr
       <View style={s.clientCard}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
           <View style={s.clientAvatar}>
-            <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 14 }}>{lead.name.split(' ').map((n) => n[0]).join('')}</Text>
+            <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 13 }}>{lead.name.split(' ').map((n) => n[0]).join('')}</Text>
           </View>
           <View>
-            <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#fff' }}>{lead.name}</Text>
-            <Text style={{ fontSize: 12, color: colors.brand }}>{lead.phone}</Text>
+            <Text style={{ fontSize: 15, fontWeight: 'bold', color: '#fff' }}>{lead.name}</Text>
+            <Text style={{ fontSize: 11, color: colors.brand }}>{lead.phone}</Text>
           </View>
         </View>
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 12 }}>
@@ -213,11 +213,11 @@ export default function LeadDetailView({ lead, onBack, stages, onStageChange, pr
           <Tag text={lead.source} dark />
           {(() => { const lt = leadTypeColor(lead.leadType); return (
             <View style={{ backgroundColor: lt.bg, borderColor: lt.border, borderWidth: 1, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6 }}>
-              <Text style={{ color: lt.text, fontSize: 10, fontWeight: '700', textTransform: 'uppercase' }}>{lead.leadType}</Text>
+              <Text style={{ color: lt.text, fontSize: 9, fontWeight: '700', textTransform: 'uppercase' }}>{lead.leadType}</Text>
             </View>
           ); })()}
           <View style={{ backgroundColor: sc.bg, borderColor: sc.border, borderWidth: 1, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6 }}>
-            <Text style={{ color: sc.text, fontSize: 10, fontWeight: '700' }}>{lead.stage}</Text>
+            <Text style={{ color: sc.text, fontSize: 9, fontWeight: '700' }}>{lead.stage}</Text>
           </View>
         </View>
       </View>
@@ -227,7 +227,7 @@ export default function LeadDetailView({ lead, onBack, stages, onStageChange, pr
         <View style={{ flex: 1 }}>
           <Text style={s.sectionLabel}>Current Stage</Text>
           <View style={{ alignSelf: 'flex-start', backgroundColor: sc.bg, borderColor: sc.border, borderWidth: 1, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 }}>
-            <Text style={{ color: sc.text, fontSize: 12, fontWeight: '700' }}>{lead.stage}</Text>
+            <Text style={{ color: sc.text, fontSize: 11, fontWeight: '700' }}>{lead.stage}</Text>
           </View>
         </View>
       </View>
@@ -255,7 +255,7 @@ export default function LeadDetailView({ lead, onBack, stages, onStageChange, pr
       <View>
         <View style={[s.rowBetween, { marginBottom: 8 }]}>
           <Text style={s.sectionLabel}>Pipeline</Text>
-          <Text style={{ fontSize: 12, fontWeight: 'bold', color: colors.brand }}>Step {currentStep} of {stages.length}</Text>
+          <Text style={{ fontSize: 11, fontWeight: 'bold', color: colors.brand }}>Step {currentStep} of {stages.length}</Text>
         </View>
         <View style={{ flexDirection: 'row', gap: 4 }}>
           {stages.map((_, i) => (
@@ -267,8 +267,8 @@ export default function LeadDetailView({ lead, onBack, stages, onStageChange, pr
       {/* Sales Journey */}
       <View>
         <View style={[s.rowBetween, { marginBottom: 12 }]}>
-          <Text style={{ fontSize: 14, fontWeight: 'bold', color: colors.ink }}>Sales Journey</Text>
-          <Text style={{ fontSize: 12, fontWeight: 'bold', color: colors.brand }}>Step {currentStep} / {currentStages.length}</Text>
+          <Text style={{ fontSize: 13, fontWeight: 'bold', color: colors.ink }}>Sales Journey</Text>
+          <Text style={{ fontSize: 11, fontWeight: 'bold', color: colors.brand }}>Step {currentStep} / {currentStages.length}</Text>
         </View>
 
         {/* Journey type toggle */}
@@ -277,13 +277,13 @@ export default function LeadDetailView({ lead, onBack, stages, onStageChange, pr
             const active = journeyType === t;
             return (
               <Pressable key={t} onPress={() => { setJourneyType(t); setExpanded(null); }} style={[s.journeyTab, active ? { backgroundColor: colors.night } : { backgroundColor: colors.cream, borderWidth: 1, borderColor: colors.line }]}>
-                <Text style={{ fontSize: 12, fontWeight: 'bold', color: active ? '#fff' : colors.muted2 }}>{t === 'inbound' ? 'Inbound' : t === 'outbound' ? 'Outbound' : 'AI Guide'}</Text>
+                <Text style={{ fontSize: 11, fontWeight: 'bold', color: active ? '#fff' : colors.muted2 }}>{t === 'inbound' ? 'Inbound' : t === 'outbound' ? 'Outbound' : 'AI Guide'}</Text>
               </Pressable>
             );
           })}
         </View>
 
-        <Text style={{ fontSize: 12, color: colors.muted, fontStyle: 'italic', marginBottom: 12 }}>
+        <Text style={{ fontSize: 11, color: colors.muted, fontStyle: 'italic', marginBottom: 12 }}>
           {journeyType === 'inbound' && 'Inbound rasta ~23 din. Client ne khud enquiry ki hai.'}
           {journeyType === 'outbound' && 'Outbound rasta 30+ din. Cold leads — trust build karo pehle.'}
           {journeyType === 'ai' && 'AI-assisted — fastest close ~15 din.'}
@@ -298,10 +298,10 @@ export default function LeadDetailView({ lead, onBack, stages, onStageChange, pr
               <View key={stage.id} style={[s.stageCard, { borderColor: isOpen ? colors.brand + '4D' : colors.line, backgroundColor: done ? '#fff' : colors.cream }]}>
                 <Pressable onPress={() => setExpanded(isOpen ? null : stage.id)} style={s.stageHeader}>
                   <View style={[s.stageNum, { backgroundColor: done ? colors.brand : colors.line }]}>
-                    <Text style={{ color: done ? '#fff' : colors.muted, fontWeight: '700', fontSize: 12 }}>{idx + 1}</Text>
+                    <Text style={{ color: done ? '#fff' : colors.muted, fontWeight: '700', fontSize: 11 }}>{idx + 1}</Text>
                   </View>
-                  <Text style={{ flex: 1, fontSize: 14, fontWeight: 'bold', color: colors.ink }}>{stage.name}</Text>
-                  <Text style={{ fontSize: 10, fontWeight: 'bold', color: colors.brand }}>{stage.duration}</Text>
+                  <Text style={{ flex: 1, fontSize: 13, fontWeight: 'bold', color: colors.ink }}>{stage.name}</Text>
+                  <Text style={{ fontSize: 9, fontWeight: 'bold', color: colors.brand }}>{stage.duration}</Text>
                   {isEditing && (
                     <Pressable onPress={() => deleteStage(stage.id)} style={{ padding: 4 }}><Trash2 size={16} color="#F87171" /></Pressable>
                   )}
@@ -314,15 +314,15 @@ export default function LeadDetailView({ lead, onBack, stages, onStageChange, pr
                     {isEditing ? (
                       <TextInput multiline value={stage.description} onChangeText={(v) => editField(stage.id, 'description', v)} style={s.editArea} />
                     ) : (
-                      <Text style={{ fontSize: 14, color: colors.muted2, lineHeight: 20 }}>{stage.description}</Text>
+                      <Text style={{ fontSize: 13, color: colors.muted2, lineHeight: 20 }}>{stage.description}</Text>
                     )}
 
                     {/* View project assets */}
                     <Pressable onPress={() => setAssetsModalStageId(stage.id)} style={s.viewAssetsBtn}>
                       <FolderOpen size={15} color="#fff" />
-                      <Text style={{ fontSize: 12, fontWeight: 'bold', color: '#fff' }}>View Assets</Text>
+                      <Text style={{ fontSize: 11, fontWeight: 'bold', color: '#fff' }}>View Assets</Text>
                       {projectAssets.length > 0 && (
-                        <View style={s.assetCountBadge}><Text style={{ fontSize: 9, fontWeight: 'bold', color: '#fff' }}>{projectAssets.length}</Text></View>
+                        <View style={s.assetCountBadge}><Text style={{ fontSize: 8, fontWeight: 'bold', color: '#fff' }}>{projectAssets.length}</Text></View>
                       )}
                     </Pressable>
 
@@ -370,7 +370,7 @@ export default function LeadDetailView({ lead, onBack, stages, onStageChange, pr
                             })}
                           </View>
                         ) : (
-                          <Text style={{ fontSize: 10, color: colors.muted, fontStyle: 'italic' }}>No attachments added yet</Text>
+                          <Text style={{ fontSize: 9, color: colors.muted, fontStyle: 'italic' }}>No attachments added yet</Text>
                         )}
                       </View>
                     )}
@@ -385,27 +385,27 @@ export default function LeadDetailView({ lead, onBack, stages, onStageChange, pr
                       {isEditing ? (
                         <TextInput multiline value={stage.scriptMessage} onChangeText={(v) => editField(stage.id, 'scriptMessage', v)} style={s.editAreaSm} />
                       ) : (
-                        <Text style={{ fontSize: 12, color: colors.ink }}>{fill(stage.scriptMessage, lead)}</Text>
+                        <Text style={{ fontSize: 11, color: colors.ink }}>{fill(stage.scriptMessage, lead)}</Text>
                       )}
                     </View>
 
                     {/* Actions */}
                     <View style={{ flexDirection: 'row', gap: 8 }}>
                       <Pressable onPress={() => Linking.openURL(`tel:${lead.phone.replace(/\s/g, '')}`)} style={s.callBtn}>
-                        <Text style={{ color: '#fff', fontSize: 12, fontWeight: 'bold' }}>Call karo</Text>
+                        <Text style={{ color: '#fff', fontSize: 11, fontWeight: 'bold' }}>Call karo</Text>
                       </Pressable>
                       <Pressable onPress={() => Linking.openURL(`https://wa.me/${lead.phone.replace(/[^0-9]/g, '')}?text=${encodeURIComponent(fill(stage.scriptMessage, lead))}`)} style={[s.waBtn]}>
-                        <Text style={{ color: '#fff', fontSize: 12, fontWeight: 'bold' }}>WhatsApp bhejo</Text>
+                        <Text style={{ color: '#fff', fontSize: 11, fontWeight: 'bold' }}>WhatsApp bhejo</Text>
                       </Pressable>
                     </View>
 
                     {/* Note / Reminder toggles */}
                     <View style={{ flexDirection: 'row', gap: 8 }}>
                       <Pressable onPress={() => { setShowNote(showNote === stage.id ? null : stage.id); setShowReminder(null); }} style={[s.toggleChip, showNote === stage.id ? { borderColor: colors.brand, backgroundColor: colors.brandTint } : { borderColor: colors.line }]}>
-                        <Text style={{ fontSize: 12, fontWeight: 'bold', color: showNote === stage.id ? colors.brand : colors.muted2 }}>Note</Text>
+                        <Text style={{ fontSize: 11, fontWeight: 'bold', color: showNote === stage.id ? colors.brand : colors.muted2 }}>Note</Text>
                       </Pressable>
                       <Pressable onPress={() => { setShowReminder(showReminder === stage.id ? null : stage.id); setShowNote(null); }} style={[s.toggleChip, showReminder === stage.id ? { borderColor: colors.brand, backgroundColor: colors.brandTint } : { borderColor: colors.line }]}>
-                        <Text style={{ fontSize: 12, fontWeight: 'bold', color: showReminder === stage.id ? colors.brand : colors.muted2 }}>Reminder</Text>
+                        <Text style={{ fontSize: 11, fontWeight: 'bold', color: showReminder === stage.id ? colors.brand : colors.muted2 }}>Reminder</Text>
                       </Pressable>
                     </View>
 
@@ -414,8 +414,8 @@ export default function LeadDetailView({ lead, onBack, stages, onStageChange, pr
                       <View style={s.inputCard}>
                         <TextInput multiline placeholder="Add a note..." placeholderTextColor={colors.muted} value={noteText} onChangeText={setNoteText} style={s.editAreaSm} />
                         <View style={{ flexDirection: 'row', gap: 8 }}>
-                          <Pressable onPress={() => { if (noteText.trim()) { setNotes((p) => ({ ...p, [stage.id]: [...(p[stage.id] || []), { text: noteText, date: new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }) }] })); setNoteText(''); setShowNote(null); toast.success('Note saved'); } }} style={s.saveChip}><Text style={{ color: '#fff', fontSize: 10, fontWeight: 'bold' }}>Save Note</Text></Pressable>
-                          <Pressable onPress={() => { setShowNote(null); setNoteText(''); }} style={s.cancelChip}><Text style={{ color: colors.muted2, fontSize: 10, fontWeight: 'bold' }}>Cancel</Text></Pressable>
+                          <Pressable onPress={() => { if (noteText.trim()) { setNotes((p) => ({ ...p, [stage.id]: [...(p[stage.id] || []), { text: noteText, date: new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }) }] })); setNoteText(''); setShowNote(null); toast.success('Note saved'); } }} style={s.saveChip}><Text style={{ color: '#fff', fontSize: 9, fontWeight: 'bold' }}>Save Note</Text></Pressable>
+                          <Pressable onPress={() => { setShowNote(null); setNoteText(''); }} style={s.cancelChip}><Text style={{ color: colors.muted2, fontSize: 9, fontWeight: 'bold' }}>Cancel</Text></Pressable>
                         </View>
                       </View>
                     )}
@@ -426,8 +426,8 @@ export default function LeadDetailView({ lead, onBack, stages, onStageChange, pr
                         <TextInput placeholder="Reminder message..." placeholderTextColor={colors.muted} value={reminderText} onChangeText={setReminderText} style={s.editAreaSm} />
                         <TextInput placeholder="When (e.g. 25 Aug 3PM)" placeholderTextColor={colors.muted} value={reminderDate} onChangeText={setReminderDate} style={s.editAreaSm} />
                         <View style={{ flexDirection: 'row', gap: 8 }}>
-                          <Pressable onPress={() => { if (reminderText.trim() && reminderDate) { setReminders((p) => ({ ...p, [stage.id]: [...(p[stage.id] || []), { text: reminderText, date: reminderDate }] })); setReminderText(''); setReminderDate(''); setShowReminder(null); toast.success('Reminder set'); } }} style={s.saveChip}><Text style={{ color: '#fff', fontSize: 10, fontWeight: 'bold' }}>Set Reminder</Text></Pressable>
-                          <Pressable onPress={() => { setShowReminder(null); setReminderText(''); setReminderDate(''); }} style={s.cancelChip}><Text style={{ color: colors.muted2, fontSize: 10, fontWeight: 'bold' }}>Cancel</Text></Pressable>
+                          <Pressable onPress={() => { if (reminderText.trim() && reminderDate) { setReminders((p) => ({ ...p, [stage.id]: [...(p[stage.id] || []), { text: reminderText, date: reminderDate }] })); setReminderText(''); setReminderDate(''); setShowReminder(null); toast.success('Reminder set'); } }} style={s.saveChip}><Text style={{ color: '#fff', fontSize: 9, fontWeight: 'bold' }}>Set Reminder</Text></Pressable>
+                          <Pressable onPress={() => { setShowReminder(null); setReminderText(''); setReminderDate(''); }} style={s.cancelChip}><Text style={{ color: colors.muted2, fontSize: 9, fontWeight: 'bold' }}>Cancel</Text></Pressable>
                         </View>
                       </View>
                     )}
@@ -436,8 +436,8 @@ export default function LeadDetailView({ lead, onBack, stages, onStageChange, pr
                     {notes[stage.id]?.map((n, i) => (
                       <View key={i} style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8, padding: 8, borderRadius: 8, backgroundColor: '#FEFCE8', borderColor: '#FEF08A', borderWidth: 1 }}>
                         <View style={{ flex: 1 }}>
-                          <Text style={{ fontSize: 10, color: colors.ink }}>{n.text}</Text>
-                          <Text style={{ fontSize: 9, color: colors.muted, marginTop: 2 }}>{n.date}</Text>
+                          <Text style={{ fontSize: 9, color: colors.ink }}>{n.text}</Text>
+                          <Text style={{ fontSize: 8, color: colors.muted, marginTop: 2 }}>{n.date}</Text>
                         </View>
                       </View>
                     ))}
@@ -445,8 +445,8 @@ export default function LeadDetailView({ lead, onBack, stages, onStageChange, pr
                     {reminders[stage.id]?.map((r, i) => (
                       <View key={i} style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8, padding: 8, borderRadius: 8, backgroundColor: '#EFF6FF', borderColor: '#BFDBFE', borderWidth: 1 }}>
                         <View style={{ flex: 1 }}>
-                          <Text style={{ fontSize: 10, color: colors.ink }}>{r.text}</Text>
-                          <Text style={{ fontSize: 9, marginTop: 2, color: '#2563EB' }}>{r.date}</Text>
+                          <Text style={{ fontSize: 9, color: colors.ink }}>{r.text}</Text>
+                          <Text style={{ fontSize: 8, marginTop: 2, color: '#2563EB' }}>{r.date}</Text>
                         </View>
                       </View>
                     ))}
@@ -459,7 +459,7 @@ export default function LeadDetailView({ lead, onBack, stages, onStageChange, pr
           {isEditing && (
             <Pressable onPress={addStage} style={s.addStageBtn}>
               <Plus size={16} color={colors.brand} strokeWidth={2.5} />
-              <Text style={{ color: colors.brand, fontSize: 12, fontWeight: 'bold' }}>Add Journey Stage</Text>
+              <Text style={{ color: colors.brand, fontSize: 11, fontWeight: 'bold' }}>Add Journey Stage</Text>
             </Pressable>
           )}
         </View>
@@ -467,12 +467,12 @@ export default function LeadDetailView({ lead, onBack, stages, onStageChange, pr
 
       {/* Activity */}
       <View>
-        <Text style={{ fontSize: 14, fontWeight: 'bold', color: colors.ink, marginBottom: 12 }}>Full Activity</Text>
+        <Text style={{ fontSize: 13, fontWeight: 'bold', color: colors.ink, marginBottom: 12 }}>Full Activity</Text>
         <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12 }}>
           <View style={{ borderRadius: 999, backgroundColor: colors.brand, marginTop: 6, width: 10, height: 10 }} />
           <View>
-            <Text style={{ fontSize: 10, color: colors.muted }}>{lead.date}</Text>
-            <Text style={{ fontSize: 12, fontWeight: '500', color: colors.ink }}>Lead Added - {lead.source}</Text>
+            <Text style={{ fontSize: 9, color: colors.muted }}>{lead.date}</Text>
+            <Text style={{ fontSize: 11, fontWeight: '500', color: colors.ink }}>Lead Added - {lead.source}</Text>
           </View>
         </View>
       </View>
@@ -483,14 +483,14 @@ export default function LeadDetailView({ lead, onBack, stages, onStageChange, pr
           <View style={[s.sheet, { maxHeight: '88%' }]}>
             <View style={s.sheetHeader}>
               <View>
-                <Text style={{ fontSize: 16, fontWeight: 'bold', color: colors.ink }}>Property Assets</Text>
-                <Text style={{ fontSize: 10, color: colors.muted, marginTop: 2 }}>{lead.project} — open or share on WhatsApp</Text>
+                <Text style={{ fontSize: 15, fontWeight: 'bold', color: colors.ink }}>Property Assets</Text>
+                <Text style={{ fontSize: 9, color: colors.muted, marginTop: 2 }}>{lead.project} — open or share on WhatsApp</Text>
               </View>
               <Pressable onPress={() => setAssetsModalStageId(null)}><X size={22} color={colors.muted} /></Pressable>
             </View>
             {projectAssets.length === 0 ? (
               <View style={{ paddingVertical: 64, alignItems: 'center' }}>
-                <Text style={{ fontSize: 14, color: colors.muted }}>No assets uploaded for this project yet.</Text>
+                <Text style={{ fontSize: 13, color: colors.muted }}>No assets uploaded for this project yet.</Text>
               </View>
             ) : (
               <ScrollView contentContainerStyle={{ padding: 16, gap: 12 }}>
@@ -500,22 +500,22 @@ export default function LeadDetailView({ lead, onBack, stages, onStageChange, pr
                       {asset.type === 'image' ? (
                         <Image source={{ uri: asset.url }} style={{ width: '100%', height: 150 }} resizeMode="cover" />
                       ) : asset.type === 'video' ? (
-                        <View style={{ alignItems: 'center', gap: 8 }}><VideoIcon size={34} color={colors.brand} /><Text style={{ color: '#fff', fontSize: 10, fontWeight: 'bold' }}>Video</Text></View>
+                        <View style={{ alignItems: 'center', gap: 8 }}><VideoIcon size={34} color={colors.brand} /><Text style={{ color: '#fff', fontSize: 9, fontWeight: 'bold' }}>Video</Text></View>
                       ) : (
-                        <View style={{ alignItems: 'center', gap: 8 }}><FileText size={34} color={colors.brand} /><Text style={{ color: '#fff', fontSize: 10, fontWeight: 'bold' }}>Brochure PDF</Text></View>
+                        <View style={{ alignItems: 'center', gap: 8 }}><FileText size={34} color={colors.brand} /><Text style={{ color: '#fff', fontSize: 9, fontWeight: 'bold' }}>Brochure PDF</Text></View>
                       )}
                     </View>
                     <View style={{ padding: 10 }}>
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 }}>
-                        <View style={{ paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, backgroundColor: '#fff', borderWidth: 1, borderColor: colors.line }}><Text style={{ fontSize: 9, fontWeight: 'bold', color: colors.muted2, textTransform: 'uppercase' }}>{asset.type}</Text></View>
-                        <Text style={{ fontSize: 12, fontWeight: '600', color: colors.ink, flex: 1 }} numberOfLines={1}>{asset.name}</Text>
+                        <View style={{ paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, backgroundColor: '#fff', borderWidth: 1, borderColor: colors.line }}><Text style={{ fontSize: 8, fontWeight: 'bold', color: colors.muted2, textTransform: 'uppercase' }}>{asset.type}</Text></View>
+                        <Text style={{ fontSize: 11, fontWeight: '600', color: colors.ink, flex: 1 }} numberOfLines={1}>{asset.name}</Text>
                       </View>
                       <View style={{ flexDirection: 'row', gap: 8 }}>
                         <Pressable onPress={() => openAsset(asset)} style={s.assetOpenBtn}>
-                          <Download size={14} color="#fff" /><Text style={{ color: '#fff', fontSize: 11, fontWeight: 'bold' }}>Open</Text>
+                          <Download size={14} color="#fff" /><Text style={{ color: '#fff', fontSize: 10, fontWeight: 'bold' }}>Open</Text>
                         </Pressable>
                         <Pressable onPress={() => shareAssetToWhatsApp(asset)} style={s.assetWaBtn}>
-                          <Share2 size={14} color="#fff" /><Text style={{ color: '#fff', fontSize: 11, fontWeight: 'bold' }}>WhatsApp</Text>
+                          <Share2 size={14} color="#fff" /><Text style={{ color: '#fff', fontSize: 10, fontWeight: 'bold' }}>WhatsApp</Text>
                         </Pressable>
                       </View>
                     </View>
@@ -533,7 +533,7 @@ export default function LeadDetailView({ lead, onBack, stages, onStageChange, pr
 function Tag({ text, dark }: { text: string; dark?: boolean }) {
   return (
     <View style={{ backgroundColor: dark ? colors.night2 : '#F5F5F4', borderColor: dark ? colors.muted2 : colors.line, borderWidth: 1, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6 }}>
-      <Text style={{ color: dark ? '#fff' : colors.muted2, fontSize: 10, fontWeight: '700' }}>{text}</Text>
+      <Text style={{ color: dark ? '#fff' : colors.muted2, fontSize: 9, fontWeight: '700' }}>{text}</Text>
     </View>
   );
 }
@@ -545,7 +545,7 @@ function InfoBlock({ label, value, editing, onChange, mono }: { label: string; v
       {editing ? (
         <TextInput multiline value={value} onChangeText={onChange} style={[s.editAreaSm, mono ? { fontFamily: 'monospace' } : null]} />
       ) : (
-        <Text style={[{ fontSize: 12, color: colors.ink, fontWeight: '500' }, mono ? { fontFamily: 'monospace' } : null]}>{value}</Text>
+        <Text style={[{ fontSize: 11, color: colors.ink, fontWeight: '500' }, mono ? { fontFamily: 'monospace' } : null]}>{value}</Text>
       )}
     </View>
   );
@@ -556,23 +556,23 @@ const s = StyleSheet.create({
   editBtn: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8 },
   clientCard: { borderRadius: 16, backgroundColor: colors.night, padding: 16 },
   clientAvatar: { width: 44, height: 44, borderRadius: 999, backgroundColor: colors.muted2, alignItems: 'center', justifyContent: 'center' },
-  sectionLabel: { fontSize: 10, fontWeight: 'bold', color: colors.muted, textTransform: 'uppercase', letterSpacing: 1 },
+  sectionLabel: { fontSize: 9, fontWeight: 'bold', color: colors.muted, textTransform: 'uppercase', letterSpacing: 1 },
   pill: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
   pillActive: { backgroundColor: colors.brand },
   pillInactive: { backgroundColor: colors.cream, borderWidth: 1, borderColor: colors.line },
-  pillText: { fontSize: 11, fontWeight: 'bold' },
+  pillText: { fontSize: 10, fontWeight: 'bold' },
   journeyTab: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 12 },
   stageCard: { borderRadius: 12, borderWidth: 1 },
   stageHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14 },
   stageNum: { width: 28, height: 28, borderRadius: 999, alignItems: 'center', justifyContent: 'center' },
   stageBody: { paddingHorizontal: 16, paddingBottom: 16, gap: 12, borderTopWidth: 1, borderTopColor: colors.line, paddingTop: 12 },
-  editArea: { fontSize: 14, color: colors.muted2, backgroundColor: colors.cream, borderWidth: 1, borderColor: colors.line, borderRadius: 8, padding: 10 },
-  editAreaSm: { fontSize: 12, color: colors.ink, backgroundColor: '#fff', borderWidth: 1, borderColor: colors.line, borderRadius: 8, padding: 8 },
+  editArea: { fontSize: 13, color: colors.muted2, backgroundColor: colors.cream, borderWidth: 1, borderColor: colors.line, borderRadius: 8, padding: 10 },
+  editAreaSm: { fontSize: 11, color: colors.ink, backgroundColor: '#fff', borderWidth: 1, borderColor: colors.line, borderRadius: 8, padding: 8 },
   viewAssetsBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 12, backgroundColor: colors.night, alignSelf: 'flex-start' },
   assetCountBadge: { marginLeft: 2, paddingHorizontal: 6, borderRadius: 999, backgroundColor: 'rgba(255,255,255,0.2)' },
   attachBox: { borderRadius: 8, backgroundColor: colors.cream, borderWidth: 1, borderColor: colors.line, padding: 12 },
   attachChip: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, backgroundColor: '#fff', borderWidth: 1, borderColor: colors.line },
-  attachChipText: { fontSize: 10, fontWeight: 'bold', color: colors.muted2 },
+  attachChipText: { fontSize: 9, fontWeight: 'bold', color: colors.muted2 },
   scriptBox: { borderRadius: 8, borderWidth: 1, borderColor: colors.line, backgroundColor: '#fff', padding: 12 },
   callBtn: { flex: 1, paddingVertical: 10, borderRadius: 12, backgroundColor: colors.night, alignItems: 'center' },
   waBtn: { flex: 1, paddingVertical: 10, borderRadius: 12, alignItems: 'center', backgroundColor: '#25D366' },

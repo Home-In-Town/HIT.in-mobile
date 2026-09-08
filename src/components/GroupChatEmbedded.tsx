@@ -365,7 +365,12 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0 }: {
         </View>
         {loading ? <ActivityIndicator color={colors.brand} style={{ marginTop: 40 }} /> : (
           <FlatList
-            data={myRooms}
+            data={[...myRooms].sort((a, b) => {
+              // Universal (pinned) always first
+              if (a.isUniversal && !b.isUniversal) return -1;
+              if (!a.isUniversal && b.isUniversal) return 1;
+              return 0;
+            })}
             keyExtractor={r => r.id}
             ListEmptyComponent={
               <View style={s.empty}>
@@ -375,12 +380,19 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0 }: {
               </View>
             }
             renderItem={({ item: room }) => (
-              <Pressable onPress={() => openRoom(room)} style={s.roomRow}>
-                <View style={s.roomAvatar}><Text style={{ fontSize: 18 }}>{ROOM_ICON[room.roomType] || '💬'}</Text></View>
+              <Pressable onPress={() => openRoom(room)} style={[s.roomRow, room.isUniversal && s.roomRowPinned]}>
+                <View style={[s.roomAvatar, room.isUniversal && { backgroundColor: colors.brand }]}>
+                  <Text style={{ fontSize: 17 }}>{room.isUniversal ? '🌐' : (ROOM_ICON[room.roomType] || '💬')}</Text>
+                </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={s.roomName} numberOfLines={1}>{roomDisplayName(room)}</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Text style={[s.roomName, room.isUniversal && { color: colors.brand }]} numberOfLines={1}>
+                      {roomDisplayName(room)}
+                    </Text>
+                  </View>
                   <Text style={s.roomMeta} numberOfLines={1}>
-                    {room.members.length} members{room.area?.location ? ` · ${room.area.location}` : ''}
+                    {room.members.length} member{room.members.length !== 1 ? 's' : ''}
+                    {!room.isUniversal && room.area?.location ? ` · ${room.area.location}` : ''}
                   </Text>
                 </View>
                 <Text style={s.roomTime}>{timeStr(room.lastActivity)}</Text>
@@ -404,7 +416,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0 }: {
               ListEmptyComponent={<Text style={{ textAlign: 'center', color: colors.muted, marginTop: 40 }}>No groups to discover</Text>}
               renderItem={({ item: room }) => (
                 <View style={s.discoverRow}>
-                  <Text style={{ fontSize: 20 }}>{ROOM_ICON[room.roomType] || '💬'}</Text>
+                  <Text style={{ fontSize: 19 }}>{ROOM_ICON[room.roomType] || '💬'}</Text>
                   <View style={{ flex: 1 }}>
                     <Text style={s.roomName}>{roomDisplayName(room)}</Text>
                     <Text style={s.roomMeta}>{room.members.length} members</Text>
@@ -449,7 +461,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0 }: {
       {/* Thread header */}
       <View style={s.threadHeader}>
         <Pressable onPress={closeRoom} style={{ padding: 4 }}><ChevronLeft size={22} color={colors.ink} /></Pressable>
-        <View style={s.threadAvatar}><Text style={{ fontSize: 16 }}>{ROOM_ICON[activeRoom.roomType] || '💬'}</Text></View>
+        <View style={s.threadAvatar}><Text style={{ fontSize: 15 }}>{ROOM_ICON[activeRoom.roomType] || '💬'}</Text></View>
         <View style={{ flex: 1 }}>
           <Text style={s.threadTitle} numberOfLines={1}>{roomDisplayName(activeRoom)}</Text>
           <Text style={s.threadSub} numberOfLines={1}>{activeRoom.members.length} members</Text>
@@ -896,112 +908,115 @@ function SelectRow({ label, options, value, onChange }: { label: string; options
 
 const s = StyleSheet.create({
   searchRow: { flexDirection: 'row', alignItems: 'center', gap: 8, margin: 12, marginBottom: 6, backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 9 },
-  searchInput: { flex: 1, fontSize: 14, color: colors.ink },
+  searchInput: { flex: 1, fontSize: 13, color: colors.ink },
   listHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 14, paddingVertical: 8 },
-  listTitle: { fontSize: 13, fontWeight: '700', color: colors.muted2 },
+  listTitle: { fontSize: 12, fontWeight: '700', color: colors.muted2 },
   iconBtn: { padding: 8, borderRadius: 10, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.white },
   roomRow: { flexDirection: 'row', alignItems: 'center', padding: 12, gap: 12, backgroundColor: colors.white },
+  roomRowPinned: { backgroundColor: `${colors.brand}08` },
   roomAvatar: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.brandTint, alignItems: 'center', justifyContent: 'center' },
-  roomName: { fontSize: 14.5, fontWeight: '700', color: colors.ink },
-  roomMeta: { fontSize: 11.5, color: colors.muted2, marginTop: 1 },
-  roomTime: { fontSize: 11, color: colors.muted },
+  pinBadge: { backgroundColor: colors.brandTint, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 8 },
+  pinText: { fontSize: 9, fontWeight: '800', color: colors.brand },
+  roomName: { fontSize: 13.5, fontWeight: '700', color: colors.ink },
+  roomMeta: { fontSize: 10.5, color: colors.muted2, marginTop: 1 },
+  roomTime: { fontSize: 10, color: colors.muted },
   empty: { alignItems: 'center', paddingVertical: 50, gap: 10 },
-  emptyText: { fontSize: 14, color: colors.muted },
+  emptyText: { fontSize: 13, color: colors.muted },
   joinBtn: { paddingHorizontal: 16, paddingVertical: 9, backgroundColor: colors.brand, borderRadius: 12, marginTop: 4 },
-  joinBtnText: { color: '#fff', fontWeight: '700', fontSize: 13 },
+  joinBtnText: { color: '#fff', fontWeight: '700', fontSize: 12 },
   discoverRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.white, borderRadius: 14, borderWidth: 1, borderColor: colors.line, padding: 12, gap: 12 },
   smallJoin: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 10, backgroundColor: colors.brandTint, borderWidth: 1, borderColor: colors.brand },
-  smallJoinText: { fontSize: 12.5, fontWeight: '800', color: colors.brand },
+  smallJoinText: { fontSize: 11.5, fontWeight: '800', color: colors.brand },
   modalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 16, backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.line },
-  modalTitle: { fontSize: 17, fontWeight: '800', color: colors.ink },
-  fieldLabel: { fontSize: 13, fontWeight: '700', color: colors.ink },
-  fieldInput: { borderWidth: 1, borderColor: colors.line, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 11, fontSize: 14, color: colors.ink, backgroundColor: colors.white },
+  modalTitle: { fontSize: 16, fontWeight: '800', color: colors.ink },
+  fieldLabel: { fontSize: 12, fontWeight: '700', color: colors.ink },
+  fieldInput: { borderWidth: 1, borderColor: colors.line, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 11, fontSize: 13, color: colors.ink, backgroundColor: colors.white },
   primaryBtn: { backgroundColor: colors.brand, paddingVertical: 14, borderRadius: 12, alignItems: 'center', marginTop: 4 },
-  primaryBtnText: { color: '#fff', fontWeight: '800', fontSize: 14 },
+  primaryBtnText: { color: '#fff', fontWeight: '800', fontSize: 13 },
 
   threadHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 10, paddingVertical: 10, backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.line, zIndex: 20 },
   threadAvatar: { width: 34, height: 34, borderRadius: 17, backgroundColor: colors.brandTint, alignItems: 'center', justifyContent: 'center' },
-  threadTitle: { fontSize: 15, fontWeight: '800', color: colors.ink },
-  threadSub: { fontSize: 11, color: colors.muted, marginTop: 1 },
+  threadTitle: { fontSize: 14, fontWeight: '800', color: colors.ink },
+  threadSub: { fontSize: 10, color: colors.muted, marginTop: 1 },
   menu: { position: 'absolute', right: 8, top: 52, backgroundColor: colors.white, borderRadius: 12, borderWidth: 1, borderColor: colors.line, paddingVertical: 4, minWidth: 180, zIndex: 30, shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 8 },
   menuItem: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 11 },
-  menuText: { fontSize: 13.5, fontWeight: '600', color: colors.muted2 },
+  menuText: { fontSize: 12.5, fontWeight: '600', color: colors.muted2 },
   banner: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: colors.blueBg, borderBottomWidth: 1, borderBottomColor: colors.blueBorder, paddingHorizontal: 14, paddingVertical: 10 },
   bannerIcon: { width: 34, height: 34, borderRadius: 9, backgroundColor: colors.white, alignItems: 'center', justifyContent: 'center' },
-  bannerName: { fontSize: 13.5, fontWeight: '800', color: colors.blueText },
-  bannerMeta: { fontSize: 11, color: colors.blueText, marginTop: 1 },
+  bannerName: { fontSize: 12.5, fontWeight: '800', color: colors.blueText },
+  bannerMeta: { fontSize: 10, color: colors.blueText, marginTop: 1 },
 
   composer: { backgroundColor: colors.white, borderTopWidth: 1, borderTopColor: colors.line, paddingHorizontal: 10, paddingTop: 8, paddingBottom: 10, gap: 8 },
   quickRow: { flexDirection: 'row', gap: 8 },
   quickChip: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 18, borderWidth: 1 },
-  quickChipText: { fontSize: 12.5, fontWeight: '800' },
+  quickChipText: { fontSize: 11.5, fontWeight: '800' },
   modeRow: { flexDirection: 'row', gap: 6 },
   modeBtn: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.white },
   modeBtnActive: { backgroundColor: colors.night, borderColor: colors.night },
-  modeText: { fontSize: 11.5, fontWeight: '800', color: colors.muted2 },
+  modeText: { fontSize: 10.5, fontWeight: '800', color: colors.muted2 },
   modeTextActive: { color: '#fff' },
   textRow: { flexDirection: 'row', gap: 8, alignItems: 'flex-end' },
-  textInput: { flex: 1, borderWidth: 1, borderColor: colors.line, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 9, fontSize: 14, color: colors.ink, backgroundColor: colors.cream, maxHeight: 100 },
+  textInput: { flex: 1, borderWidth: 1, borderColor: colors.line, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 9, fontSize: 13, color: colors.ink, backgroundColor: colors.cream, maxHeight: 100 },
   sendBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.brand, alignItems: 'center', justifyContent: 'center' },
   cardBox: { borderWidth: 1, borderRadius: 14, padding: 12, gap: 9 },
-  cardTitle: { fontSize: 13, fontWeight: '800' },
+  cardTitle: { fontSize: 12, fontWeight: '800' },
   grid2: { flexDirection: 'row', gap: 8 },
-  miniInput: { flex: 1, borderWidth: 1, borderColor: colors.line, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 9, fontSize: 13, color: colors.ink, backgroundColor: colors.white },
+  miniInput: { flex: 1, borderWidth: 1, borderColor: colors.line, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 9, fontSize: 12, color: colors.ink, backgroundColor: colors.white },
   switchRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 2 },
-  switchLabel: { fontSize: 13, fontWeight: '700', color: colors.ink },
+  switchLabel: { fontSize: 12, fontWeight: '700', color: colors.ink },
   postBtn: { paddingVertical: 12, borderRadius: 12, alignItems: 'center', marginTop: 2 },
-  postBtnText: { color: '#fff', fontWeight: '800', fontSize: 13.5 },
+  postBtnText: { color: '#fff', fontWeight: '800', fontSize: 12.5 },
 });
 
 const cs = StyleSheet.create({
   chip: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 16, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.white },
   chipOn: { backgroundColor: colors.brand, borderColor: colors.brand },
-  chipText: { fontSize: 12, fontWeight: '700', color: colors.muted2 },
+  chipText: { fontSize: 11, fontWeight: '700', color: colors.muted2 },
   chipTextOn: { color: '#fff' },
-  selLabel: { fontSize: 11, fontWeight: '700', color: colors.muted2 },
+  selLabel: { fontSize: 10, fontWeight: '700', color: colors.muted2 },
 });
 
 const mbs = StyleSheet.create({
-  system: { textAlign: 'center', fontSize: 11, color: colors.muted2, backgroundColor: colors.slateBg, alignSelf: 'center', paddingHorizontal: 12, paddingVertical: 5, borderRadius: 12, overflow: 'hidden' },
+  system: { textAlign: 'center', fontSize: 10, color: colors.muted2, backgroundColor: colors.slateBg, alignSelf: 'center', paddingHorizontal: 12, paddingVertical: 5, borderRadius: 12, overflow: 'hidden' },
   cardWrap: { maxWidth: '90%' },
   card: { borderWidth: 1, borderRadius: 16, padding: 12, gap: 4 },
-  cardTag: { fontSize: 11, fontWeight: '800' },
-  cardMain: { fontSize: 14, fontWeight: '800', color: colors.ink },
-  cardSub: { fontSize: 12, color: colors.muted2 },
-  cardNote: { fontSize: 11.5, color: colors.muted, marginTop: 2 },
+  cardTag: { fontSize: 10, fontWeight: '800' },
+  cardMain: { fontSize: 13, fontWeight: '800', color: colors.ink },
+  cardSub: { fontSize: 11, color: colors.muted2 },
+  cardNote: { fontSize: 10.5, color: colors.muted, marginTop: 2 },
   tagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 3 },
   tag: { backgroundColor: colors.slateBg, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 10 },
-  tagText: { fontSize: 9.5, fontWeight: '700', color: colors.slateText },
+  tagText: { fontSize: 8.5, fontWeight: '700', color: colors.slateText },
   matchBox: { backgroundColor: colors.white, borderWidth: 1, borderColor: `${colors.brand}33`, borderRadius: 16, padding: 10, gap: 8 },
-  matchTitle: { fontSize: 12, fontWeight: '800', color: colors.brand },
+  matchTitle: { fontSize: 11, fontWeight: '800', color: colors.brand },
   matchRow: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: colors.cream, borderRadius: 12, borderWidth: 1, borderColor: colors.line, padding: 9 },
-  matchName: { fontSize: 12.5, fontWeight: '800', color: colors.ink, flexShrink: 1 },
-  matchScore: { fontSize: 11, fontWeight: '800' },
-  matchLoc: { fontSize: 10.5, color: colors.muted2, marginTop: 1 },
+  matchName: { fontSize: 11.5, fontWeight: '800', color: colors.ink, flexShrink: 1 },
+  matchScore: { fontSize: 10, fontWeight: '800' },
+  matchLoc: { fontSize: 9.5, color: colors.muted2, marginTop: 1 },
   interestedBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: colors.brand, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 10 },
-  interestedText: { fontSize: 10.5, fontWeight: '800', color: '#fff' },
+  interestedText: { fontSize: 9.5, fontWeight: '800', color: '#fff' },
   textBubble: { maxWidth: '75%', paddingHorizontal: 12, paddingVertical: 9, borderRadius: 16 },
   textMe: { backgroundColor: colors.brand, borderBottomRightRadius: 4 },
   textThem: { backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line, borderBottomLeftRadius: 4 },
-  textSender: { fontSize: 10, fontWeight: '800', color: colors.brand, marginBottom: 2 },
-  textContent: { fontSize: 14, lineHeight: 20 },
+  textSender: { fontSize: 9, fontWeight: '800', color: colors.brand, marginBottom: 2 },
+  textContent: { fontSize: 13, lineHeight: 20 },
 });
 
 const sh = StyleSheet.create({
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   sheet: { backgroundColor: colors.white, borderTopLeftRadius: 24, borderTopRightRadius: 24, overflow: 'hidden' },
   head: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 16 },
-  headTitle: { fontSize: 16, fontWeight: '800', color: '#fff' },
-  headSub: { fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 1 },
-  label: { fontSize: 12.5, fontWeight: '700', color: colors.muted2 },
-  input: { borderWidth: 1, borderColor: colors.line, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, fontSize: 14.5, color: colors.ink, backgroundColor: colors.cream },
+  headTitle: { fontSize: 15, fontWeight: '800', color: '#fff' },
+  headSub: { fontSize: 10, color: 'rgba(255,255,255,0.75)', marginTop: 1 },
+  label: { fontSize: 11.5, fontWeight: '700', color: colors.muted2 },
+  input: { borderWidth: 1, borderColor: colors.line, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, fontSize: 13.5, color: colors.ink, backgroundColor: colors.cream },
   row2: { flexDirection: 'row', gap: 12 },
   chipsWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   chip: { paddingHorizontal: 14, paddingVertical: 9, borderRadius: 20, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.white },
-  chipText: { fontSize: 13, fontWeight: '700', color: colors.muted2 },
+  chipText: { fontSize: 12, fontWeight: '700', color: colors.muted2 },
   switchRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: colors.cream, borderWidth: 1, borderColor: colors.line, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12 },
-  switchLabel: { fontSize: 13.5, fontWeight: '700', color: colors.ink },
+  switchLabel: { fontSize: 12.5, fontWeight: '700', color: colors.ink },
   footer: { padding: 14, borderTopWidth: 1, borderTopColor: colors.line },
   submitBtn: { paddingVertical: 15, borderRadius: 14, alignItems: 'center' },
-  submitText: { color: '#fff', fontSize: 15, fontWeight: '800' },
+  submitText: { color: '#fff', fontSize: 14, fontWeight: '800' },
 });

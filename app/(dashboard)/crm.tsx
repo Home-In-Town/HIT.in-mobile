@@ -129,7 +129,7 @@ export default function HomeDashboard() {
 
       <ScrollView
         style={{ flex: 1 }}
-        contentContainerStyle={{ paddingBottom: 90 }}
+        contentContainerStyle={{ paddingBottom: 120 }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={colors.brand} />}
       >
         {/* ── Dark Welcome Card ── */}
@@ -153,25 +153,40 @@ export default function HomeDashboard() {
           </View>
         </View>
 
-        {/* ── Quick Actions ── */}
+        {/* ── Quick Actions (3 cards: AI Lead Matching · CRM · Marketplace) ── */}
         <View style={s.quickRow}>
           <Pressable
             style={s.quickCard}
             onPress={() => router.push('/(dashboard)/lead-matching' as any)}
           >
-            <View style={s.quickIcon}><Zap size={18} color={colors.brand} /></View>
+            <View style={s.quickIcon}><Zap size={16} color={colors.brand} /></View>
             <View style={{ flex: 1 }}>
-              <Text style={s.quickTitle}>AI Lead Matching</Text>
+              <Text style={s.quickTitle} numberOfLines={1}>AI Lead Match</Text>
               <Text style={s.quickSub}>MATCH & CONNECT</Text>
             </View>
           </Pressable>
+
+          <Pressable
+            style={s.quickCard}
+            onPress={() => router.push('/(dashboard)/crm-leads' as any)}
+          >
+            <View style={s.quickIcon}>
+              <BarChart3 size={16} color={colors.brand} />
+              {crmHot > 0 && <View style={s.hotDotInline} />}
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={s.quickTitle} numberOfLines={1}>CRM</Text>
+              <Text style={s.quickSub}>PIPELINE</Text>
+            </View>
+          </Pressable>
+
           <Pressable
             style={s.quickCard}
             onPress={() => router.push('/(dashboard)/marketplace' as any)}
           >
-            <View style={s.quickIcon}><ShoppingBag size={18} color={colors.brand} /></View>
+            <View style={s.quickIcon}><ShoppingBag size={16} color={colors.brand} /></View>
             <View style={{ flex: 1 }}>
-              <Text style={s.quickTitle}>Marketplace</Text>
+              <Text style={s.quickTitle} numberOfLines={1}>Marketplace</Text>
               <Text style={s.quickSub}>SELL & EARN</Text>
             </View>
           </Pressable>
@@ -202,7 +217,7 @@ export default function HomeDashboard() {
                       <Image source={{ uri: cover }} style={s.reelImg} resizeMode="cover" />
                     ) : (
                       <View style={[s.reelImg, s.reelNoImg]}>
-                        <Text style={{ fontSize: 26, color: colors.muted, fontWeight: '800' }}>₹</Text>
+                        <Text style={{ fontSize: 25, color: colors.muted, fontWeight: '800' }}>₹</Text>
                       </View>
                     )}
                     <View style={s.reelTypeBadge}>
@@ -287,28 +302,17 @@ export default function HomeDashboard() {
         </View>
       </ScrollView>
 
-      {/* ── Fixed Bottom Bar ── */}
-      <View style={[s.bottomBar, { paddingBottom: insets.bottom + 8 }]}>
-        <Pressable style={s.bottomItem} onPress={() => router.push('/(dashboard)/crm-leads' as any)}>
-          <View style={s.bottomIcon}>
-            <BarChart3 size={19} color={colors.brand} />
-            {crmHot > 0 && <View style={s.hotDot} />}
-          </View>
-          <View>
-            <Text style={s.bottomTitle}>CRM</Text>
-            <Text style={s.bottomSub}>PIPELINE</Text>
-          </View>
-        </Pressable>
-        <Pressable style={s.bottomItem} onPress={() => Linking.openURL('https://www.oneemployee.in/')}>
-          <View style={s.bottomIcon}>
-            <Users size={19} color={colors.brand} />
-          </View>
-          <View>
-            <Text style={s.bottomTitle}>Team</Text>
-            <Text style={s.bottomSub}>ONE EMPLOYEE</Text>
-          </View>
-        </Pressable>
-      </View>
+      {/* ── Floating Team Button (bottom right) ── */}
+      <Pressable
+        style={[s.teamFab, { bottom: insets.bottom + 16 }]}
+        onPress={() => Linking.openURL('https://www.oneemployee.in/')}
+      >
+        <Users size={18} color="#fff" />
+        <View>
+          <Text style={s.teamFabTitle}>Team</Text>
+          <Text style={s.teamFabSub}>ONE EMPLOYEE</Text>
+        </View>
+      </Pressable>
 
       {/* Share sheet */}
       <ShareModal project={shareProject} onClose={() => setShareProject(null)} />
@@ -329,10 +333,10 @@ const s = StyleSheet.create({
   navLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   menuBtn: { padding: 2 },
   logoBox: { width: 26, height: 26, borderRadius: 7, backgroundColor: colors.brand, alignItems: 'center', justifyContent: 'center' },
-  logoLetter: { color: '#fff', fontWeight: '800', fontSize: 13 },
-  brandName: { fontSize: 15, fontWeight: '800', color: colors.ink },
+  logoLetter: { color: '#fff', fontWeight: '800', fontSize: 12 },
+  brandName: { fontSize: 14, fontWeight: '800', color: colors.ink },
   uploadBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: colors.brand, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 20 },
-  uploadText: { color: '#fff', fontSize: 12, fontWeight: '700' },
+  uploadText: { color: '#fff', fontSize: 11, fontWeight: '700' },
 
   // Welcome card
   welcomeCard: {
@@ -342,27 +346,37 @@ const s = StyleSheet.create({
   },
   welcomeGlow: { position: 'absolute', width: 130, height: 130, borderRadius: 65, backgroundColor: `${colors.brand}22`, top: -50, right: -30 },
   welcomeInner: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  greeting: { color: colors.brand, fontSize: 10, fontWeight: '800', letterSpacing: 1.5 },
-  welcomeName: { color: '#fff', fontSize: 22, fontWeight: '800', marginTop: 3 },
+  greeting: { color: colors.brand, fontSize: 9, fontWeight: '800', letterSpacing: 1.5 },
+  welcomeName: { color: '#fff', fontSize: 21, fontWeight: '800', marginTop: 3 },
   welcomeStats: { flexDirection: 'row', gap: 18 },
   welcomeStat: { alignItems: 'center' },
-  welcomeStatNum: { color: '#fff', fontSize: 20, fontWeight: '800' },
+  welcomeStatNum: { color: '#fff', fontSize: 19, fontWeight: '800' },
   welcomeStatLabel: { color: 'rgba(255,255,255,0.4)', fontSize: 8, fontWeight: '800', letterSpacing: 0.6, marginTop: 1 },
 
-  // Quick actions
-  quickRow: { flexDirection: 'row', gap: 10, marginHorizontal: 12, marginTop: 12 },
+  // Quick actions — 3 cards, slightly more compact
+  quickRow: { flexDirection: 'row', gap: 8, marginHorizontal: 12, marginTop: 12 },
   quickCard: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10,
+    flex: 1, flexDirection: 'row', alignItems: 'center', gap: 7,
     backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line,
-    borderRadius: 16, paddingHorizontal: 12, paddingVertical: 12,
+    borderRadius: 14, paddingHorizontal: 8, paddingVertical: 11,
   },
-  quickIcon: { width: 36, height: 36, borderRadius: 11, backgroundColor: `${colors.brand}15`, alignItems: 'center', justifyContent: 'center' },
-  quickTitle: { fontSize: 13, fontWeight: '800', color: colors.ink },
-  quickSub: { fontSize: 8.5, color: colors.muted, fontWeight: '700', letterSpacing: 0.4, marginTop: 2 },
+  quickIcon: { width: 32, height: 32, borderRadius: 10, backgroundColor: `${colors.brand}15`, alignItems: 'center', justifyContent: 'center', position: 'relative' },
+  quickTitle: { fontSize: 10.5, fontWeight: '800', color: colors.ink },
+  quickSub: { fontSize: 8, color: colors.muted, fontWeight: '700', letterSpacing: 0.4, marginTop: 1 },
+  hotDotInline: { position: 'absolute', top: 3, right: 3, width: 7, height: 7, borderRadius: 4, backgroundColor: '#EF4444', borderWidth: 1, borderColor: colors.white },
 
-  // Reels
+  // Floating Team button (bottom right)
+  teamFab: {
+    position: 'absolute', right: 16,
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: colors.night, paddingHorizontal: 16, paddingVertical: 11,
+    borderRadius: 26, shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 }, elevation: 6,
+  },
+  teamFabTitle: { fontSize: 12, fontWeight: '800', color: '#fff' },
+  teamFabSub: { fontSize: 8, color: 'rgba(255,255,255,0.5)', fontWeight: '700', letterSpacing: 0.4, marginTop: 1 },
   emptyReels: { alignItems: 'center', paddingVertical: 50, gap: 10 },
-  emptyText: { fontSize: 14, color: colors.muted },
+  emptyText: { fontSize: 13, color: colors.muted },
   reelCard: {
     flexDirection: 'row', backgroundColor: colors.white,
     borderRadius: 16, borderWidth: 1, borderColor: colors.line,
@@ -375,23 +389,23 @@ const s = StyleSheet.create({
   reelTypeBadge: { position: 'absolute', top: 8, left: 8, backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 4 },
   reelTypeText: { color: '#fff', fontSize: 8, fontWeight: '800' },
   reelContent: { flex: 1, padding: 12, justifyContent: 'space-between', gap: 6 },
-  reelName: { fontSize: 14, fontWeight: '800', color: colors.ink },
-  reelPrice: { fontSize: 14, fontWeight: '800', color: colors.brand, marginTop: 2 },
+  reelName: { fontSize: 13, fontWeight: '800', color: colors.ink },
+  reelPrice: { fontSize: 13, fontWeight: '800', color: colors.brand, marginTop: 2 },
   reelLocRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 6 },
   reelLocLeft: { flexDirection: 'row', alignItems: 'center', gap: 4, flex: 1 },
-  reelLoc: { fontSize: 11, color: colors.muted2, fontWeight: '500', flex: 1 },
-  reelRate: { fontSize: 10, color: colors.muted, fontWeight: '700' },
+  reelLoc: { fontSize: 10, color: colors.muted2, fontWeight: '500', flex: 1 },
+  reelRate: { fontSize: 9, color: colors.muted, fontWeight: '700' },
   matchRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   matchDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#3F6212' },
-  matchText: { fontSize: 10, fontWeight: '700', color: '#3F6212' },
+  matchText: { fontSize: 9, fontWeight: '700', color: '#3F6212' },
   tagsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 4 },
   tag: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, borderWidth: 1 },
-  tagText: { fontSize: 8.5, fontWeight: '800' },
+  tagText: { fontSize: 8, fontWeight: '800' },
   reelActions: { flexDirection: 'row', gap: 6 },
   viewBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, backgroundColor: '#1C1917', paddingVertical: 8, borderRadius: 8 },
-  viewBtnText: { color: '#fff', fontSize: 10, fontWeight: '800' },
+  viewBtnText: { color: '#fff', fontSize: 9, fontWeight: '800' },
   shareBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, backgroundColor: '#FFF8F0', borderWidth: 1, borderColor: `${colors.brand}33`, paddingVertical: 8, borderRadius: 8 },
-  shareBtnText: { color: colors.brand, fontSize: 10, fontWeight: '800' },
+  shareBtnText: { color: colors.brand, fontSize: 9, fontWeight: '800' },
 
   // Bottom bar
   bottomBar: {
@@ -404,6 +418,6 @@ const s = StyleSheet.create({
   bottomItem: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 10, paddingVertical: 6 },
   bottomIcon: { width: 36, height: 36, borderRadius: 11, backgroundColor: `${colors.brand}15`, alignItems: 'center', justifyContent: 'center', position: 'relative' },
   hotDot: { position: 'absolute', top: 2, right: 2, width: 8, height: 8, borderRadius: 4, backgroundColor: '#EF4444', borderWidth: 1, borderColor: colors.white },
-  bottomTitle: { fontSize: 13, fontWeight: '800', color: colors.ink },
-  bottomSub: { fontSize: 8.5, color: colors.muted, fontWeight: '700', letterSpacing: 0.4, marginTop: 1 },
+  bottomTitle: { fontSize: 12, fontWeight: '800', color: colors.ink },
+  bottomSub: { fontSize: 8, color: colors.muted, fontWeight: '700', letterSpacing: 0.4, marginTop: 1 },
 });

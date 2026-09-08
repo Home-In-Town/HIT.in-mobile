@@ -18,16 +18,16 @@ SplashScreen.preventAutoHideAsync().catch(() => {});
 export function ErrorBoundary({ error, retry }: { error: Error; retry: () => void }) {
   return (
     <View style={{ flex: 1, backgroundColor: colors.cream, padding: 24, justifyContent: 'center' }}>
-      <Text style={{ fontSize: 18, fontWeight: 'bold', color: colors.brand, marginBottom: 8 }}>
+      <Text style={{ fontSize: 17, fontWeight: 'bold', color: colors.brand, marginBottom: 8 }}>
         Something went wrong
       </Text>
       <ScrollView style={{ maxHeight: 300 }}>
-        <Text style={{ fontSize: 13, color: colors.ink }}>{error?.message}</Text>
+        <Text style={{ fontSize: 12, color: colors.ink }}>{error?.message}</Text>
         {!!error?.stack && (
-          <Text style={{ fontSize: 11, color: colors.muted2, marginTop: 12 }}>{error.stack}</Text>
+          <Text style={{ fontSize: 10, color: colors.muted2, marginTop: 12 }}>{error.stack}</Text>
         )}
       </ScrollView>
-      <Text onPress={retry} style={{ marginTop: 20, fontSize: 15, fontWeight: 'bold', color: colors.brand }}>
+      <Text onPress={retry} style={{ marginTop: 20, fontSize: 14, fontWeight: 'bold', color: colors.brand }}>
         Tap to retry
       </Text>
     </View>

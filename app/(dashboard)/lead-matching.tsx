@@ -89,15 +89,15 @@ function LeadsTab() {
             </View>
             {stats.byStatus && Object.entries(stats.byStatus).map(([k, v]) => (
               <View key={k} style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: colors.line }}>
-                <Text style={{ fontSize: 13, color: colors.muted2, textTransform: 'capitalize' }}>{k}</Text>
-                <Text style={{ fontSize: 13, fontWeight: '700', color: colors.ink }}>{v as number}</Text>
+                <Text style={{ fontSize: 12, color: colors.muted2, textTransform: 'capitalize' }}>{k}</Text>
+                <Text style={{ fontSize: 12, fontWeight: '700', color: colors.ink }}>{v as number}</Text>
               </View>
             ))}
           </View>
         ) : (
           leads.length === 0 ? (
             <View style={{ alignItems: 'center', paddingVertical: 60 }}>
-              <Text style={{ color: colors.muted, fontSize: 14 }}>No extracted leads yet</Text>
+              <Text style={{ color: colors.muted, fontSize: 13 }}>No extracted leads yet</Text>
             </View>
           ) : leads.map(l => {
             const conf = l.extractionConfidence || 0;
@@ -105,14 +105,14 @@ function LeadsTab() {
               <View key={l._id} style={lt.card}>
                 <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
                   <View style={[{ paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 }, { backgroundColor: CONF_BG(conf) }]}>
-                    <Text style={{ fontSize: 10, fontWeight: '700', color: CONF_COLOR(conf) }}>{Math.round(conf * 100)}% conf</Text>
+                    <Text style={{ fontSize: 9, fontWeight: '700', color: CONF_COLOR(conf) }}>{Math.round(conf * 100)}% conf</Text>
                   </View>
                   <View style={{ backgroundColor: colors.indigoBg, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 }}>
-                    <Text style={{ fontSize: 10, fontWeight: '700', color: colors.indigoText }}>{l.intent || ''}</Text>
+                    <Text style={{ fontSize: 9, fontWeight: '700', color: colors.indigoText }}>{l.intent || ''}</Text>
                   </View>
-                  <Text style={{ fontSize: 11, color: colors.muted, fontStyle: 'italic' }}>{l.source}</Text>
+                  <Text style={{ fontSize: 10, color: colors.muted, fontStyle: 'italic' }}>{l.source}</Text>
                 </View>
-                <Text style={{ fontSize: 13, color: colors.muted2, marginBottom: 6 }} numberOfLines={2}>{l.originalText}</Text>
+                <Text style={{ fontSize: 12, color: colors.muted2, marginBottom: 6 }} numberOfLines={2}>{l.originalText}</Text>
                 {l.params && (
                   <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginBottom: 6 }}>
                     {l.params.bhkType && <Chip label={l.params.bhkType} />}
@@ -124,11 +124,11 @@ function LeadsTab() {
                   <View style={{ flexDirection: 'row', gap: 8 }}>
                     <Pressable onPress={() => handleStatus(l._id, 'confirmed')} disabled={updating === l._id}
                       style={{ flex: 1, paddingVertical: 8, borderRadius: 10, backgroundColor: colors.greenBg, borderWidth: 1, borderColor: colors.greenBorder, alignItems: 'center' }}>
-                      <Text style={{ fontSize: 12, fontWeight: '700', color: colors.greenText }}>Confirm</Text>
+                      <Text style={{ fontSize: 11, fontWeight: '700', color: colors.greenText }}>Confirm</Text>
                     </Pressable>
                     <Pressable onPress={() => handleStatus(l._id, 'rejected')} disabled={updating === l._id}
                       style={{ flex: 1, paddingVertical: 8, borderRadius: 10, backgroundColor: colors.redBg, borderWidth: 1, borderColor: colors.redBorder, alignItems: 'center' }}>
-                      <Text style={{ fontSize: 12, fontWeight: '700', color: colors.redText }}>Reject</Text>
+                      <Text style={{ fontSize: 11, fontWeight: '700', color: colors.redText }}>Reject</Text>
                     </Pressable>
                   </View>
                 )}
@@ -145,19 +145,19 @@ const lt = StyleSheet.create({
   tabs: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: colors.line, backgroundColor: colors.white },
   tabBtn: { flex: 1, paddingVertical: 11, alignItems: 'center', borderBottomWidth: 2, borderBottomColor: 'transparent' },
   tabBtnActive: { borderBottomColor: colors.brand },
-  tabText: { fontSize: 13, fontWeight: '600', color: colors.muted2 },
+  tabText: { fontSize: 12, fontWeight: '600', color: colors.muted2 },
   tabTextActive: { color: colors.brand },
   statsRow: { flexDirection: 'row', gap: 10 },
   statCard: { flex: 1, backgroundColor: colors.white, borderRadius: 12, borderWidth: 1, borderColor: colors.line, padding: 14, alignItems: 'center' },
-  statNum: { fontSize: 20, fontWeight: 'bold', color: colors.ink },
-  statLbl: { fontSize: 11, color: colors.muted, marginTop: 2 },
+  statNum: { fontSize: 19, fontWeight: 'bold', color: colors.ink },
+  statLbl: { fontSize: 10, color: colors.muted, marginTop: 2 },
   card: { backgroundColor: colors.white, borderRadius: 14, borderWidth: 1, borderColor: colors.line, padding: 14 },
 });
 
 function Chip({ label }: { label: string }) {
   return (
     <View style={{ backgroundColor: colors.slateBg, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, borderWidth: 1, borderColor: colors.slateBorder }}>
-      <Text style={{ fontSize: 11, fontWeight: '600', color: colors.slateText }}>{label}</Text>
+      <Text style={{ fontSize: 10, fontWeight: '600', color: colors.slateText }}>{label}</Text>
     </View>
   );
 }
@@ -166,18 +166,17 @@ function Chip({ label }: { label: string }) {
 export default function LeadMatchingHub() {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
-  const [tab, setTab] = useState<'chats' | 'groups'>('groups');
-  // Within the Chats tab: switch between 1:1 Chats and the AI Assistant.
-  const [chatSub, setChatSub] = useState<'chats' | 'assistant'>('chats');
+  const [tab, setTab] = useState<'chats' | 'assistant' | 'groups'>('assistant');
   const [showLeads, setShowLeads] = useState(false);
   // When a group room is opened, hide the header + top tab bar for a
   // full-screen chat experience (matches the website behavior).
   const [groupOpen, setGroupOpen] = useState(false);
   const isAdmin = ['admin', 'builder'].includes(user?.role ?? '');
 
-  const TABS: { key: 'chats' | 'groups'; label: string; icon: React.ReactNode }[] = [
-    { key: 'chats',  label: 'Chats',  icon: <MessageSquare size={16} /> },
-    { key: 'groups', label: 'Groups', icon: <Users size={16} /> },
+  const TABS: { key: 'chats' | 'assistant' | 'groups'; label: string; icon: React.ReactNode }[] = [
+    { key: 'chats',     label: 'Chats',        icon: <MessageSquare size={16} /> },
+    { key: 'assistant', label: 'AI Lead Matching', icon: <Zap size={16} /> },
+    { key: 'groups',    label: 'Groups',       icon: <Users size={16} /> },
   ];
 
   const chromeHidden = tab === 'groups' && groupOpen;
@@ -189,9 +188,7 @@ export default function LeadMatchingHub() {
         <>
           <View style={hub.header}>
             <MenuButton />
-            <Text style={hub.headerTitle}>AI Lead Matching</Text>
             <View style={{ flex: 1 }} />
-            {/* Leads pinned at the top (admin/builder only) */}
             {isAdmin && (
               <Pressable onPress={() => setShowLeads(true)} style={hub.leadsBtn}>
                 <BarChart2 size={15} color={colors.brand} />
@@ -210,26 +207,14 @@ export default function LeadMatchingHub() {
               </Pressable>
             ))}
           </View>
-
-          {/* Chats sub-toggle: 1:1 Chats vs AI Assistant */}
-          {tab === 'chats' && (
-            <View style={hub.subRow}>
-              {(['chats', 'assistant'] as const).map(sub => (
-                <Pressable key={sub} onPress={() => setChatSub(sub)} style={[hub.subBtn, chatSub === sub && hub.subBtnActive]}>
-                  {sub === 'assistant' ? <Zap size={13} color={chatSub === sub ? '#fff' : colors.muted2} /> : <MessageSquare size={13} color={chatSub === sub ? '#fff' : colors.muted2} />}
-                  <Text style={[hub.subText, chatSub === sub && hub.subTextActive]}>{sub === 'assistant' ? 'AI Assistant' : 'Chats'}</Text>
-                </Pressable>
-              ))}
-            </View>
-          )}
         </>
       )}
 
       {/* Tab content */}
       <View style={{ flex: 1 }}>
-        {tab === 'groups' && <GroupChatEmbedded onRoomOpenChange={setGroupOpen} topInset={insets.top} />}
-        {tab === 'chats' && chatSub === 'chats' && <ChatEmbedded />}
-        {tab === 'chats' && chatSub === 'assistant' && <AssistantTab onViewLeads={() => { if (isAdmin) setShowLeads(true); }} />}
+        {tab === 'chats'     && <ChatEmbedded />}
+        {tab === 'assistant' && <AssistantTab onViewLeads={() => { if (isAdmin) setShowLeads(true); }} />}
+        {tab === 'groups'    && <GroupChatEmbedded onRoomOpenChange={setGroupOpen} topInset={insets.top} />}
       </View>
 
       {/* Leads overlay (opened from the top button) */}
@@ -252,7 +237,7 @@ export default function LeadMatchingHub() {
 const hub = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.cream },
   header: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 12, backgroundColor: colors.white },
-  headerTitle: { fontSize: 20, fontWeight: '800', color: colors.ink },
+  headerTitle: { fontSize: 19, fontWeight: '800', color: colors.ink },
   tabBar: {
     flexDirection: 'row',
     backgroundColor: colors.white,
@@ -265,14 +250,14 @@ const hub = StyleSheet.create({
     borderBottomWidth: 2, borderBottomColor: 'transparent',
   },
   tabBtnActive: { borderBottomColor: colors.brand },
-  tabText: { fontSize: 12, fontWeight: '600', color: colors.muted2 },
+  tabText: { fontSize: 11, fontWeight: '600', color: colors.muted2 },
   tabTextActive: { color: colors.brand },
   leadsBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 18, backgroundColor: colors.brandTint, borderWidth: 1, borderColor: colors.brand },
-  leadsBtnText: { fontSize: 12.5, fontWeight: '800', color: colors.brand },
+  leadsBtnText: { fontSize: 11.5, fontWeight: '800', color: colors.brand },
   closeBtn: { padding: 6, borderRadius: 10, backgroundColor: colors.slateBg },
   subRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 12, paddingVertical: 8, backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.line },
   subBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 7, borderRadius: 18, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.white },
   subBtnActive: { backgroundColor: colors.brand, borderColor: colors.brand },
-  subText: { fontSize: 12.5, fontWeight: '700', color: colors.muted2 },
+  subText: { fontSize: 11.5, fontWeight: '700', color: colors.muted2 },
   subTextActive: { color: '#fff' },
 });

@@ -147,7 +147,7 @@ export default function EmployeesScreen() {
                   <Text style={s.empSub}>{e.phone} · {e.role}</Text>
                 </View>
                 <View style={[s.statusBadge, { backgroundColor: e.isEmployerConfirmed ? colors.greenBg : colors.amberBg }]}>
-                  <Text style={{ fontSize: 10, fontWeight: '700', color: e.isEmployerConfirmed ? colors.greenText : colors.amberText }}>
+                  <Text style={{ fontSize: 9, fontWeight: '700', color: e.isEmployerConfirmed ? colors.greenText : colors.amberText }}>
                     {e.isEmployerConfirmed ? 'Active' : 'Pending'}
                   </Text>
                 </View>
@@ -192,31 +192,31 @@ export default function EmployeesScreen() {
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.cream },
   header: { paddingHorizontal: 16, paddingVertical: 14, backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.line },
-  title: { fontSize: 22, fontWeight: 'bold', color: colors.ink },
-  sub: { fontSize: 13, color: colors.muted, marginTop: 2 },
+  title: { fontSize: 21, fontWeight: 'bold', color: colors.ink },
+  sub: { fontSize: 12, color: colors.muted, marginTop: 2 },
   center: { alignItems: 'center', paddingVertical: 20 },
   card: { backgroundColor: colors.white, borderRadius: 14, borderWidth: 1, borderColor: colors.line, padding: 14, gap: 12 },
-  cardTitle: { fontSize: 15, fontWeight: '700', color: colors.ink },
+  cardTitle: { fontSize: 14, fontWeight: '700', color: colors.ink },
   searchRow: { flexDirection: 'row', gap: 10 },
-  searchInput: { flex: 1, borderWidth: 1, borderColor: colors.line, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 11, fontSize: 14, color: colors.ink, backgroundColor: colors.cream },
+  searchInput: { flex: 1, borderWidth: 1, borderColor: colors.line, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 11, fontSize: 13, color: colors.ink, backgroundColor: colors.cream },
   searchBtn: { backgroundColor: colors.brand, borderRadius: 12, paddingHorizontal: 16, alignItems: 'center', justifyContent: 'center' },
   resultCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.slateBg, borderRadius: 12, padding: 12 },
-  resultName: { fontSize: 14, fontWeight: '700', color: colors.ink },
-  resultSub: { fontSize: 12, color: colors.muted2 },
+  resultName: { fontSize: 13, fontWeight: '700', color: colors.ink },
+  resultSub: { fontSize: 11, color: colors.muted2 },
   requestBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, borderWidth: 1, borderColor: colors.brand, backgroundColor: colors.brandTint },
-  requestBtnText: { fontSize: 13, fontWeight: '700', color: colors.brand },
+  requestBtnText: { fontSize: 12, fontWeight: '700', color: colors.brand },
   empty: { alignItems: 'center', paddingVertical: 60, gap: 12 },
-  emptyText: { fontSize: 15, color: colors.muted },
+  emptyText: { fontSize: 14, color: colors.muted },
   empCard: { backgroundColor: colors.white, borderRadius: 14, borderWidth: 1, borderColor: colors.line, overflow: 'hidden' },
   empRow: { flexDirection: 'row', alignItems: 'center', padding: 14, gap: 12 },
   empAvatar: { width: 40, height: 40, borderRadius: 999, backgroundColor: colors.brand, alignItems: 'center', justifyContent: 'center' },
-  empAvatarText: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
-  empName: { fontSize: 14, fontWeight: '700', color: colors.ink },
-  empSub: { fontSize: 12, color: colors.muted2 },
+  empAvatarText: { color: '#fff', fontWeight: 'bold', fontSize: 15 },
+  empName: { fontSize: 13, fontWeight: '700', color: colors.ink },
+  empSub: { fontSize: 11, color: colors.muted2 },
   statusBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
   historyBox: { borderTopWidth: 1, borderTopColor: colors.line, padding: 12, gap: 8 },
   historyItem: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
-  historyTitle: { fontSize: 13, fontWeight: '600', color: colors.ink },
-  historyDesc: { fontSize: 12, color: colors.muted2 },
-  historyEmpty: { fontSize: 12, color: colors.muted, textAlign: 'center', paddingVertical: 8 },
+  historyTitle: { fontSize: 12, fontWeight: '600', color: colors.ink },
+  historyDesc: { fontSize: 11, color: colors.muted2 },
+  historyEmpty: { fontSize: 11, color: colors.muted, textAlign: 'center', paddingVertical: 8 },
 });

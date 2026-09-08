@@ -161,7 +161,7 @@ export default function ShareActions({ project, onClose }: Props) {
                   </Pressable>
                 </View>
               ) : (
-                <Text style={{ fontSize: 13, color: colors.muted, textAlign: 'center', paddingVertical: 12 }}>
+                <Text style={{ fontSize: 12, color: colors.muted, textAlign: 'center', paddingVertical: 12 }}>
                   Could not generate QR
                 </Text>
               )}
@@ -252,8 +252,8 @@ const s = StyleSheet.create({
     paddingHorizontal: 20, paddingVertical: 12,
     borderBottomWidth: 1, borderBottomColor: colors.line,
   },
-  title: { fontSize: 17, fontWeight: '800', color: colors.ink },
-  subtitle: { fontSize: 12, color: colors.muted2, marginTop: 2 },
+  title: { fontSize: 16, fontWeight: '800', color: colors.ink },
+  subtitle: { fontSize: 11, color: colors.muted2, marginTop: 2 },
   closeBtn: {
     padding: 7, borderRadius: 8, backgroundColor: colors.slateBg,
   },
@@ -270,14 +270,14 @@ const s = StyleSheet.create({
     padding: 14,
     backgroundColor: colors.white,
   },
-  qrToggleText: { flex: 1, fontSize: 14, fontWeight: '700', color: colors.ink },
-  qrToggleChevron: { fontSize: 11, color: colors.muted },
+  qrToggleText: { flex: 1, fontSize: 13, fontWeight: '700', color: colors.ink },
+  qrToggleChevron: { fontSize: 10, color: colors.muted },
   qrBox: {
     borderTopWidth: 1, borderTopColor: colors.line,
     backgroundColor: colors.cream,
   },
   qrLoading: { alignItems: 'center', justifyContent: 'center', paddingVertical: 24, gap: 8 },
-  qrLoadingText: { fontSize: 12, color: colors.muted },
+  qrLoadingText: { fontSize: 11, color: colors.muted },
   qrContent: { alignItems: 'center', paddingVertical: 20, gap: 12 },
   qrCodeWrap: {
     padding: 14, borderRadius: 16,
@@ -288,7 +288,7 @@ const s = StyleSheet.create({
     shadowOffset: { width: 0, height: 3 }, elevation: 2,
   },
   qrUrl: {
-    fontSize: 11, color: colors.muted2,
+    fontSize: 10, color: colors.muted2,
     textAlign: 'center', paddingHorizontal: 24,
     lineHeight: 16,
   },
@@ -299,7 +299,7 @@ const s = StyleSheet.create({
     backgroundColor: colors.brandTint,
     borderWidth: 1, borderColor: colors.brand,
   },
-  openLinkText: { fontSize: 12, fontWeight: '700', color: colors.brand },
+  openLinkText: { fontSize: 11, fontWeight: '700', color: colors.brand },
 
   // Actions
   actions: { paddingHorizontal: 16, paddingTop: 14 },
@@ -312,6 +312,6 @@ const s = StyleSheet.create({
     width: 44, height: 44, borderRadius: 13,
     alignItems: 'center', justifyContent: 'center',
   },
-  actionLabel: { fontSize: 15, fontWeight: '700', color: colors.ink },
-  actionSub: { fontSize: 12, color: colors.muted2, marginTop: 2 },
+  actionLabel: { fontSize: 14, fontWeight: '700', color: colors.ink },
+  actionSub: { fontSize: 11, color: colors.muted2, marginTop: 2 },
 });

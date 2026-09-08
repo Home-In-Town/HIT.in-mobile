@@ -51,13 +51,13 @@ const s = StyleSheet.create({
     elevation: 2,
   },
   title: {
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: '700',
     color: colors.ink,
     textAlign: 'center',
   },
   subtitle: {
-    fontSize: 13,
+    fontSize: 12,
     color: colors.muted,
     textAlign: 'center',
     lineHeight: 19,
@@ -73,6 +73,6 @@ const s = StyleSheet.create({
   btnText: {
     color: '#fff',
     fontWeight: '700',
-    fontSize: 14,
+    fontSize: 13,
   },
 });

@@ -48,7 +48,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           }}
         >
           <View style={{ backgroundColor: bg, paddingHorizontal: 20, paddingVertical: 12, borderRadius: 999, maxWidth: '90%' }}>
-            <Text style={{ color: '#fff', fontWeight: '700', fontSize: 13, textAlign: 'center' }}>
+            <Text style={{ color: '#fff', fontWeight: '700', fontSize: 12, textAlign: 'center' }}>
               {toast.message}
             </Text>
           </View>

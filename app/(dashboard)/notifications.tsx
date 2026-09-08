@@ -191,15 +191,15 @@ export default function NotificationsScreen() {
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.cream },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 14, backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.line },
-  title: { fontSize: 22, fontWeight: '800', color: colors.ink },
-  sub: { fontSize: 12, color: colors.muted, marginTop: 1 },
+  title: { fontSize: 21, fontWeight: '800', color: colors.ink },
+  sub: { fontSize: 11, color: colors.muted, marginTop: 1 },
   markAllBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, borderWidth: 1, borderColor: colors.line },
-  markAllText: { fontSize: 12, fontWeight: '700' },
+  markAllText: { fontSize: 11, fontWeight: '700' },
 
   // Date group
   groupHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingVertical: 12 },
   groupLine: { flex: 1, height: 1, backgroundColor: colors.line },
-  groupLabel: { fontSize: 11, fontWeight: '700', color: colors.muted2, textTransform: 'uppercase', letterSpacing: 0.6 },
+  groupLabel: { fontSize: 10, fontWeight: '700', color: colors.muted2, textTransform: 'uppercase', letterSpacing: 0.6 },
   groupItems: { paddingHorizontal: 16, gap: 8 },
 
   // Card
@@ -208,9 +208,9 @@ const s = StyleSheet.create({
   iconBox: { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
   cardTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 3 },
   typePill: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6 },
-  typeText: { fontSize: 10, fontWeight: '700' },
-  timeText: { fontSize: 10, color: colors.muted },
-  cardTitle: { fontSize: 13, fontWeight: '600', color: colors.ink },
-  cardMsg: { fontSize: 12, color: colors.muted2, marginTop: 2, lineHeight: 17 },
+  typeText: { fontSize: 9, fontWeight: '700' },
+  timeText: { fontSize: 9, color: colors.muted },
+  cardTitle: { fontSize: 12, fontWeight: '600', color: colors.ink },
+  cardMsg: { fontSize: 11, color: colors.muted2, marginTop: 2, lineHeight: 17 },
   unreadDot: { width: 8, height: 8, borderRadius: 4, marginTop: 4, flexShrink: 0 },
 });

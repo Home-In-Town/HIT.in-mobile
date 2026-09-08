@@ -144,10 +144,10 @@ export default function ChatEmbedded() {
             const isMe = msg.sender.id === user?.id;
             return (
               <View style={[{ flexDirection: 'row' }, isMe ? { justifyContent: 'flex-end' } : {}]}>
-                {!isMe && <View style={[s.avatar, { width: 26, height: 26, marginRight: 6 }]}><Text style={[s.avatarText, { fontSize: 10 }]}>{initial(msg.sender.name)}</Text></View>}
+                {!isMe && <View style={[s.avatar, { width: 26, height: 26, marginRight: 6 }]}><Text style={[s.avatarText, { fontSize: 9 }]}>{initial(msg.sender.name)}</Text></View>}
                 <View style={[{ maxWidth: '72%', padding: 10, borderRadius: 16 }, isMe ? { backgroundColor: colors.brand } : { backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line }]}>
-                  <Text style={{ fontSize: 14, color: isMe ? '#fff' : colors.ink }}>{msg.content}</Text>
-                  <Text style={{ fontSize: 9, color: isMe ? 'rgba(255,255,255,0.6)' : colors.muted, marginTop: 2, textAlign: isMe ? 'right' : 'left' }}>{timeStr(msg.createdAt)}</Text>
+                  <Text style={{ fontSize: 13, color: isMe ? '#fff' : colors.ink }}>{msg.content}</Text>
+                  <Text style={{ fontSize: 8, color: isMe ? 'rgba(255,255,255,0.6)' : colors.muted, marginTop: 2, textAlign: isMe ? 'right' : 'left' }}>{timeStr(msg.createdAt)}</Text>
                 </View>
               </View>
             );
@@ -156,7 +156,7 @@ export default function ChatEmbedded() {
       )}
       <View style={{ flexDirection: 'row', gap: 8, padding: 12, backgroundColor: colors.white, borderTopWidth: 1, borderTopColor: colors.line }}>
         <TextInput value={text} onChangeText={setText} placeholder="Message..." placeholderTextColor={colors.muted}
-          style={{ flex: 1, borderWidth: 1, borderColor: colors.line, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 9, fontSize: 14, color: colors.ink, backgroundColor: colors.cream }}
+          style={{ flex: 1, borderWidth: 1, borderColor: colors.line, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 9, fontSize: 13, color: colors.ink, backgroundColor: colors.cream }}
           multiline onSubmitEditing={send} />
         <Pressable onPress={send} disabled={!text.trim()} style={[{ width: 38, height: 38, borderRadius: 19, backgroundColor: colors.brand, alignItems: 'center', justifyContent: 'center', alignSelf: 'flex-end' }, !text.trim() && { opacity: 0.4 }]}>
           <Send size={16} color="#fff" />
@@ -168,14 +168,14 @@ export default function ChatEmbedded() {
 
 const s = StyleSheet.create({
   empty: { alignItems: 'center', paddingVertical: 40, gap: 8 },
-  emptyText: { fontSize: 14, color: colors.muted },
+  emptyText: { fontSize: 13, color: colors.muted },
   sessionRow: { flexDirection: 'row', alignItems: 'center', padding: 12, gap: 10, backgroundColor: colors.white },
   avatar: { width: 38, height: 38, borderRadius: 19, backgroundColor: colors.brand, alignItems: 'center', justifyContent: 'center' },
-  avatarText: { color: '#fff', fontWeight: 'bold', fontSize: 14 },
-  name: { fontSize: 14, fontWeight: '700', color: colors.ink, flex: 1 },
-  time: { fontSize: 11, color: colors.muted },
-  lastMsg: { fontSize: 12, color: colors.muted2, marginTop: 2 },
+  avatarText: { color: '#fff', fontWeight: 'bold', fontSize: 13 },
+  name: { fontSize: 13, fontWeight: '700', color: colors.ink, flex: 1 },
+  time: { fontSize: 10, color: colors.muted },
+  lastMsg: { fontSize: 11, color: colors.muted2, marginTop: 2 },
   badge: { minWidth: 18, height: 18, borderRadius: 9, backgroundColor: colors.brand, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4 },
-  badgeText: { fontSize: 10, fontWeight: '700', color: '#fff' },
+  badgeText: { fontSize: 9, fontWeight: '700', color: '#fff' },
   threadHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, paddingVertical: 10, backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.line },
 });

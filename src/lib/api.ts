@@ -876,9 +876,9 @@ export interface GroupRoom {
   id: string;
   name: string;
   roomType: 'project' | 'area' | 'universal';
-  project?: { id: string; projectName: string; city?: string; slug?: string; pricing?: { startingPrice?: number }; media?: { coverImage?: { url: string } } };
+  project?: { id: string; projectName: string; city?: string; slug?: string; pricing?: { startingPrice?: number }; media?: { coverImage?: { url: string } }; owner?: { name?: string; companyName?: string } };
   area?: { city: string; location: string };
-  members: Array<{ user: { id: string; name: string; role: string }; role: string }>;
+  members: Array<{ user: { id: string; name: string; role: string; companyName?: string }; role: string }>;
   description: string;
   isUniversal?: boolean;
   canLeave?: boolean;
@@ -902,10 +902,14 @@ function transformGroupRoom(raw: any): GroupRoom {
     id: String(raw?._id || raw?.id || ''),
     name: raw?.name || '',
     roomType: raw?.roomType || 'area',
-    project: raw?.project ? { ...raw.project, id: String(raw.project._id || raw.project.id || '') } : undefined,
+    project: raw?.project ? {
+      ...raw.project,
+      id: String(raw.project._id || raw.project.id || ''),
+      owner: raw.project.owner ? { name: raw.project.owner.name, companyName: raw.project.owner.companyName } : undefined,
+    } : undefined,
     area: raw?.area,
     members: (raw?.members || []).map((m: any) => ({
-      user: { id: String(m?.user?._id || m?.user?.id || ''), name: m?.user?.name || '', role: m?.user?.role || '' },
+      user: { id: String(m?.user?._id || m?.user?.id || ''), name: m?.user?.name || '', role: m?.user?.role || '', companyName: m?.user?.companyName || '' },
       role: m?.role || 'member',
     })),
     description: raw?.description || '',

@@ -117,7 +117,7 @@ export default function CrmLeadDrawer({ leadId, onClose }: Props) {
           <View style={s.center}><ActivityIndicator color={colors.brand} size="large" /></View>
         ) : !lead ? (
           <View style={s.center}>
-            <Text style={{ color: colors.muted, fontSize: 14 }}>Failed to load lead details.</Text>
+            <Text style={{ color: colors.muted, fontSize: 13 }}>Failed to load lead details.</Text>
           </View>
         ) : (
           <ScrollView contentContainerStyle={{ padding: 16, gap: 14, paddingBottom: 40 }}>
@@ -230,7 +230,7 @@ export default function CrmLeadDrawer({ leadId, onClose }: Props) {
                 ))}
 
                 {(!journey.timeline?.length && !journey.stages?.length) && (
-                  <Text style={{ color: colors.muted, fontSize: 13, textAlign: 'center', paddingVertical: 12 }}>
+                  <Text style={{ color: colors.muted, fontSize: 12, textAlign: 'center', paddingVertical: 12 }}>
                     No journey entries yet
                   </Text>
                 )}
@@ -272,26 +272,26 @@ const s = StyleSheet.create({
     padding: 16, backgroundColor: colors.white,
     borderBottomWidth: 1, borderBottomColor: colors.line,
   },
-  headerTitle: { fontSize: 18, fontWeight: 'bold', color: colors.ink, flex: 1, marginRight: 12 },
+  headerTitle: { fontSize: 17, fontWeight: 'bold', color: colors.ink, flex: 1, marginRight: 12 },
   closeBtn: { padding: 6, borderRadius: 8, backgroundColor: colors.slateBg },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   card: { backgroundColor: colors.white, borderRadius: 16, borderWidth: 1, borderColor: colors.line, padding: 16, gap: 10 },
   cardTopRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
-  leadName: { fontSize: 18, fontWeight: 'bold', color: colors.ink },
-  leadSub: { fontSize: 12, color: colors.muted2, marginTop: 2 },
+  leadName: { fontSize: 17, fontWeight: 'bold', color: colors.ink },
+  leadSub: { fontSize: 11, color: colors.muted2, marginTop: 2 },
   statusBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
-  statusText: { fontSize: 12, fontWeight: '700' },
+  statusText: { fontSize: 11, fontWeight: '700' },
   ctaRow: { flexDirection: 'row', gap: 10 },
   ctaBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 10, borderRadius: 10, borderWidth: 1 },
-  ctaBtnText: { fontSize: 13, fontWeight: '700' },
-  cardTitle: { fontSize: 15, fontWeight: '700', color: colors.ink },
+  ctaBtnText: { fontSize: 12, fontWeight: '700' },
+  cardTitle: { fontSize: 14, fontWeight: '700', color: colors.ink },
   scoreRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  scoreNum: { fontSize: 16, fontWeight: 'bold', color: colors.ink, minWidth: 40, textAlign: 'right' },
+  scoreNum: { fontSize: 15, fontWeight: 'bold', color: colors.ink, minWidth: 40, textAlign: 'right' },
   scoreBreakdown: { gap: 8 },
   breakdownItem: { gap: 3 },
-  breakdownLabel: { fontSize: 11, color: colors.muted2, fontWeight: '600' },
+  breakdownLabel: { fontSize: 10, color: colors.muted2, fontWeight: '600' },
   breakdownBarRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  breakdownVal: { fontSize: 11, fontWeight: '600', color: colors.ink, minWidth: 20 },
+  breakdownVal: { fontSize: 10, fontWeight: '600', color: colors.ink, minWidth: 20 },
   stagePipeline: { flexDirection: 'row', gap: 6, paddingBottom: 4 },
   stageBtn: {
     paddingHorizontal: 10, paddingVertical: 7, borderRadius: 8,
@@ -299,15 +299,15 @@ const s = StyleSheet.create({
   },
   stageBtnActive: { backgroundColor: colors.brand, borderColor: colors.brand },
   stageBtnPast: { backgroundColor: colors.greenBg, borderColor: colors.greenBorder },
-  stageBtnText: { fontSize: 11, fontWeight: '600', color: colors.slateText },
+  stageBtnText: { fontSize: 10, fontWeight: '600', color: colors.slateText },
   stageBtnTextActive: { color: '#fff' },
   timelineEntry: { flexDirection: 'row', gap: 10, paddingLeft: 6 },
   timelineDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.brand, marginTop: 5 },
-  timelineStage: { fontSize: 13, fontWeight: '700', color: colors.ink },
-  timelineNotes: { fontSize: 12, color: colors.muted2, marginTop: 2 },
-  timelineDate: { fontSize: 11, color: colors.muted, marginTop: 2 },
+  timelineStage: { fontSize: 12, fontWeight: '700', color: colors.ink },
+  timelineNotes: { fontSize: 11, color: colors.muted2, marginTop: 2 },
+  timelineDate: { fontSize: 10, color: colors.muted, marginTop: 2 },
   activityRow: { flexDirection: 'row', gap: 14 },
   activityItem: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  activityLabel: { fontSize: 11, color: colors.muted, fontWeight: '600' },
-  activityValue: { fontSize: 12, fontWeight: '700', color: colors.ink },
+  activityLabel: { fontSize: 10, color: colors.muted, fontWeight: '600' },
+  activityValue: { fontSize: 11, fontWeight: '700', color: colors.ink },
 });

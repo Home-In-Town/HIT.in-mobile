@@ -135,7 +135,7 @@ export default function FieldScreen() {
 function FieldInput({ label, value, onChange, placeholder, multiline }: { label: string; value: string; onChange: (v: string) => void; placeholder?: string; multiline?: boolean }) {
   return (
     <View style={{ gap: 4, marginTop: 6 }}>
-      <Text style={{ fontSize: 12, fontWeight: '600', color: colors.muted2 }}>{label}</Text>
+      <Text style={{ fontSize: 11, fontWeight: '600', color: colors.muted2 }}>{label}</Text>
       <TextInput
         value={value}
         onChangeText={onChange}
@@ -148,21 +148,21 @@ function FieldInput({ label, value, onChange, placeholder, multiline }: { label:
   );
 }
 
-const fi = StyleSheet.create({ input: { borderWidth: 1, borderColor: colors.line, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 11, fontSize: 14, color: colors.ink, backgroundColor: colors.cream } });
+const fi = StyleSheet.create({ input: { borderWidth: 1, borderColor: colors.line, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 11, fontSize: 13, color: colors.ink, backgroundColor: colors.cream } });
 
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.cream },
   header: { paddingHorizontal: 16, paddingVertical: 14, backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.line },
-  title: { fontSize: 22, fontWeight: 'bold', color: colors.ink },
-  sub: { fontSize: 13, color: colors.muted, marginTop: 2 },
+  title: { fontSize: 21, fontWeight: 'bold', color: colors.ink },
+  sub: { fontSize: 12, color: colors.muted, marginTop: 2 },
   card: { backgroundColor: colors.white, borderRadius: 16, borderWidth: 1, borderColor: colors.line, padding: 16, gap: 12 },
   cardTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  cardTitle: { fontSize: 15, fontWeight: '700', color: colors.ink },
+  cardTitle: { fontSize: 14, fontWeight: '700', color: colors.ink },
   placeRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, backgroundColor: colors.greenBg, borderRadius: 10, padding: 10 },
-  placeText: { flex: 1, fontSize: 13, color: colors.greenText, fontWeight: '600' },
+  placeText: { flex: 1, fontSize: 12, color: colors.greenText, fontWeight: '600' },
   checkinBtn: { backgroundColor: colors.brand, paddingVertical: 14, borderRadius: 12, alignItems: 'center' },
   checkinBtnActive: { backgroundColor: colors.green },
-  checkinBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
+  checkinBtnText: { color: '#fff', fontWeight: '700', fontSize: 13 },
   logBtn: { backgroundColor: colors.brand, paddingVertical: 14, borderRadius: 12, alignItems: 'center', marginTop: 4 },
-  logBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
+  logBtnText: { color: '#fff', fontWeight: '700', fontSize: 13 },
 });

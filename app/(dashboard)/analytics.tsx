@@ -79,8 +79,8 @@ function StatCard({
 const sc = StyleSheet.create({
   card: { width: '22%', borderRadius: 12, borderWidth: 1, padding: 10, alignItems: 'center', gap: 4 },
   iconBox: { width: 30, height: 30, borderRadius: 9, alignItems: 'center', justifyContent: 'center', marginBottom: 2 },
-  value: { fontSize: 18, fontWeight: '800' },
-  label: { fontSize: 9, color: colors.muted, fontWeight: '600', textAlign: 'center' },
+  value: { fontSize: 17, fontWeight: '800' },
+  label: { fontSize: 8, color: colors.muted, fontWeight: '600', textAlign: 'center' },
 });
 
 export default function AnalyticsScreen() {
@@ -221,19 +221,19 @@ export default function AnalyticsScreen() {
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.cream },
   header: { paddingHorizontal: 16, paddingVertical: 14, backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.line },
-  title: { fontSize: 22, fontWeight: '800', color: colors.ink },
-  sub: { fontSize: 12, color: colors.muted, marginTop: 1 },
+  title: { fontSize: 21, fontWeight: '800', color: colors.ink },
+  sub: { fontSize: 11, color: colors.muted, marginTop: 1 },
   statsRow: { flexDirection: 'row', gap: 8, justifyContent: 'space-between' },
   chartCard: { backgroundColor: colors.white, borderRadius: 16, borderWidth: 1, borderColor: colors.line, padding: 16, gap: 4 },
   chartHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 },
-  chartTitle: { fontSize: 14, fontWeight: '700', color: colors.ink },
+  chartTitle: { fontSize: 13, fontWeight: '700', color: colors.ink },
   tableCard: { backgroundColor: colors.white, borderRadius: 16, borderWidth: 1, borderColor: colors.line, padding: 16, gap: 0 },
-  tableTitle: { fontSize: 15, fontWeight: '700', color: colors.ink, marginBottom: 10 },
+  tableTitle: { fontSize: 14, fontWeight: '700', color: colors.ink, marginBottom: 10 },
   tableRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 11, borderBottomWidth: 1, borderBottomColor: colors.line },
   tableRowActive: { backgroundColor: colors.brandTint, borderRadius: 8, paddingHorizontal: 6, marginHorizontal: -6 },
-  rowName: { fontSize: 13, fontWeight: '600', color: colors.ink },
-  rowCity: { fontSize: 11, color: colors.muted, marginTop: 1 },
+  rowName: { fontSize: 12, fontWeight: '600', color: colors.ink },
+  rowCity: { fontSize: 10, color: colors.muted, marginTop: 1 },
   rowStats: { flexDirection: 'row', gap: 12 },
   rowStat: { flexDirection: 'row', alignItems: 'center', gap: 3 },
-  rowStatNum: { fontSize: 13, fontWeight: '700', color: colors.ink },
+  rowStatNum: { fontSize: 12, fontWeight: '700', color: colors.ink },
 });

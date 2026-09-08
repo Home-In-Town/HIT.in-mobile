@@ -177,7 +177,7 @@ export default function AiAssistant({ onViewLeads }: { onViewLeads?: () => void 
   if (loading) {
     return (
       <View style={s.center}>
-        <View style={s.botBubble}><Text style={{ fontSize: 26 }}>🤖</Text></View>
+        <View style={s.botBubble}><Text style={{ fontSize: 25 }}>🤖</Text></View>
         <ActivityIndicator color={colors.brand} style={{ marginTop: 14 }} />
         <Text style={s.loadingText}>Assistant load ho raha hai…</Text>
       </View>
@@ -222,7 +222,7 @@ export default function AiAssistant({ onViewLeads }: { onViewLeads?: () => void 
 
           return (
             <View key={msg._id} style={[mb.row, isSystem ? mb.rowThem : mb.rowMe]}>
-              {isSystem && <View style={mb.avatar}><Text style={{ fontSize: 15 }}>🤖</Text></View>}
+              {isSystem && <View style={mb.avatar}><Text style={{ fontSize: 14 }}>🤖</Text></View>}
               <View style={[mb.bubble, isSystem ? mb.bubbleThem : mb.bubbleMe]}>
                 <Text style={[mb.text, isSystem ? mb.textThem : mb.textMe]}>{msg.content}</Text>
                 <Text style={[mb.time, isSystem ? mb.timeThem : mb.timeMe]}>{fmtTime(msg.createdAt)}</Text>
@@ -233,7 +233,7 @@ export default function AiAssistant({ onViewLeads }: { onViewLeads?: () => void 
 
         {typing && (
           <View style={[mb.row, mb.rowThem]}>
-            <View style={mb.avatar}><Text style={{ fontSize: 15 }}>🤖</Text></View>
+            <View style={mb.avatar}><Text style={{ fontSize: 14 }}>🤖</Text></View>
             <View style={[mb.bubble, mb.bubbleThem, { flexDirection: 'row', gap: 5, paddingVertical: 14 }]}>
               <TypingDot delay={0} /><TypingDot delay={150} /><TypingDot delay={300} />
             </View>
@@ -488,7 +488,7 @@ function SummaryBubble({ msg, onEdit, onConfirm, sending }: {
   const values: { slotId: string; label: string; display: string }[] = msg.template?.options?.values || [];
   return (
     <View style={[mb.row, mb.rowThem]}>
-      <View style={mb.avatar}><Text style={{ fontSize: 15 }}>🤖</Text></View>
+      <View style={mb.avatar}><Text style={{ fontSize: 14 }}>🤖</Text></View>
       <View style={sm.card}>
         <View style={sm.head}>
           <CheckCircle2 size={18} color="#fff" />
@@ -531,10 +531,10 @@ function ResultsBubble({ msg }: { msg: Msg }) {
   const hasMatches = matches.length > 0;
   return (
     <View style={[mb.row, mb.rowThem]}>
-      <View style={mb.avatar}><Text style={{ fontSize: 15 }}>🤖</Text></View>
+      <View style={mb.avatar}><Text style={{ fontSize: 14 }}>🤖</Text></View>
       <View style={{ flex: 1, gap: 8 }}>
         <View style={[rs.headCard, hasMatches && rs.headCardMatch]}>
-          <Text style={{ fontSize: 17 }}>{hasMatches ? '🎯' : '⏳'}</Text>
+          <Text style={{ fontSize: 16 }}>{hasMatches ? '🎯' : '⏳'}</Text>
           <Text style={rs.headText}>{msg.content}</Text>
         </View>
         {matches.map((m) => (
@@ -573,7 +573,7 @@ function ActionsBubble({ msg, onNewLead, onViewLeads, disabled }: {
   };
   return (
     <View style={[mb.row, mb.rowThem]}>
-      <View style={mb.avatar}><Text style={{ fontSize: 15 }}>🤖</Text></View>
+      <View style={mb.avatar}><Text style={{ fontSize: 14 }}>🤖</Text></View>
       <View style={ab.card}>
         {msg.content ? <Text style={ab.text}>{msg.content}</Text> : null}
         <View style={ab.actions}>
@@ -596,11 +596,11 @@ function ActionsBubble({ msg, onNewLead, onViewLeads, disabled }: {
 const s = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.cream },
   botBubble: { width: 60, height: 60, borderRadius: 18, backgroundColor: colors.brandTint, alignItems: 'center', justifyContent: 'center' },
-  loadingText: { marginTop: 10, fontSize: 13, color: colors.muted2 },
+  loadingText: { marginTop: 10, fontSize: 12, color: colors.muted2 },
   progressWrap: { paddingHorizontal: 16, paddingVertical: 10, backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.line },
   progressRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
-  progressLabel: { fontSize: 10, fontWeight: '800', color: colors.muted, letterSpacing: 0.5, textTransform: 'uppercase' },
-  progressPct: { fontSize: 11, fontWeight: '800', color: colors.brand },
+  progressLabel: { fontSize: 9, fontWeight: '800', color: colors.muted, letterSpacing: 0.5, textTransform: 'uppercase' },
+  progressPct: { fontSize: 10, fontWeight: '800', color: colors.brand },
   progressTrack: { height: 6, borderRadius: 3, backgroundColor: colors.line, overflow: 'hidden' },
   progressFill: { height: '100%', borderRadius: 3, backgroundColor: colors.brand },
 });
@@ -613,10 +613,10 @@ const mb = StyleSheet.create({
   bubble: { maxWidth: '78%', paddingHorizontal: 13, paddingVertical: 9, borderRadius: 18, gap: 2 },
   bubbleMe: { backgroundColor: colors.brand, borderBottomRightRadius: 5 },
   bubbleThem: { backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line, borderBottomLeftRadius: 5 },
-  text: { fontSize: 14.5, lineHeight: 21 },
+  text: { fontSize: 13.5, lineHeight: 21 },
   textMe: { color: '#fff' },
   textThem: { color: colors.ink },
-  time: { fontSize: 10 },
+  time: { fontSize: 9 },
   timeMe: { color: 'rgba(255,255,255,0.7)', textAlign: 'right' },
   timeThem: { color: colors.muted, textAlign: 'right' },
   dot: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.muted },
@@ -627,64 +627,64 @@ const ac = StyleSheet.create({
   chipsWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   chip: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: 22, borderWidth: 1, borderColor: `${colors.brand}44`, backgroundColor: colors.white },
   chipOn: { backgroundColor: colors.brand, borderColor: colors.brand },
-  chipText: { fontSize: 13.5, fontWeight: '700', color: colors.brand },
+  chipText: { fontSize: 12.5, fontWeight: '700', color: colors.brand },
   chipTextOn: { color: '#fff' },
   intentCard: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 14, paddingVertical: 14, borderRadius: 16, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.white },
-  intentIcon: { fontSize: 24 },
-  intentLabel: { fontSize: 15, fontWeight: '800', color: colors.ink },
-  intentSub: { fontSize: 11.5, color: colors.muted2, marginTop: 1 },
+  intentIcon: { fontSize: 23 },
+  intentLabel: { fontSize: 14, fontWeight: '800', color: colors.ink },
+  intentSub: { fontSize: 10.5, color: colors.muted2, marginTop: 1 },
   customRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   inputRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   inputWrap: { flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: colors.cream, borderWidth: 1, borderColor: colors.line, borderRadius: 22, paddingHorizontal: 14 },
-  input: { flex: 1, paddingVertical: 10, fontSize: 14.5, color: colors.ink },
-  prefix: { fontSize: 14.5, fontWeight: '700', color: colors.muted2, marginRight: 2 },
+  input: { flex: 1, paddingVertical: 10, fontSize: 13.5, color: colors.ink },
+  prefix: { fontSize: 13.5, fontWeight: '700', color: colors.muted2, marginRight: 2 },
   unitRow: { flexDirection: 'row', gap: 4, marginLeft: 6 },
   unitBtn: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 14, backgroundColor: colors.line },
   unitBtnOn: { backgroundColor: colors.brand },
-  unitText: { fontSize: 11.5, fontWeight: '800', color: colors.muted2 },
+  unitText: { fontSize: 10.5, fontWeight: '800', color: colors.muted2 },
   unitTextOn: { color: '#fff' },
   sendBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.brand, alignItems: 'center', justifyContent: 'center' },
   addBtn: { width: 44, height: 44, borderRadius: 12, backgroundColor: colors.brand, alignItems: 'center', justifyContent: 'center' },
   skipBtn: { alignSelf: 'flex-start', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 16, backgroundColor: colors.cream, borderWidth: 1, borderColor: colors.line },
-  skipText: { fontSize: 12.5, fontWeight: '700', color: colors.muted2 },
+  skipText: { fontSize: 11.5, fontWeight: '700', color: colors.muted2 },
   mcActions: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
   doneBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: colors.brand, paddingHorizontal: 18, paddingVertical: 11, borderRadius: 14 },
-  doneText: { fontSize: 13.5, fontWeight: '800', color: '#fff' },
-  hint: { fontSize: 11, color: colors.muted2, marginLeft: 6 },
+  doneText: { fontSize: 12.5, fontWeight: '800', color: '#fff' },
+  hint: { fontSize: 10, color: colors.muted2, marginLeft: 6 },
 });
 
 const sm = StyleSheet.create({
   card: { flex: 1, backgroundColor: colors.white, borderRadius: 18, borderWidth: 1, borderColor: colors.line, overflow: 'hidden' },
   head: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: colors.night, paddingHorizontal: 14, paddingVertical: 12 },
-  headTitle: { fontSize: 14, fontWeight: '800', color: '#fff' },
-  headSub: { fontSize: 10.5, color: 'rgba(255,255,255,0.6)', marginTop: 1 },
+  headTitle: { fontSize: 13, fontWeight: '800', color: '#fff' },
+  headSub: { fontSize: 9.5, color: 'rgba(255,255,255,0.6)', marginTop: 1 },
   valueRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.line },
-  valueLabel: { fontSize: 10, fontWeight: '700', color: colors.muted, textTransform: 'uppercase', letterSpacing: 0.5 },
-  valueDisplay: { fontSize: 14, fontWeight: '700', color: colors.ink, marginTop: 2 },
+  valueLabel: { fontSize: 9, fontWeight: '700', color: colors.muted, textTransform: 'uppercase', letterSpacing: 0.5 },
+  valueDisplay: { fontSize: 13, fontWeight: '700', color: colors.ink, marginTop: 2 },
   editBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 14 },
-  editText: { fontSize: 12, fontWeight: '700', color: colors.brand },
+  editText: { fontSize: 11, fontWeight: '700', color: colors.brand },
   confirmBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: colors.brand, margin: 12, paddingVertical: 13, borderRadius: 14 },
-  confirmText: { fontSize: 14.5, fontWeight: '800', color: '#fff' },
+  confirmText: { fontSize: 13.5, fontWeight: '800', color: '#fff' },
 });
 
 const rs = StyleSheet.create({
   headCard: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line, borderRadius: 16, paddingHorizontal: 14, paddingVertical: 11 },
   headCardMatch: { backgroundColor: colors.greenBg, borderColor: colors.greenBorder },
-  headText: { flex: 1, fontSize: 14, fontWeight: '700', color: colors.ink },
+  headText: { flex: 1, fontSize: 13, fontWeight: '700', color: colors.ink },
   card: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line, borderRadius: 16, padding: 12 },
   icon: { width: 46, height: 46, borderRadius: 12, backgroundColor: colors.brandTint, alignItems: 'center', justifyContent: 'center' },
-  name: { fontSize: 14, fontWeight: '800', color: colors.ink },
-  loc: { fontSize: 11.5, color: colors.muted2, marginTop: 2 },
+  name: { fontSize: 13, fontWeight: '800', color: colors.ink },
+  loc: { fontSize: 10.5, color: colors.muted2, marginTop: 2 },
   ring: { width: 44, height: 44, borderRadius: 22, borderWidth: 3, borderColor: colors.line, alignItems: 'center', justifyContent: 'center' },
-  ringText: { fontSize: 11, fontWeight: '800' },
+  ringText: { fontSize: 10, fontWeight: '800' },
 });
 
 const ab = StyleSheet.create({
   card: { flex: 1, backgroundColor: colors.white, borderRadius: 18, borderWidth: 1, borderColor: colors.line, padding: 12, gap: 10 },
-  text: { fontSize: 13.5, color: colors.muted2 },
+  text: { fontSize: 12.5, color: colors.muted2 },
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   btn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 16, paddingVertical: 11, borderRadius: 22 },
   btnPrimary: { backgroundColor: colors.brand },
   btnGhost: { backgroundColor: colors.white, borderWidth: 1, borderColor: `${colors.brand}44` },
-  btnText: { fontSize: 13, fontWeight: '800' },
+  btnText: { fontSize: 12, fontWeight: '800' },
 });
