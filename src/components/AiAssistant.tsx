@@ -202,7 +202,7 @@ export default function AiAssistant({ onViewLeads }: { onViewLeads?: () => void 
       <ScrollView
         ref={scrollRef}
         style={{ flex: 1 }}
-        contentContainerStyle={{ padding: 14, paddingBottom: 20, gap: 10 }}
+        contentContainerStyle={{ padding: 12, paddingBottom: 16, gap: 6 }}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
@@ -241,9 +241,26 @@ export default function AiAssistant({ onViewLeads }: { onViewLeads?: () => void 
         )}
       </ScrollView>
 
-      {/* Active answer control */}
-      {showAnswerBar && activeTemplate && (
+      {/* Structured answer controls (choice chips / multichoice / number unit picker).
+          TextControl and PhoneControl are intentionally excluded here — the
+          PersistentChatBar below handles those input types directly. */}
+      {showAnswerBar && activeTemplate &&
+        !['text', 'location', 'phone'].includes(activeTemplate.inputType || '') && (
         <AnswerControl template={activeTemplate} disabled={sending} onSubmit={submit} />
+      )}
+
+      {/* ── Persistent chat input bar — only shown when AnswerControl is NOT visible,
+          i.e. for text/location/phone slots, completed flow, or no active slot.
+          This prevents two input fields appearing simultaneously. ── */}
+      {!(showAnswerBar && activeTemplate &&
+         !['text', 'location', 'phone'].includes(activeTemplate.inputType || '')) && (
+        <PersistentChatBar
+          activeTemplate={activeTemplate}
+          flowState={flowState}
+          disabled={sending || typing}
+          onSubmitSlot={submit}
+          onNewLead={newLead}
+        />
       )}
     </KeyboardAvoidingView>
   );
@@ -258,6 +275,127 @@ function TypingDot({ delay }: { delay: number }) {
     return () => { clearInterval(id); clearTimeout(t); };
   }, [delay]);
   return <View style={[mb.dot, { opacity: on ? 1 : 0.3 }]} />;
+}
+
+// ═══════════ PERSISTENT CHAT INPUT BAR ═══════════
+// Always visible at the bottom. Routes the user's text to the correct backend
+// call depending on the current flow state / active template.
+function PersistentChatBar({
+  activeTemplate, flowState, disabled, onSubmitSlot, onNewLead,
+}: {
+  activeTemplate: Template | undefined;
+  flowState: any;
+  disabled: boolean;
+  onSubmitSlot: (slotId: string, value: any, display: string) => void;
+  onNewLead: () => void;
+}) {
+  const [text, setText] = useState('');
+  const inputRef = useRef<any>(null);
+
+  const type      = activeTemplate?.inputType;
+  const slotId    = activeTemplate?.slotId || '';
+  const isCompleted = flowState?.status === 'completed';
+
+  // Derive placeholder and send semantics based on current flow state
+  const getPlaceholder = (): string => {
+    if (!activeTemplate || isCompleted) return 'Nayi requirement ke liye type karein…';
+    if (type === 'text')     return 'Type your answer…';
+    if (type === 'location') return 'e.g. Manish Nagar, Nagpur';
+    if (type === 'phone')    return '10-digit mobile number';
+    if (type === 'number')   return 'Enter amount (e.g. 50)';
+    if (type === 'choice' || type === 'multichoice') return 'Ya yahan type karein…';
+    if (type === 'summary')  return 'Details confirm karein (upar button se)';
+    if (type === 'results')  return 'Results dekh lijiye…';
+    if (type === 'actions')  return 'Kya karna chahte hain? (upar choose karein)';
+    return 'Type karein…';
+  };
+
+  // Whether the bar should be read-only / show a hint instead of accepting input
+  const isLocked = !!type && ['summary', 'results', 'actions'].includes(type);
+
+  const handleSend = () => {
+    const trimmed = text.trim();
+    if (!trimmed || isLocked) return;
+
+    // No active template (flow completed or awaiting new lead) → start a new one
+    if (!activeTemplate || isCompleted) {
+      setText('');
+      onNewLead();
+      return;
+    }
+
+    // Route by slot input type
+    if (type === 'phone') {
+      const digits = trimmed.replace(/\D/g, '').slice(0, 10);
+      if (digits.length < 10) return; // invalid length — keep text so user sees it
+      setText('');
+      onSubmitSlot(slotId, digits, digits);
+      return;
+    }
+
+    if (type === 'number') {
+      const num = trimmed.replace(/[^\d.]/g, '');
+      if (!num) return;
+      const units = activeTemplate.unit || [];
+      // Submit as the object shape the backend expects (same as NumberControl)
+      const value = units.length ? { value: num, unit: units[0] } : num;
+      const display = units.length ? `${num} ${units[0]}` : num;
+      setText('');
+      onSubmitSlot(slotId, value, display);
+      return;
+    }
+
+    // text / location / choice / multichoice → free-text answer
+    setText('');
+    onSubmitSlot(slotId, trimmed, trimmed);
+  };
+
+  return (
+    <View style={pcb.wrap}>
+      <View style={[pcb.row, isLocked && pcb.rowLocked]}>
+        <TextInput
+          ref={inputRef}
+          value={text}
+          onChangeText={setText}
+          placeholder={getPlaceholder()}
+          placeholderTextColor={colors.muted}
+          style={pcb.input}
+          editable={!isLocked && !disabled}
+          keyboardType={type === 'phone' ? 'phone-pad' : type === 'number' ? 'numeric' : 'default'}
+          returnKeyType="send"
+          onSubmitEditing={handleSend}
+          blurOnSubmit={false}
+          multiline={false}
+        />
+        {isLocked ? (
+          <View style={pcb.lockIcon}><Text style={{ fontSize: 16 }}>🔒</Text></View>
+        ) : (
+          <Pressable
+            onPress={handleSend}
+            disabled={disabled || !text.trim()}
+            style={[pcb.sendBtn, (disabled || !text.trim()) && pcb.sendBtnDim]}
+          >
+            {disabled ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Send size={18} color="#fff" />
+            )}
+          </Pressable>
+        )}
+      </View>
+      {/* Context hint line */}
+      {isLocked && (
+        <Text style={pcb.hint}>
+          {type === 'summary'  ? '⬆ Upar "Confirm & Find Matches" tap karein' :
+           type === 'results'  ? '⬆ Results dekh lijiye, phir aage choose karein' :
+                                 '⬆ Upar se apna next step choose karein'}
+        </Text>
+      )}
+      {(!activeTemplate || isCompleted) && !isLocked && (
+        <Text style={pcb.hint}>💡 Kuch bhi type karein — nayi requirement shuru hogi</Text>
+      )}
+    </View>
+  );
 }
 
 // ═══════════ ANSWER CONTROL ═══════════
@@ -292,41 +430,64 @@ function ChoiceControl({ template, disabled, onSubmit }: {
   const options: Option[] = Array.isArray(template.options) ? template.options : [];
   const isIntent = slotId === 'intent';
   const [custom, setCustom] = useState('');
+  // "Other" chip reveals a free-text field. Available on any choice slot (even if
+  // the backend didn't flag allowCustom) so users can always type their own value.
+  const [otherOpen, setOtherOpen] = useState(false);
+  const allowOther = !isIntent; // intent is a fixed set (sell/buy/rent)
+  const submitCustom = () => { if (custom.trim()) { onSubmit(slotId, custom.trim(), custom.trim()); setCustom(''); setOtherOpen(false); } };
 
   return (
     <View style={ac.bar}>
-      <ScrollView keyboardShouldPersistTaps="handled" style={{ maxHeight: 240 }} contentContainerStyle={isIntent ? { gap: 10 } : ac.chipsWrap}>
-        {options.map((opt) => {
-          const label = opt.label?.hi || opt.label?.en || String(opt.value);
-          if (isIntent) {
+      {/* Intent slot: compact horizontal chips in one row */}
+      {isIntent ? (
+        <View style={ac.intentRow}>
+          {options.map((opt) => {
+            const label = opt.label?.hi || opt.label?.en || String(opt.value);
             return (
-              <Pressable key={opt.value} disabled={disabled} onPress={() => onSubmit(slotId, opt.value, label)} style={ac.intentCard}>
-                <Text style={ac.intentIcon}>{INTENT_ICON[opt.value] || '•'}</Text>
-                <View style={{ flex: 1 }}>
-                  <Text style={ac.intentLabel}>{label}</Text>
-                  <Text style={ac.intentSub}>{opt.label?.en}</Text>
+              <Pressable
+                key={opt.value}
+                disabled={disabled}
+                onPress={() => onSubmit(slotId, opt.value, label)}
+                style={ac.intentChip}
+              >
+                <Text style={ac.intentChipIcon}>{INTENT_ICON[opt.value] || '•'}</Text>
+                <View>
+                  <Text style={ac.intentChipLabel} numberOfLines={1}>{label}</Text>
+                  <Text style={ac.intentChipSub} numberOfLines={1}>{opt.label?.en}</Text>
                 </View>
-                <ArrowRight size={18} color={colors.brand} />
               </Pressable>
             );
-          }
+          })}
+        </View>
+      ) : (
+      <ScrollView keyboardShouldPersistTaps="handled" style={{ maxHeight: 200 }} contentContainerStyle={ac.chipsWrap}>
+        {options.map((opt) => {
+          const label = opt.label?.hi || opt.label?.en || String(opt.value);
           return (
             <Pressable key={opt.value} disabled={disabled} onPress={() => onSubmit(slotId, opt.value, label)} style={ac.chip}>
               <Text style={ac.chipText}>{label}</Text>
             </Pressable>
           );
         })}
-      </ScrollView>
 
-      {template.allowCustom && (
+        {/* "Other" chip — lets the user type a value not in the list */}
+        {allowOther && (
+          <Pressable disabled={disabled} onPress={() => setOtherOpen(o => !o)} style={[ac.chip, otherOpen && ac.chipOn]}>
+            <Text style={[ac.chipText, otherOpen && ac.chipTextOn]}>Other</Text>
+          </Pressable>
+        )}
+      </ScrollView>
+      )}
+
+      {allowOther && otherOpen && (
         <View style={ac.customRow}>
           <TextInput
-            value={custom} onChangeText={setCustom}
-            placeholder="Or type your own…" placeholderTextColor={colors.muted}
+            value={custom} onChangeText={setCustom} autoFocus
+            placeholder="Type your answer…" placeholderTextColor={colors.muted}
             style={ac.input}
-            onSubmitEditing={() => { if (custom.trim()) { onSubmit(slotId, custom.trim(), custom.trim()); setCustom(''); } }}
+            onSubmitEditing={submitCustom}
           />
-          <SendBtn disabled={disabled || !custom.trim()} onPress={() => { if (custom.trim()) { onSubmit(slotId, custom.trim(), custom.trim()); setCustom(''); } }} />
+          <SendBtn disabled={disabled || !custom.trim()} onPress={submitCustom} />
         </View>
       )}
 
@@ -606,17 +767,17 @@ const s = StyleSheet.create({
 });
 
 const mb = StyleSheet.create({
-  row: { flexDirection: 'row', alignItems: 'flex-end', gap: 8 },
+  row: { flexDirection: 'row', alignItems: 'flex-end', gap: 6 },
   rowMe: { justifyContent: 'flex-end' },
   rowThem: { justifyContent: 'flex-start' },
-  avatar: { width: 30, height: 30, borderRadius: 15, backgroundColor: colors.brandTint, alignItems: 'center', justifyContent: 'center' },
-  bubble: { maxWidth: '78%', paddingHorizontal: 13, paddingVertical: 9, borderRadius: 18, gap: 2 },
-  bubbleMe: { backgroundColor: colors.brand, borderBottomRightRadius: 5 },
-  bubbleThem: { backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line, borderBottomLeftRadius: 5 },
-  text: { fontSize: 13.5, lineHeight: 21 },
+  avatar: { width: 24, height: 24, borderRadius: 12, backgroundColor: colors.brandTint, alignItems: 'center', justifyContent: 'center' },
+  bubble: { maxWidth: '80%', paddingHorizontal: 11, paddingVertical: 7, borderRadius: 14, gap: 1 },
+  bubbleMe: { backgroundColor: colors.brand, borderBottomRightRadius: 4 },
+  bubbleThem: { backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line, borderBottomLeftRadius: 4 },
+  text: { fontSize: 12.5, lineHeight: 17 },
   textMe: { color: '#fff' },
   textThem: { color: colors.ink },
-  time: { fontSize: 9 },
+  time: { fontSize: 8 },
   timeMe: { color: 'rgba(255,255,255,0.7)', textAlign: 'right' },
   timeThem: { color: colors.muted, textAlign: 'right' },
   dot: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.muted },
@@ -633,6 +794,12 @@ const ac = StyleSheet.create({
   intentIcon: { fontSize: 23 },
   intentLabel: { fontSize: 14, fontWeight: '800', color: colors.ink },
   intentSub: { fontSize: 10.5, color: colors.muted2, marginTop: 1 },
+  // compact horizontal intent chips (used instead of intentCard for the slot === 'intent' row)
+  intentRow: { flexDirection: 'row', gap: 7 },
+  intentChip: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 9, paddingVertical: 8, borderRadius: 12, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.white },
+  intentChipIcon: { fontSize: 15 },
+  intentChipLabel: { fontSize: 11, fontWeight: '800', color: colors.ink },
+  intentChipSub: { fontSize: 8.5, color: colors.muted2, marginTop: 1 },
   customRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   inputRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   inputWrap: { flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: colors.cream, borderWidth: 1, borderColor: colors.line, borderRadius: 22, paddingHorizontal: 14 },
@@ -687,4 +854,61 @@ const ab = StyleSheet.create({
   btnPrimary: { backgroundColor: colors.brand },
   btnGhost: { backgroundColor: colors.white, borderWidth: 1, borderColor: `${colors.brand}44` },
   btnText: { fontSize: 12, fontWeight: '800' },
+});
+
+// ── Persistent Chat Bar styles ──
+const pcb = StyleSheet.create({
+  wrap: {
+    backgroundColor: colors.white,
+    borderTopWidth: 1,
+    borderTopColor: colors.line,
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 10,
+    gap: 4,
+  },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: colors.cream,
+    borderWidth: 1,
+    borderColor: colors.line,
+    borderRadius: 26,
+    paddingHorizontal: 14,
+    paddingVertical: 4,
+  },
+  rowLocked: {
+    backgroundColor: '#f5f5f5',
+    borderColor: colors.line,
+    opacity: 0.75,
+  },
+  input: {
+    flex: 1,
+    fontSize: 13.5,
+    color: colors.ink,
+    paddingVertical: 9,
+    maxHeight: 44,
+  },
+  sendBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: colors.brand,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sendBtnDim: { opacity: 0.4 },
+  lockIcon: {
+    width: 38,
+    height: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  hint: {
+    fontSize: 10,
+    color: colors.muted,
+    textAlign: 'center',
+    paddingBottom: 2,
+  },
 });

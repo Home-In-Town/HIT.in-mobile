@@ -26,7 +26,7 @@ const STATUS_C: Record<string, { bg: string; text: string; dot: string }> = {
   CREATED: { bg: '#F5F5F4', text: '#57534E', dot: '#A8A29E' },
 };
 
-export default function CrmLeadsScreen() {
+export default function CrmLeadsScreen({ embedded = false }: { embedded?: boolean } = {}) {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const [mode, setMode] = useState<'ai' | 'human' | 'course'>('ai');
@@ -70,17 +70,19 @@ export default function CrmLeadsScreen() {
   ];
 
   return (
-    <View style={[s.root, { paddingTop: insets.top }]}>
-      {/* Header */}
-      <View style={s.header}>
-        <Pressable onPress={() => router.back()} hitSlop={8} style={s.backBtn}>
-          <ChevronLeft size={24} color={colors.ink} />
-        </Pressable>
-        <View>
-          <Text style={s.title}>CRM Pipeline</Text>
-          <Text style={s.sub}>Lead intelligence</Text>
+    <View style={[s.root, { paddingTop: embedded ? 0 : insets.top }]}>
+      {/* Header — hidden when embedded inside the Overview tabs */}
+      {!embedded && (
+        <View style={s.header}>
+          <Pressable onPress={() => router.back()} hitSlop={8} style={s.backBtn}>
+            <ChevronLeft size={24} color={colors.ink} />
+          </Pressable>
+          <View>
+            <Text style={s.title}>CRM Pipeline</Text>
+            <Text style={s.sub}>Lead intelligence</Text>
+          </View>
         </View>
-      </View>
+      )}
 
       {/* Mode toggle */}
       <View style={s.modeBar}>
@@ -107,11 +109,19 @@ export default function CrmLeadsScreen() {
           </View>
 
           {/* Status pills */}
-          <ScrollView horizontal showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ gap: 8, paddingHorizontal: 16, paddingBottom: 8 }}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            nestedScrollEnabled
+            style={s.pillsScroll}
+            contentContainerStyle={s.pillsContent}
+          >
             {STATUS_PILLS.map(sp => (
-              <Pressable key={sp} onPress={() => { setStatusFilter(sp); setPage(1); fetchLeads(1, search, sp); }}
-                style={[s.pill, statusFilter === sp && s.pillActive]}>
+              <Pressable
+                key={sp}
+                onPress={() => { setStatusFilter(sp); setPage(1); fetchLeads(1, search, sp); }}
+                style={[s.pill, statusFilter === sp && s.pillActive]}
+              >
                 {sp !== 'All' && <View style={[s.pillDot, { backgroundColor: STATUS_C[sp]?.dot }]} />}
                 <Text style={[s.pillText, statusFilter === sp && s.pillTextActive]}>{sp}</Text>
               </Pressable>
@@ -193,10 +203,12 @@ const s = StyleSheet.create({
   searchWrap: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 6 },
   searchRow: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10 },
   searchInput: { flex: 1, fontSize: 13, color: colors.ink },
-  pill: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 14, paddingVertical: 7, borderRadius: 20, backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line },
+  pillsScroll: { flexGrow: 0, flexShrink: 0 },
+  pillsContent: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 14, paddingVertical: 8 },
+  pill: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 20, backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line },
   pillActive: { backgroundColor: colors.brand, borderColor: colors.brand },
   pillDot: { width: 6, height: 6, borderRadius: 3 },
-  pillText: { fontSize: 11, fontWeight: '600', color: colors.muted2 },
+  pillText: { fontSize: 11, fontWeight: '700', color: colors.muted2 },
   pillTextActive: { color: '#fff' },
   leadCard: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: colors.white, borderRadius: 14, borderWidth: 1, borderColor: colors.line, padding: 12 },
   avatar: { width: 42, height: 42, borderRadius: 21, backgroundColor: colors.brand, alignItems: 'center', justifyContent: 'center' },

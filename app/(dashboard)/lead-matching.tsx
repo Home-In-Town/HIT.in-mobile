@@ -163,7 +163,7 @@ function Chip({ label }: { label: string }) {
 }
 
 // ── Main Hub ─────────────────────────────────────────────────
-export default function LeadMatchingHub() {
+export default function LeadMatchingHub({ embedded = false }: { embedded?: boolean } = {}) {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const [tab, setTab] = useState<'chats' | 'assistant' | 'groups'>('assistant');
@@ -174,28 +174,31 @@ export default function LeadMatchingHub() {
   const isAdmin = ['admin', 'builder'].includes(user?.role ?? '');
 
   const TABS: { key: 'chats' | 'assistant' | 'groups'; label: string; icon: React.ReactNode }[] = [
-    { key: 'chats',     label: 'Chats',        icon: <MessageSquare size={16} /> },
     { key: 'assistant', label: 'AI Lead Matching', icon: <Zap size={16} /> },
     { key: 'groups',    label: 'Groups',       icon: <Users size={16} /> },
+    { key: 'chats',     label: 'Chats',        icon: <MessageSquare size={16} /> },
   ];
 
   const chromeHidden = tab === 'groups' && groupOpen;
 
   return (
-    <View style={[hub.root, { paddingTop: chromeHidden ? 0 : insets.top }]}>
+    <View style={[hub.root, { paddingTop: (chromeHidden || embedded) ? 0 : insets.top }]}>
       {/* Header + tab bar hidden while a group is open */}
       {!chromeHidden && (
         <>
-          <View style={hub.header}>
-            <MenuButton />
-            <View style={{ flex: 1 }} />
-            {isAdmin && (
-              <Pressable onPress={() => setShowLeads(true)} style={hub.leadsBtn}>
-                <BarChart2 size={15} color={colors.brand} />
-                <Text style={hub.leadsBtnText}>Leads</Text>
-              </Pressable>
-            )}
-          </View>
+          {/* Own header hidden when embedded (Overview provides the navbar) */}
+          {!embedded && (
+            <View style={hub.header}>
+              <MenuButton />
+              <View style={{ flex: 1 }} />
+              {isAdmin && (
+                <Pressable onPress={() => setShowLeads(true)} style={hub.leadsBtn}>
+                  <BarChart2 size={15} color={colors.brand} />
+                  <Text style={hub.leadsBtnText}>Leads</Text>
+                </Pressable>
+              )}
+            </View>
+          )}
 
           <View style={hub.tabBar}>
             {TABS.map(t => (

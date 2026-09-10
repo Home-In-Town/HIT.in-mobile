@@ -2,10 +2,10 @@
 // Doesn't depend on react-native-reanimated (uses Animated API).
 // Matches the website's left sidebar navigation.
 
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View, Text, Pressable, StyleSheet, Animated, Dimensions,
-  ScrollView, Image,
+  ScrollView, Image, Linking, Modal,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { usePathname, useRouter } from 'expo-router';
@@ -55,6 +55,16 @@ export default function Sidebar({ open, onClose, unread = 0 }: Props) {
   const router = useRouter();
   const pathname = usePathname();
   const role = user?.role ?? 'user';
+  const [showTeamDev, setShowTeamDev] = useState(false);
+
+  const openTeam = () => {
+    if (role === 'user') {
+      setShowTeamDev(true);
+    } else {
+      onClose();
+      Linking.openURL('https://www.oneemployee.in/');
+    }
+  };
 
   const slideX = useRef(new Animated.Value(-DRAWER_W)).current;
   const backdropOpacity = useRef(new Animated.Value(0)).current;
@@ -165,8 +175,12 @@ export default function Sidebar({ open, onClose, unread = 0 }: Props) {
           })}
         </ScrollView>
 
-        {/* Settings + Sign out */}
+        {/* Team + Settings + Sign out */}
         <View style={[st.footer, { paddingBottom: insets.bottom + 12 }]}>
+          <Pressable onPress={openTeam} style={st.settingsBtn}>
+            <Users size={18} color={colors.muted2} />
+            <Text style={st.settingsText}>Team</Text>
+          </Pressable>
           <Pressable onPress={() => navigate('/(dashboard)/settings')} style={st.settingsBtn}>
             <Settings size={18} color={colors.muted2} />
             <Text style={st.settingsText}>Settings</Text>
@@ -177,6 +191,20 @@ export default function Sidebar({ open, onClose, unread = 0 }: Props) {
           </Pressable>
         </View>
       </Animated.View>
+
+      {/* Team — under development popup (user role only) */}
+      <Modal visible={showTeamDev} transparent animationType="fade" onRequestClose={() => setShowTeamDev(false)}>
+        <Pressable style={st.devOverlay} onPress={() => setShowTeamDev(false)}>
+          <Pressable style={st.devCard} onPress={() => {}}>
+            <View style={st.devIcon}><Users size={26} color={colors.brand} /></View>
+            <Text style={st.devTitle}>Team — Coming Soon</Text>
+            <Text style={st.devMsg}>This feature is under development. We'll notify you once your team workspace is ready.</Text>
+            <Pressable style={st.devBtn} onPress={() => setShowTeamDev(false)}>
+              <Text style={st.devBtnText}>Got it</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -234,4 +262,13 @@ const st = StyleSheet.create({
     paddingHorizontal: 20, paddingVertical: 12,
   },
   signOutText: { fontSize: 14, fontWeight: '700', color: colors.red },
+
+  // Team — under development popup
+  devOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', alignItems: 'center', justifyContent: 'center', padding: 28 },
+  devCard: { width: '100%', maxWidth: 340, backgroundColor: colors.white, borderRadius: 20, padding: 22, alignItems: 'center' },
+  devIcon: { width: 56, height: 56, borderRadius: 28, backgroundColor: colors.brandTint, alignItems: 'center', justifyContent: 'center', marginBottom: 14 },
+  devTitle: { fontSize: 17, fontWeight: '800', color: colors.ink, marginBottom: 8 },
+  devMsg: { fontSize: 13, color: colors.muted2, textAlign: 'center', lineHeight: 19, marginBottom: 18 },
+  devBtn: { backgroundColor: colors.brand, borderRadius: 12, paddingVertical: 12, paddingHorizontal: 28, alignSelf: 'stretch', alignItems: 'center' },
+  devBtnText: { color: '#fff', fontSize: 14, fontWeight: '700' },
 });

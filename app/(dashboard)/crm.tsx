@@ -6,7 +6,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   View, Text, ScrollView, Pressable, StyleSheet, Image,
-  RefreshControl, Linking,
+  RefreshControl, Linking, Modal,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -23,6 +23,12 @@ import { useSidebar } from '../../src/lib/sidebarContext';
 import { ShareModal } from '../../src/components/ShareActions';
 import { SkeletonCard } from '../../src/components/Skeleton';
 import { colors } from '../../src/theme';
+// Reused screens rendered as embedded tab content (no duplication).
+import CrmLeadsScreen from './crm-leads';
+import MarketplaceScreen from './marketplace';
+import LeadMatchingHub from './lead-matching';
+
+type OverviewTab = 'ai' | 'crm' | 'marketplace';
 
 function fmtPrice(n: number): string {
   if (!n) return '—';
@@ -66,6 +72,9 @@ export default function HomeDashboard() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [shareProject, setShareProject] = useState<Project | null>(null);
+  // Active Overview tab — AI Lead Matching is the default view.
+  const [tab, setTab] = useState<OverviewTab>('ai');
+  const [showTeamDev, setShowTeamDev] = useState(false);
 
   const canUpload = ['admin', 'builder', 'captain'].includes(user?.role ?? '');
 
@@ -127,12 +136,8 @@ export default function HomeDashboard() {
         )}
       </View>
 
-      <ScrollView
-        style={{ flex: 1 }}
-        contentContainerStyle={{ paddingBottom: 120 }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={colors.brand} />}
-      >
-        {/* ── Dark Welcome Card ── */}
+      {/* ── Welcome Banner (only on AI tab) — shown ABOVE the tab cards ── */}
+      {tab === 'ai' && (
         <View style={s.welcomeCard}>
           <View style={s.welcomeGlow} />
           <View style={s.welcomeInner}>
@@ -152,47 +157,68 @@ export default function HomeDashboard() {
             </View>
           </View>
         </View>
+      )}
 
-        {/* ── Quick Actions (3 cards: AI Lead Matching · CRM · Marketplace) ── */}
-        <View style={s.quickRow}>
-          <Pressable
-            style={s.quickCard}
-            onPress={() => router.push('/(dashboard)/lead-matching' as any)}
-          >
-            <View style={s.quickIcon}><Zap size={16} color={colors.brand} /></View>
-            <View style={{ flex: 1 }}>
-              <Text style={s.quickTitle} numberOfLines={1}>AI Lead Match</Text>
-              <Text style={s.quickSub}>MATCH & CONNECT</Text>
-            </View>
-          </Pressable>
+      {/* ── Tab Switcher (always visible): AI Lead Matching · CRM · Marketplace ── */}
+      <View style={s.tabRow}>
+        <Pressable style={[s.tabCard, tab === 'ai' && s.tabCardActive]} onPress={() => setTab('ai')}>
+          <View style={[s.quickIcon, tab === 'ai' && s.quickIconActive]}><Zap size={16} color={tab === 'ai' ? '#fff' : colors.brand} /></View>
+          <View style={{ flex: 1 }}>
+            <Text style={[s.quickTitle, tab === 'ai' && s.quickTitleActive]} numberOfLines={1}>AI Lead Match</Text>
+            <Text style={[s.quickSub, tab === 'ai' && s.quickSubActive]}>MATCH & CONNECT</Text>
+          </View>
+        </Pressable>
 
-          <Pressable
-            style={s.quickCard}
-            onPress={() => router.push('/(dashboard)/crm-leads' as any)}
-          >
-            <View style={s.quickIcon}>
-              <BarChart3 size={16} color={colors.brand} />
-              {crmHot > 0 && <View style={s.hotDotInline} />}
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={s.quickTitle} numberOfLines={1}>CRM</Text>
-              <Text style={s.quickSub}>PIPELINE</Text>
-            </View>
-          </Pressable>
+        <Pressable style={[s.tabCard, tab === 'crm' && s.tabCardActive]} onPress={() => setTab('crm')}>
+          <View style={[s.quickIcon, tab === 'crm' && s.quickIconActive]}>
+            <BarChart3 size={16} color={tab === 'crm' ? '#fff' : colors.brand} />
+            {crmHot > 0 && <View style={s.hotDotInline} />}
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={[s.quickTitle, tab === 'crm' && s.quickTitleActive]} numberOfLines={1}>CRM</Text>
+            <Text style={[s.quickSub, tab === 'crm' && s.quickSubActive]}>PIPELINE</Text>
+          </View>
+        </Pressable>
 
-          <Pressable
-            style={s.quickCard}
-            onPress={() => router.push('/(dashboard)/marketplace' as any)}
-          >
-            <View style={s.quickIcon}><ShoppingBag size={16} color={colors.brand} /></View>
-            <View style={{ flex: 1 }}>
-              <Text style={s.quickTitle} numberOfLines={1}>Marketplace</Text>
-              <Text style={s.quickSub}>SELL & EARN</Text>
-            </View>
-          </Pressable>
+        <Pressable style={[s.tabCard, tab === 'marketplace' && s.tabCardActive]} onPress={() => setTab('marketplace')}>
+          <View style={[s.quickIcon, tab === 'marketplace' && s.quickIconActive]}><ShoppingBag size={16} color={tab === 'marketplace' ? '#fff' : colors.brand} /></View>
+          <View style={{ flex: 1 }}>
+            <Text style={[s.quickTitle, tab === 'marketplace' && s.quickTitleActive]} numberOfLines={1}>Marketplace</Text>
+            <Text style={[s.quickSub, tab === 'marketplace' && s.quickSubActive]}>SELL & EARN</Text>
+          </View>
+        </Pressable>
+      </View>
+
+      {/* ── CRM tab ── */}
+      {tab === 'crm' && (
+        <View style={{ flex: 1 }}>
+          <CrmLeadsScreen embedded />
         </View>
+      )}
 
-        {/* ── Property Reels ── */}
+      {/* ── Marketplace tab ── */}
+      {tab === 'marketplace' && (
+        <View style={{ flex: 1 }}>
+          <MarketplaceScreen embedded />
+        </View>
+      )}
+
+      {/* ── AI Lead Matching tab: the AI Lead Matching hub (banner is now above) ── */}
+      {tab === 'ai' && (
+        <View style={{ flex: 1 }}>
+          {/* The actual AI Lead Matching feature (AI Lead Matching / Groups / Chats) */}
+          <View style={{ flex: 1 }}>
+            <LeadMatchingHub embedded />
+          </View>
+        </View>
+      )}
+
+      {/* ── Property Reels (unused — moved out of AI tab) ── */}
+      {false && (
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={{ paddingBottom: 120 }}
+      >
         <View style={{ paddingHorizontal: 12, paddingTop: 12, gap: 12 }}>
           {loading ? (
             <>
@@ -301,18 +327,7 @@ export default function HomeDashboard() {
           )}
         </View>
       </ScrollView>
-
-      {/* ── Floating Team Button (bottom right) ── */}
-      <Pressable
-        style={[s.teamFab, { bottom: insets.bottom + 16 }]}
-        onPress={() => Linking.openURL('https://www.oneemployee.in/')}
-      >
-        <Users size={18} color="#fff" />
-        <View>
-          <Text style={s.teamFabTitle}>Team</Text>
-          <Text style={s.teamFabSub}>ONE EMPLOYEE</Text>
-        </View>
-      </Pressable>
+      )}
 
       {/* Share sheet */}
       <ShareModal project={shareProject} onClose={() => setShareProject(null)} />
@@ -365,6 +380,18 @@ const s = StyleSheet.create({
   quickSub: { fontSize: 8, color: colors.muted, fontWeight: '700', letterSpacing: 0.4, marginTop: 1 },
   hotDotInline: { position: 'absolute', top: 3, right: 3, width: 7, height: 7, borderRadius: 4, backgroundColor: '#EF4444', borderWidth: 1, borderColor: colors.white },
 
+  // Tab switcher (3 cards act as tabs)
+  tabRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 12, paddingVertical: 10, backgroundColor: colors.cream },
+  tabCard: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', gap: 7,
+    backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line,
+    borderRadius: 14, paddingHorizontal: 8, paddingVertical: 11,
+  },
+  tabCardActive: { backgroundColor: colors.brand, borderColor: colors.brand },
+  quickIconActive: { backgroundColor: 'rgba(255,255,255,0.22)' },
+  quickTitleActive: { color: '#fff' },
+  quickSubActive: { color: 'rgba(255,255,255,0.7)' },
+
   // Floating Team button (bottom right)
   teamFab: {
     position: 'absolute', right: 16,
@@ -375,6 +402,16 @@ const s = StyleSheet.create({
   },
   teamFabTitle: { fontSize: 12, fontWeight: '800', color: '#fff' },
   teamFabSub: { fontSize: 8, color: 'rgba(255,255,255,0.5)', fontWeight: '700', letterSpacing: 0.4, marginTop: 1 },
+
+  // Under-development popup
+  devOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', alignItems: 'center', justifyContent: 'center', padding: 32 },
+  devCard: { backgroundColor: colors.white, borderRadius: 20, padding: 22, alignItems: 'center', width: '100%', maxWidth: 340, gap: 10 },
+  devIcon: { width: 56, height: 56, borderRadius: 28, backgroundColor: colors.brandTint, alignItems: 'center', justifyContent: 'center' },
+  devTitle: { fontSize: 17, fontWeight: '800', color: colors.ink, marginTop: 4 },
+  devMsg: { fontSize: 13, color: colors.muted2, textAlign: 'center', lineHeight: 19 },
+  devBtn: { backgroundColor: colors.brand, paddingHorizontal: 28, paddingVertical: 11, borderRadius: 12, marginTop: 6 },
+  devBtnText: { color: '#fff', fontSize: 14, fontWeight: '800' },
+
   emptyReels: { alignItems: 'center', paddingVertical: 50, gap: 10 },
   emptyText: { fontSize: 13, color: colors.muted },
   reelCard: {

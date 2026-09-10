@@ -587,12 +587,12 @@ const rr = StyleSheet.create({
 });
 
 /* ── Main Screen ── */
-export default function MarketplaceScreen() {
+export default function MarketplaceScreen({ embedded = false }: { embedded?: boolean } = {}) {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const toast = useToast();
 
-  const [tab, setTab] = useState<'browse' | 'mine'>('browse');
+  const [tab, setTab] = useState<'browse' | 'mine' | 'admin'>('browse');
   const [view, setView] = useState<'All' | 'Buy' | 'Sell'>('All');
   const [listings, setListings] = useState<MarketplaceListing[]>([]);
   const [mine, setMine] = useState<MarketplaceListing[]>([]);
@@ -683,7 +683,7 @@ export default function MarketplaceScreen() {
     }
   }, [showCreate]);
 
-  const source = tab === 'browse' ? listings : mine;
+  const source = tab === 'browse' ? listings : tab === 'admin' ? listings : mine;
 
   const filtered = source.filter(l => {
     const matchSearch = !search || getProjectName(l).toLowerCase().includes(search.toLowerCase()) || getCity(l).toLowerCase().includes(search.toLowerCase());
@@ -719,31 +719,46 @@ export default function MarketplaceScreen() {
   const shareListing = (l: MarketplaceListing) => setShareProject(listingToProject(l));
 
   return (
-    <View style={[m.root, { paddingTop: insets.top }]}>
-      {/* Top bar: menu + centered title + create */}
-      <View style={m.topBar}>
-        <MenuButton />
-        <View style={{ flex: 1, alignItems: 'center' }}>
-          <Text style={m.title}>Marketplace</Text>
-          <Text style={m.subtitle}>Browse verified listings and opportunities</Text>
+    <View style={[m.root, { paddingTop: embedded ? 0 : insets.top }]}>
+      {/* Top bar — hidden when embedded (Overview provides the navbar).
+          When embedded we still show a small create action row. */}
+      {embedded ? (
+        canCreate ? (
+          <View style={m.embedActionRow}>
+            <Pressable onPress={() => setShowCreate(true)} style={m.createBtn}>
+              <Plus size={14} color="#fff" />
+              <Text style={m.createBtnText}>+ List</Text>
+            </Pressable>
+          </View>
+        ) : null
+      ) : (
+        <View style={m.topBar}>
+          <MenuButton />
+          <View style={{ flex: 1, alignItems: 'center' }}>
+            <Text style={m.title}>Marketplace</Text>
+            <Text style={m.subtitle}>Browse verified listings and opportunities</Text>
+          </View>
+          <View style={{ width: 36 }} />
         </View>
-        {canCreate ? (
-          <Pressable onPress={() => setShowCreate(true)} style={m.addBtn}>
-            <Plus size={15} color="#fff" />
-            <Text style={m.addBtnText}>List</Text>
-          </Pressable>
-        ) : <View style={{ width: 28 }} />}
-      </View>
+      )}
 
-      {/* Browse / My Listings tabs */}
-      <View style={m.tabs}>
-        {(['browse', 'mine'] as const).map(t => (
-          <Pressable key={t} onPress={() => setTab(t)} style={[m.tabBtn, tab === t && m.tabBtnActive]}>
-            <Text style={[m.tabText, tab === t && m.tabTextActive]}>
-              {t === 'browse' ? 'Browse' : 'My Listings'}
-            </Text>
+      {/* Website-style tab row: Browse | My Listings | Admin + Create Listing button (only when NOT embedded, since embedded already shows the List button above) */}
+      <View style={m.tabsRow}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={m.tabsScroll}>
+          {(['browse', 'mine', ...(canCreate ? ['admin'] : [])] as const).map(t => (
+            <Pressable key={t} onPress={() => setTab(t as any)} style={[m.tabBtn, tab === t && m.tabBtnActive]}>
+              <Text style={[m.tabText, tab === t && m.tabTextActive]}>
+                {t === 'browse' ? 'Browse' : t === 'mine' ? 'My Listings' : 'Admin'}
+              </Text>
+            </Pressable>
+          ))}
+        </ScrollView>
+        {canCreate && !embedded && (
+          <Pressable onPress={() => setShowCreate(true)} style={m.createBtn}>
+            <Plus size={14} color="#fff" />
+            <Text style={m.createBtnText}>+ List</Text>
           </Pressable>
-        ))}
+        )}
       </View>
 
       {/* Listing list — segment + search scroll WITH the cards (ListHeaderComponent) */}
@@ -760,17 +775,17 @@ export default function MarketplaceScreen() {
           keyboardShouldPersistTaps="handled"
           ListHeaderComponent={
             <View style={{ paddingTop: 10, gap: 10 }}>
-              {/* ALL / BUY / SELL segmented view */}
-              <View style={m.segmentWrap}>
-                <View style={m.segment}>
+              {/* ALL / BUY / SELL segmented view — website style */}
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 0 }}>
+                <View style={{ flex: 1, flexDirection: 'row', backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line, borderRadius: 12, padding: 3 }}>
                   {(['All', 'Buy', 'Sell'] as const).map(v => (
-                    <Pressable key={v} onPress={() => setView(v)} style={[m.segBtn, view === v && m.segBtnActive]}>
-                      <Text style={[m.segText, view === v && m.segTextActive]}>{v.toUpperCase()}</Text>
+                    <Pressable key={v} onPress={() => setView(v)} style={[{ flex: 1, paddingVertical: 8, borderRadius: 9, alignItems: 'center' as const }, view === v && { backgroundColor: colors.brandTint }]}>
+                      <Text style={[{ fontSize: 10, fontWeight: '800' as const, color: colors.muted, letterSpacing: 1 }, view === v && { color: colors.brand }]}>{v.toUpperCase()}</Text>
                     </Pressable>
                   ))}
                 </View>
                 <Pressable onPress={() => setShowFilters(f => !f)}
-                  style={[m.headerBtn, activeFilterCount > 0 && m.headerBtnActive]}>
+                  style={[{ padding: 9, borderRadius: 10, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.white, position: 'relative' as const }, activeFilterCount > 0 && { borderColor: colors.brand, backgroundColor: colors.brandTint }]}>
                   <Filter size={15} color={activeFilterCount > 0 ? colors.brand : colors.muted2} />
                   {activeFilterCount > 0 && (
                     <View style={m.filterBadge}><Text style={m.filterBadgeText}>{activeFilterCount}</Text></View>
@@ -814,7 +829,7 @@ export default function MarketplaceScreen() {
                 </View>
               )}
 
-              <Text style={m.discover}>
+              <Text style={{ fontSize: 10.5, color: colors.muted2, fontWeight: '500', marginBottom: 4 }}>
                 {view === 'Sell' ? 'Live buyer requirements you can fulfil.' : 'Discover all prime real estate projects in your region.'}
               </Text>
             </View>
@@ -868,28 +883,23 @@ export default function MarketplaceScreen() {
 
 const m = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.cream },
+  embedActionRow: { flexDirection: 'row', justifyContent: 'flex-end', paddingHorizontal: 16, paddingTop: 8, paddingBottom: 4 },
   topBar: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 12, backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.line },
   title: { fontSize: 21, fontWeight: '800', color: colors.ink, letterSpacing: -0.5 },
   subtitle: { fontSize: 9.5, color: colors.muted, fontWeight: '600', marginTop: 1 },
-  segmentWrap: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingTop: 10 },
-  segment: { flex: 1, flexDirection: 'row', backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line, borderRadius: 12, padding: 3 },
-  segBtn: { flex: 1, paddingVertical: 8, borderRadius: 9, alignItems: 'center' },
-  segBtnActive: { backgroundColor: colors.brandTint },
-  segText: { fontSize: 10, fontWeight: '800', color: colors.muted, letterSpacing: 1 },
-  segTextActive: { color: colors.brand },
-  discover: { fontSize: 10.5, color: colors.muted2, fontWeight: '500', marginBottom: 4 },
-  sub: { fontSize: 11, color: colors.muted, marginTop: 1 },
-  headerBtn: { padding: 9, borderRadius: 10, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.white, position: 'relative' },
-  headerBtnActive: { borderColor: colors.brand, backgroundColor: colors.brandTint },
-  filterBadge: { position: 'absolute', top: -4, right: -4, width: 16, height: 16, borderRadius: 8, backgroundColor: colors.brand, alignItems: 'center', justifyContent: 'center' },
-  filterBadgeText: { fontSize: 8, fontWeight: '800', color: '#fff' },
-  addBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: colors.brand, paddingHorizontal: 14, paddingVertical: 9, borderRadius: 10 },
-  addBtnText: { color: '#fff', fontWeight: '700', fontSize: 12 },
+  // Website-style tab row
+  tabsRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.line, paddingRight: 12 },
+  tabsScroll: { gap: 0, paddingLeft: 4 },
   tabs: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: colors.line, backgroundColor: colors.white },
-  tabBtn: { flex: 1, paddingVertical: 11, alignItems: 'center', borderBottomWidth: 2, borderBottomColor: 'transparent' },
+  tabBtn: { paddingHorizontal: 16, paddingVertical: 11, alignItems: 'center', borderBottomWidth: 2, borderBottomColor: 'transparent' },
   tabBtnActive: { borderBottomColor: colors.brand },
   tabText: { fontSize: 12, fontWeight: '600', color: colors.muted2 },
-  tabTextActive: { color: colors.brand },
+  tabTextActive: { color: colors.brand, fontWeight: '800' },
+  // Create Listing CTA button (website style orange)
+  createBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: colors.brand, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10 },
+  createBtnText: { color: '#fff', fontWeight: '700', fontSize: 11.5 },
+  filterBadge: { position: 'absolute', top: -4, right: -4, width: 16, height: 16, borderRadius: 8, backgroundColor: colors.brand, alignItems: 'center', justifyContent: 'center' },
+  filterBadgeText: { fontSize: 8, fontWeight: '800', color: '#fff' },
   searchWrap: { paddingHorizontal: 16, paddingTop: 10, paddingBottom: 6 },
   searchRow: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 9 },
   searchInput: { flex: 1, fontSize: 13, color: colors.ink },
