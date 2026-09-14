@@ -14,12 +14,16 @@ import {
 } from 'react-native';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
+import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
+import { Image, Linking } from 'react-native';
 import {
   Users, Plus, Globe, ChevronLeft, Send, X, MoreVertical, Building2,
   Link as LinkIcon, FileText, QrCode, Image as ImageIcon, LogOut, Trash2,
-  Search, MapPin, Check,
+  Search, MapPin, Check, Camera, Paperclip, Sparkles,
 } from 'lucide-react-native';
-import { groupChatApi, shareApi, GroupRoom, GroupMessage } from '../lib/api';
+import { groupChatApi, shareApi, mediaApi, GroupRoom, GroupMessage } from '../lib/api';
+import AiAssistant from './AiAssistant';
 import { useAuth } from '../lib/authContext';
 import { useSocket } from '../hooks/useSocket';
 import { useToast } from './Toast';
@@ -92,6 +96,9 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0 }: {
   const [showMediaMenu, setShowMediaMenu] = useState(false);
   const [showRoomMenu, setShowRoomMenu] = useState(false);
   const [shareProject, setShareProject] = useState<any>(null);
+  const [showAttachMenu, setShowAttachMenu] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [showAiAssist, setShowAiAssist] = useState(false);
   const flatRef = useRef<FlatList>(null);
 
   const role = user?.role ?? '';
@@ -167,6 +174,75 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0 }: {
     } catch {
       socket.sendGroupMessage({ roomId: activeRoom.id, content, messageType: 'text' });
     }
+  };
+
+  // ── Attachments: Camera / Gallery / Files ──
+  // Uploads the picked media via the shared media proxy, then posts it into the
+  // group as an image/file message so everyone in the room can view/download it.
+  const uploadAndSendAttachment = async (
+    file: { uri: string; name: string; mimeType: string },
+    kind: 'image' | 'file',
+  ) => {
+    if (!activeRoom) return;
+    setUploading(true);
+    setShowAttachMenu(false);
+    try {
+      const projId = activeRoom.project?.id || '';
+      const { url } = await mediaApi.uploadAndSave({
+        uri: file.uri,
+        name: file.name,
+        mimeType: file.mimeType,
+        projectId: projId,
+        type: kind === 'image' ? 'gallery' : 'brochure',
+      });
+      if (!url) throw new Error('Upload failed');
+      // messageType image|file; content holds the URL (backend accepts free string type,
+      // and the bubble renderer shows an Image for image and a file chip for file).
+      await groupChatApi.postMessage(activeRoom.id, {
+        messageType: kind,
+        content: url,
+      });
+      toast.show(kind === 'image' ? 'Photo sent 📷' : 'File sent 📎', 'success');
+      setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 150);
+    } catch (e: any) {
+      toast.show(e?.message || 'Could not send attachment', 'error');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const pickFromCamera = async () => {
+    const perm = await ImagePicker.requestCameraPermissionsAsync();
+    if (!perm.granted) { toast.show('Camera permission needed', 'error'); return; }
+    const res = await ImagePicker.launchCameraAsync({ quality: 0.7 });
+    if (res.canceled || !res.assets?.[0]) return;
+    const a = res.assets[0];
+    await uploadAndSendAttachment(
+      { uri: a.uri, name: a.fileName || `photo_${Date.now()}.jpg`, mimeType: a.mimeType || 'image/jpeg' },
+      'image',
+    );
+  };
+
+  const pickFromGallery = async () => {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) { toast.show('Photos permission needed', 'error'); return; }
+    const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.7 });
+    if (res.canceled || !res.assets?.[0]) return;
+    const a = res.assets[0];
+    await uploadAndSendAttachment(
+      { uri: a.uri, name: a.fileName || `image_${Date.now()}.jpg`, mimeType: a.mimeType || 'image/jpeg' },
+      'image',
+    );
+  };
+
+  const pickFile = async () => {
+    const res = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true, type: '*/*' });
+    if (res.canceled || !res.assets?.[0]) return;
+    const a = res.assets[0];
+    await uploadAndSendAttachment(
+      { uri: a.uri, name: a.name || `file_${Date.now()}`, mimeType: a.mimeType || 'application/octet-stream' },
+      'file',
+    );
   };
 
   const postRequirement = async () => {
@@ -530,6 +606,32 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0 }: {
         <Pressable style={StyleSheet.absoluteFill} onPress={() => { setShowRoomMenu(false); setShowMediaMenu(false); }} />
       )}
 
+      {/* ── AI Assist (inline, same screen) ──
+          Runs the existing AI Lead Matching assistant right inside the group
+          thread. The Q&A is private to this user (own assistant thread via
+          leadChatApi — never posted to the group), so other members don't see
+          it. Only a match card the user shares becomes visible to everyone. */}
+      {showAiAssist ? (
+        <>
+          <View style={s.aiInlineBanner}>
+            <Pressable onPress={() => setShowAiAssist(false)} style={s.aiBackBtn}>
+              <ChevronLeft size={16} color={colors.brand} />
+              <Text style={s.aiBackText}>Back to group</Text>
+            </Pressable>
+            <View style={s.aiPrivatePill}>
+              <Sparkles size={11} color={colors.brand} />
+              <Text style={s.aiPrivateText}>AI Assist · Private to you</Text>
+            </View>
+          </View>
+          <View style={{ flex: 1 }}>
+            <AiAssistant
+              groupContext={{ roomId: activeRoom.id, roomName: roomDisplayName(activeRoom) }}
+              onMatchShared={() => setShowAiAssist(false)}
+            />
+          </View>
+        </>
+      ) : (
+        <>
       {/* Messages */}
       {loadingMsgs ? <ActivityIndicator color={colors.brand} style={{ marginTop: 40 }} /> : (
         <FlatList
@@ -546,23 +648,42 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0 }: {
 
       {/* Composer — clean text bar + quick actions to open Requirement / Inventory sheets */}
       <View style={s.composer}>
-        {(canRequirement || canInventory) && (
-          <View style={s.quickRow}>
-            {canRequirement && (
-              <Pressable onPress={() => setPostMode('requirement')} style={[s.quickChip, { backgroundColor: '#FFF8F0', borderColor: `${colors.brand}55` }]}>
-                <Search size={13} color={colors.brand} />
-                <Text style={[s.quickChipText, { color: colors.brand }]}>Requirement</Text>
-              </Pressable>
-            )}
-            {canInventory && (
-              <Pressable onPress={() => setPostMode('inventory')} style={[s.quickChip, { backgroundColor: '#F0FDF4', borderColor: colors.greenBorder }]}>
-                <Building2 size={13} color={colors.greenText} />
-                <Text style={[s.quickChipText, { color: colors.greenText }]}>Inventory</Text>
-              </Pressable>
-            )}
+        {/* AI Assist entry — replaces Requirement/Inventory. Opens the private
+            AI Lead Matching assistant. Only match results get shared to the group. */}
+        <View style={s.quickRow}>
+          <Pressable onPress={() => setShowAiAssist(true)} style={[s.quickChip, { flex: 1, justifyContent: 'center', backgroundColor: colors.brandTint, borderColor: `${colors.brand}55` }]}>
+            <Sparkles size={14} color={colors.brand} />
+            <Text style={[s.quickChipText, { color: colors.brand }]}>AI Assist — Find me a match</Text>
+          </Pressable>
+        </View>
+        {/* Attachment options: Camera / Gallery / Files */}
+        {showAttachMenu && (
+          <View style={s.attachRow}>
+            <Pressable onPress={pickFromCamera} disabled={uploading} style={s.attachOpt}>
+              <View style={[s.attachIcon, { backgroundColor: '#EFF6FF' }]}><Camera size={17} color="#2563EB" /></View>
+              <Text style={s.attachLabel}>Camera</Text>
+            </Pressable>
+            <Pressable onPress={pickFromGallery} disabled={uploading} style={s.attachOpt}>
+              <View style={[s.attachIcon, { backgroundColor: '#F0FDF4' }]}><ImageIcon size={17} color={colors.greenText} /></View>
+              <Text style={s.attachLabel}>Gallery</Text>
+            </Pressable>
+            <Pressable onPress={pickFile} disabled={uploading} style={s.attachOpt}>
+              <View style={[s.attachIcon, { backgroundColor: '#FFF8F0' }]}><FileText size={17} color={colors.brand} /></View>
+              <Text style={s.attachLabel}>Files</Text>
+            </Pressable>
           </View>
         )}
+
         <View style={s.textRow}>
+          <Pressable
+            onPress={() => setShowAttachMenu(v => !v)}
+            disabled={uploading}
+            style={[s.attachBtn, showAttachMenu && { backgroundColor: colors.brandTint }]}
+          >
+            {uploading
+              ? <ActivityIndicator size="small" color={colors.brand} />
+              : <Paperclip size={18} color={showAttachMenu ? colors.brand : colors.muted2} />}
+          </Pressable>
           <TextInput value={text} onChangeText={setText} placeholder="Type a message…" placeholderTextColor={colors.muted}
             style={s.textInput} multiline onSubmitEditing={sendText} />
           <Pressable onPress={sendText} disabled={!text.trim()} style={[s.sendBtn, !text.trim() && { opacity: 0.4 }]}>
@@ -570,6 +691,8 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0 }: {
           </Pressable>
         </View>
       </View>
+        </>
+      )}
 
       {/* Requirement composer sheet */}
       <RequirementSheet
@@ -591,6 +714,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0 }: {
 
       {/* Share sheet (Copy link / QR / brochure) */}
       {shareProject && <ShareModal project={shareProject} onClose={() => setShareProject(null)} />}
+
     </KeyboardAvoidingView>
   );
 }
@@ -792,6 +916,21 @@ function MessageBubble({ msg, meId, onInterested }: {
 
   if (msg.messageType === 'inventory_card' && msg.inventoryCard) {
     const inv = msg.inventoryCard;
+    // AI Match Found card — posted from the private AI Assist for the whole group.
+    if (inv.aiMatch) {
+      return (
+        <View style={[mbs.cardWrap, { alignSelf: 'flex-start' }]}>
+          <View style={[mbs.card, { backgroundColor: colors.brandTint, borderColor: `${colors.brand}55` }]}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+              <Text style={[mbs.cardTag, { color: colors.brand }]}>🎯 AI Match Found · {msg.sender.name}</Text>
+              {inv.score ? <Text style={[mbs.cardTag, { color: colors.brand }]}>{Math.round(inv.score)}%</Text> : null}
+            </View>
+            <Text style={mbs.cardMain}>{inv.projectName || 'Project'}</Text>
+            {(inv.area || inv.city) ? <Text style={mbs.cardSub}>📍 {[inv.area, inv.city].filter(Boolean).join(', ')}</Text> : null}
+          </View>
+        </View>
+      );
+    }
     return (
       <View style={[mbs.cardWrap, { alignSelf: 'flex-start' }]}>
         <View style={[mbs.card, { backgroundColor: '#F0FDF4', borderColor: colors.greenBorder }]}>
@@ -856,6 +995,36 @@ function MessageBubble({ msg, meId, onInterested }: {
             })}
           </View>
         )}
+      </View>
+    );
+  }
+
+  // image attachment
+  if (msg.messageType === 'image' && msg.content) {
+    return (
+      <View style={[{ flexDirection: 'row' }, isMe ? { justifyContent: 'flex-end' } : { justifyContent: 'flex-start' }]}>
+        <View style={[mbs.textBubble, isMe ? mbs.textMe : mbs.textThem, { padding: 4 }]}>
+          {!isMe && <Text style={[mbs.textSender, { marginHorizontal: 6, marginTop: 4 }]}>{msg.sender.name} · {msg.sender.role}</Text>}
+          <Pressable onPress={() => Linking.openURL(msg.content)}>
+            <Image source={{ uri: msg.content }} style={mbs.attachImage} resizeMode="cover" />
+          </Pressable>
+        </View>
+      </View>
+    );
+  }
+
+  // file attachment
+  if (msg.messageType === 'file' && msg.content) {
+    const fileName = decodeURIComponent(String(msg.content).split('/').pop() || 'File').split('?')[0];
+    return (
+      <View style={[{ flexDirection: 'row' }, isMe ? { justifyContent: 'flex-end' } : { justifyContent: 'flex-start' }]}>
+        <View style={[mbs.textBubble, isMe ? mbs.textMe : mbs.textThem]}>
+          {!isMe && <Text style={mbs.textSender}>{msg.sender.name} · {msg.sender.role}</Text>}
+          <Pressable onPress={() => Linking.openURL(msg.content)} style={mbs.fileRow}>
+            <FileText size={18} color={isMe ? '#fff' : colors.brand} />
+            <Text style={[mbs.fileName, { color: isMe ? '#fff' : colors.ink }]} numberOfLines={1}>{fileName}</Text>
+          </Pressable>
+        </View>
       </View>
     );
   }
@@ -948,6 +1117,11 @@ const s = StyleSheet.create({
 
   composer: { backgroundColor: colors.white, borderTopWidth: 1, borderTopColor: colors.line, paddingHorizontal: 10, paddingTop: 8, paddingBottom: 10, gap: 8 },
   quickRow: { flexDirection: 'row', gap: 8 },
+  aiInlineBanner: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12, paddingVertical: 8, backgroundColor: colors.brandTint, borderBottomWidth: 1, borderBottomColor: `${colors.brand}33` },
+  aiBackBtn: { flexDirection: 'row', alignItems: 'center', gap: 2 },
+  aiBackText: { fontSize: 12, fontWeight: '700', color: colors.brand },
+  aiPrivatePill: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: colors.white, borderWidth: 1, borderColor: `${colors.brand}44`, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12 },
+  aiPrivateText: { fontSize: 9.5, fontWeight: '800', color: colors.brand },
   quickChip: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 18, borderWidth: 1 },
   quickChipText: { fontSize: 11.5, fontWeight: '800' },
   modeRow: { flexDirection: 'row', gap: 6 },
@@ -956,6 +1130,11 @@ const s = StyleSheet.create({
   modeText: { fontSize: 10.5, fontWeight: '800', color: colors.muted2 },
   modeTextActive: { color: '#fff' },
   textRow: { flexDirection: 'row', gap: 8, alignItems: 'flex-end' },
+  attachBtn: { width: 40, height: 40, borderRadius: 20, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.white, alignItems: 'center', justifyContent: 'center' },
+  attachRow: { flexDirection: 'row', gap: 10, paddingBottom: 8, paddingHorizontal: 2 },
+  attachOpt: { alignItems: 'center', gap: 4 },
+  attachIcon: { width: 44, height: 44, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  attachLabel: { fontSize: 10, fontWeight: '700', color: colors.muted2 },
   textInput: { flex: 1, borderWidth: 1, borderColor: colors.line, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 9, fontSize: 13, color: colors.ink, backgroundColor: colors.cream, maxHeight: 100 },
   sendBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.brand, alignItems: 'center', justifyContent: 'center' },
   cardBox: { borderWidth: 1, borderRadius: 14, padding: 12, gap: 9 },
@@ -1000,6 +1179,9 @@ const mbs = StyleSheet.create({
   textThem: { backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line, borderBottomLeftRadius: 4 },
   textSender: { fontSize: 9, fontWeight: '800', color: colors.brand, marginBottom: 2 },
   textContent: { fontSize: 13, lineHeight: 20 },
+  attachImage: { width: 200, height: 200, borderRadius: 12 },
+  fileRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 2 },
+  fileName: { fontSize: 12.5, fontWeight: '600', maxWidth: 180 },
 });
 
 const sh = StyleSheet.create({

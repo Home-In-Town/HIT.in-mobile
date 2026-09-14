@@ -889,7 +889,7 @@ export interface GroupMessage {
   id: string;
   room: string;
   sender: { id: string; name: string; role: string; companyName?: string };
-  messageType: 'text' | 'requirement_card' | 'inventory_card' | 'system';
+  messageType: 'text' | 'requirement_card' | 'inventory_card' | 'system' | 'image' | 'file';
   content: string;
   requirementCard?: any;
   inventoryCard?: any;

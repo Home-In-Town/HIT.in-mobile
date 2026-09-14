@@ -64,8 +64,8 @@ export default function CrmLeadsScreen({ embedded = false }: { embedded?: boolea
   };
 
   const modes: { key: 'ai' | 'human' | 'course'; label: string; Icon: typeof Monitor }[] = [
-    { key: 'ai', label: 'AI Leads', Icon: Monitor },
-    { key: 'human', label: 'Human Leads', Icon: Users },
+    { key: 'ai', label: 'AI Lead Qualification', Icon: Monitor },
+    { key: 'human', label: 'Human Lead Qualification', Icon: Users },
     { key: 'course', label: 'Learn', Icon: GraduationCap },
   ];
 

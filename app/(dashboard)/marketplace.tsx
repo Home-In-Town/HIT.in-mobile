@@ -830,7 +830,13 @@ export default function MarketplaceScreen({ embedded = false }: { embedded?: boo
               )}
 
               <Text style={{ fontSize: 10.5, color: colors.muted2, fontWeight: '500', marginBottom: 4 }}>
-                {view === 'Sell' ? 'Live buyer requirements you can fulfil.' : 'Discover all prime real estate projects in your region.'}
+                {tab === 'mine'
+                  ? 'Your listings — manage what you have posted.'
+                  : tab === 'admin'
+                    ? 'Admin view — all marketplace listings across the platform.'
+                    : view === 'Sell'
+                      ? 'Live buyer requirements you can fulfil.'
+                      : 'Discover all prime real estate projects in your region.'}
               </Text>
             </View>
           }
@@ -838,8 +844,8 @@ export default function MarketplaceScreen({ embedded = false }: { embedded?: boo
           ListEmptyComponent={
             <EmptyState
               icon={<ShoppingBag size={28} color={colors.muted} />}
-              title="No listings found"
-              subtitle="Try changing filters or create a new listing."
+              title={tab === 'mine' ? 'No listings yet' : 'No listings found'}
+              subtitle={tab === 'mine' ? 'Create your first listing to get started.' : 'Try changing filters or create a new listing.'}
               actionLabel={canCreate ? 'Create Listing' : undefined}
               onAction={canCreate ? () => setShowCreate(true) : undefined}
             />

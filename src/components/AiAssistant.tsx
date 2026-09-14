@@ -8,13 +8,13 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, ScrollView, StyleSheet, Pressable, ActivityIndicator,
-  TextInput, KeyboardAvoidingView, Platform,
+  TextInput, KeyboardAvoidingView, Platform, Modal, FlatList,
 } from 'react-native';
 import {
   Send, Building2, MapPin, Check, Pencil, Plus, List as ListIcon,
-  ArrowRight, CheckCircle2,
+  ArrowRight, CheckCircle2, Undo2, Redo2, RotateCcw, XCircle, Users as UsersIcon, X as XIcon,
 } from 'lucide-react-native';
-import { leadChatApi } from '../lib/api';
+import { leadChatApi, groupChatApi, GroupRoom } from '../lib/api';
 import { useAuth } from '../lib/authContext';
 import { useToast } from './Toast';
 import { colors } from '../theme';
@@ -50,7 +50,20 @@ function fmtTime(ts: string) {
   catch { return ''; }
 }
 
-export default function AiAssistant({ onViewLeads }: { onViewLeads?: () => void }) {
+export default function AiAssistant({
+  onViewLeads,
+  onActiveChange,
+  groupContext,
+  onMatchShared,
+}: {
+  onViewLeads?: () => void;
+  onActiveChange?: (active: boolean) => void;
+  // When the assistant runs inside a group, matches can be shared directly to
+  // that room (one-tap) instead of opening the room picker. The private AI
+  // conversation still lives in the user's own assistant thread.
+  groupContext?: { roomId: string; roomName: string };
+  onMatchShared?: () => void;
+}) {
   const { user } = useAuth();
   const toast = useToast();
 
@@ -59,8 +72,43 @@ export default function AiAssistant({ onViewLeads }: { onViewLeads?: () => void 
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [typing, setTyping] = useState(false);
+  const [ended, setEnded] = useState(false);
   const sessionIdRef = useRef<string | null>(null);
   const scrollRef = useRef<ScrollView>(null);
+
+  // ── Undo / Redo history ──
+  // Each entry is a snapshot of the visible transcript + flow state. We push a
+  // snapshot right before a state-changing action so Undo can restore it.
+  type Snap = { messages: Msg[]; flowState: any };
+  const [undoStack, setUndoStack] = useState<Snap[]>([]);
+  const [redoStack, setRedoStack] = useState<Snap[]>([]);
+
+  const snapshot = useCallback(() => {
+    setUndoStack(prev => [...prev, { messages, flowState }]);
+    setRedoStack([]); // any new action invalidates the redo history
+  }, [messages, flowState]);
+
+  const undo = useCallback(() => {
+    setUndoStack(prev => {
+      if (prev.length === 0) { toast.show('Kuch undo karne ko nahi hai', 'info'); return prev; }
+      const last = prev[prev.length - 1];
+      setRedoStack(r => [...r, { messages, flowState }]);
+      setMessages(last.messages);
+      setFlowState(last.flowState);
+      return prev.slice(0, -1);
+    });
+  }, [messages, flowState, toast]);
+
+  const redo = useCallback(() => {
+    setRedoStack(prev => {
+      if (prev.length === 0) { toast.show('Kuch redo karne ko nahi hai', 'info'); return prev; }
+      const next = prev[prev.length - 1];
+      setUndoStack(u => [...u, { messages, flowState }]);
+      setMessages(next.messages);
+      setFlowState(next.flowState);
+      return prev.slice(0, -1);
+    });
+  }, [messages, flowState, toast]);
 
   const scrollDown = useCallback((delay = 80) => {
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), delay);
@@ -100,6 +148,7 @@ export default function AiAssistant({ onViewLeads }: { onViewLeads?: () => void 
   const submit = useCallback(async (slotId: string, value: any, displayText: string) => {
     const sid = sessionIdRef.current;
     if (!sid || sending) return;
+    snapshot();
     setSending(true);
     // Optimistic user bubble
     const optimistic: Msg = {
@@ -118,7 +167,7 @@ export default function AiAssistant({ onViewLeads }: { onViewLeads?: () => void 
     } finally {
       setSending(false);
     }
-  }, [sending, user?.id, reveal, scrollDown]);
+  }, [sending, user?.id, reveal, scrollDown, snapshot]);
 
   // ── Edit a slot from the summary ──
   const edit = useCallback(async (slotId: string) => {
@@ -137,6 +186,7 @@ export default function AiAssistant({ onViewLeads }: { onViewLeads?: () => void 
   const confirm = useCallback(async () => {
     const sid = sessionIdRef.current;
     if (!sid || sending) return;
+    snapshot();
     setSending(true);
     try {
       const res = await leadChatApi.confirm(sid);
@@ -147,12 +197,13 @@ export default function AiAssistant({ onViewLeads }: { onViewLeads?: () => void 
     } finally {
       setSending(false);
     }
-  }, [sending, reveal]);
+  }, [sending, reveal, snapshot]);
 
   // ── Start a fresh lead ──
   const newLead = useCallback(async () => {
     const sid = sessionIdRef.current;
     if (!sid || sending) return;
+    snapshot();
     setSending(true);
     try {
       const res = await leadChatApi.newLead(sid);
@@ -163,7 +214,95 @@ export default function AiAssistant({ onViewLeads }: { onViewLeads?: () => void 
     } finally {
       setSending(false);
     }
-  }, [sending, reveal]);
+  }, [sending, reveal, snapshot]);
+
+  // ── Chat controls: End / Restart ──
+  // End Chat: stop the visible session (user can tap "Start" to reopen).
+  const endChat = useCallback(() => {
+    setEnded(true);
+    setUndoStack([]);
+    setRedoStack([]);
+    toast.show('Chat ended', 'info');
+  }, [toast]);
+
+  // Restart Chat: start a fresh requirement flow from scratch.
+  const restartChat = useCallback(async () => {
+    if (ended) { setEnded(false); await open(); return; }
+    setUndoStack([]);
+    setRedoStack([]);
+    await newLead();
+  }, [ended, newLead, open]);
+
+  // Reopen from the ended state.
+  const resumeChat = useCallback(async () => {
+    setEnded(false);
+    await open();
+  }, [open]);
+
+  // ── Add matched project to a group ──
+  const [addTarget, setAddTarget] = useState<MatchCard | null>(null);
+  const [rooms, setRooms] = useState<GroupRoom[]>([]);
+  const [roomsLoading, setRoomsLoading] = useState(false);
+  const [addingRoomId, setAddingRoomId] = useState<string | null>(null);
+
+  // Shared helper: post a match card into a given room as an "AI Match Found" card.
+  const shareMatchToRoom = useCallback(async (roomId: string, m: MatchCard) => {
+    await groupChatApi.postMessage(roomId, {
+      messageType: 'inventory_card',
+      inventoryCard: {
+        aiMatch: true,
+        projectId: m.projectId,
+        projectName: m.projectName,
+        area: m.location || '',
+        city: m.city || '',
+        score: m.score,
+        description: `🎯 AI Match Found — ${m.projectName}`,
+      },
+    });
+  }, []);
+
+  const openAddToGroup = useCallback(async (m: MatchCard) => {
+    // Inside a group → post straight to that room (no picker).
+    if (groupContext?.roomId) {
+      setAddingRoomId(m.projectId);
+      try {
+        await shareMatchToRoom(groupContext.roomId, m);
+        toast.show(`Shared to ${groupContext.roomName} 🎯`, 'success');
+        onMatchShared?.();
+      } catch (e: any) {
+        toast.show(e?.message || 'Could not share to group', 'error');
+      } finally {
+        setAddingRoomId(null);
+      }
+      return;
+    }
+    // Otherwise open the room picker.
+    setAddTarget(m);
+    setRoomsLoading(true);
+    try {
+      const { myRooms } = await groupChatApi.getRooms();
+      setRooms(myRooms || []);
+    } catch (e: any) {
+      toast.show(e?.message || 'Could not load your groups', 'error');
+      setRooms([]);
+    } finally {
+      setRoomsLoading(false);
+    }
+  }, [toast, groupContext, shareMatchToRoom, onMatchShared]);
+
+  const addToRoom = useCallback(async (room: GroupRoom) => {
+    if (!addTarget) return;
+    setAddingRoomId(room.id);
+    try {
+      await shareMatchToRoom(room.id, addTarget);
+      toast.show(`Added to ${room.name} ✅`, 'success');
+      setAddTarget(null);
+    } catch (e: any) {
+      toast.show(e?.message || 'Could not add to group', 'error');
+    } finally {
+      setAddingRoomId(null);
+    }
+  }, [addTarget, toast, shareMatchToRoom]);
 
   // The active template = last system message that carries one.
   const lastAssistant = [...messages].reverse().find(m => m.messageType === 'system' && m.template);
@@ -173,6 +312,25 @@ export default function AiAssistant({ onViewLeads }: { onViewLeads?: () => void 
 
   const showAnswerBar = !typing && activeTemplate?.inputType &&
     !['summary', 'results', 'actions'].includes(activeTemplate.inputType);
+
+  // Report to the parent whether a conversation is active (used to hide the
+  // Overview welcome banner). Active = not ended, and the flow is in progress
+  // or awaiting confirmation, or the user has already sent at least one message.
+  // User answers are stored as messageType 'text'; assistant messages use 'system'.
+  const hasUserMessage = messages.some(m => m.messageType === 'text');
+  // Consider the chat "active" only once the user has actually engaged — i.e.
+  // they sent at least one answer, or the flow reached confirmation/completion.
+  // A brand-new thread (status 'in_progress' with only the greeting) still shows
+  // the welcome banner.
+  const isActiveChat = !ended && !loading &&
+    (hasUserMessage ||
+     flowState?.status === 'awaiting_confirmation' ||
+     flowState?.status === 'completed');
+  useEffect(() => {
+    onActiveChange?.(isActiveChat);
+  }, [isActiveChat, onActiveChange]);
+  // Report inactive on unmount so the banner returns when leaving the tab.
+  useEffect(() => () => { onActiveChange?.(false); }, [onActiveChange]);
 
   if (loading) {
     return (
@@ -184,8 +342,44 @@ export default function AiAssistant({ onViewLeads }: { onViewLeads?: () => void 
     );
   }
 
+  // Ended state — chat closed by the user.
+  if (ended) {
+    return (
+      <View style={s.center}>
+        <View style={s.botBubble}><Text style={{ fontSize: 25 }}>👋</Text></View>
+        <Text style={[s.loadingText, { fontSize: 14, fontWeight: '700', color: colors.ink, marginTop: 16 }]}>Chat ended</Text>
+        <Text style={[s.loadingText, { marginTop: 4 }]}>Naye lead ke liye chat dobara shuru karein.</Text>
+        <Pressable onPress={resumeChat} style={cc.resumeBtn}>
+          <RotateCcw size={15} color="#fff" />
+          <Text style={cc.resumeText}>Start Chat</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
   return (
     <KeyboardAvoidingView style={{ flex: 1, backgroundColor: colors.cream }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      {/* ── Chat controls: Undo · Redo · Restart · End ── */}
+      <View style={cc.bar}>
+        <Pressable onPress={undo} disabled={undoStack.length === 0 || sending} style={[cc.btn, (undoStack.length === 0 || sending) && cc.btnDim]}>
+          <Undo2 size={14} color={colors.muted2} />
+          <Text style={cc.btnText}>Undo</Text>
+        </Pressable>
+        <Pressable onPress={redo} disabled={redoStack.length === 0 || sending} style={[cc.btn, (redoStack.length === 0 || sending) && cc.btnDim]}>
+          <Redo2 size={14} color={colors.muted2} />
+          <Text style={cc.btnText}>Redo</Text>
+        </Pressable>
+        <View style={{ flex: 1 }} />
+        <Pressable onPress={restartChat} disabled={sending} style={[cc.btn, sending && cc.btnDim]}>
+          <RotateCcw size={14} color={colors.brand} />
+          <Text style={[cc.btnText, { color: colors.brand }]}>Restart</Text>
+        </Pressable>
+        <Pressable onPress={endChat} style={[cc.btn, cc.btnEnd]}>
+          <XCircle size={14} color={colors.red} />
+          <Text style={[cc.btnText, { color: colors.red }]}>End</Text>
+        </Pressable>
+      </View>
+
       {/* Progress bar */}
       {progress && progress.total > 1 && (
         <View style={s.progressWrap}>
@@ -214,7 +408,7 @@ export default function AiAssistant({ onViewLeads }: { onViewLeads?: () => void 
             return <SummaryBubble key={msg._id} msg={msg} onEdit={edit} onConfirm={confirm} sending={sending} />;
           }
           if (isSystem && t?.inputType === 'results') {
-            return <ResultsBubble key={msg._id} msg={msg} />;
+            return <ResultsBubble key={msg._id} msg={msg} onAddToGroup={openAddToGroup} />;
           }
           if (isSystem && t?.inputType === 'actions') {
             return <ActionsBubble key={msg._id} msg={msg} onNewLead={newLead} onViewLeads={onViewLeads} disabled={sending} />;
@@ -262,6 +456,45 @@ export default function AiAssistant({ onViewLeads }: { onViewLeads?: () => void 
           onNewLead={newLead}
         />
       )}
+
+      {/* ── Add to Group picker modal ── */}
+      <Modal visible={!!addTarget} transparent animationType="slide" onRequestClose={() => setAddTarget(null)}>
+        <Pressable style={atg.overlay} onPress={() => setAddTarget(null)}>
+          <Pressable style={atg.sheet} onPress={() => {}}>
+            <View style={atg.head}>
+              <View style={{ flex: 1 }}>
+                <Text style={atg.title}>Add to Group</Text>
+                <Text style={atg.sub} numberOfLines={1}>{addTarget?.projectName}</Text>
+              </View>
+              <Pressable onPress={() => setAddTarget(null)} style={atg.closeBtn}>
+                <XIcon size={18} color={colors.ink} />
+              </Pressable>
+            </View>
+
+            {roomsLoading ? (
+              <View style={{ padding: 30, alignItems: 'center' }}><ActivityIndicator color={colors.brand} /></View>
+            ) : rooms.length === 0 ? (
+              <Text style={atg.empty}>Aap kisi group me nahi hain. Pehle Groups tab se join karein.</Text>
+            ) : (
+              <FlatList
+                data={rooms}
+                keyExtractor={r => r.id}
+                style={{ maxHeight: 320 }}
+                contentContainerStyle={{ paddingBottom: 8 }}
+                renderItem={({ item: room }) => (
+                  <Pressable onPress={() => addToRoom(room)} disabled={!!addingRoomId} style={atg.roomRow}>
+                    <View style={atg.roomIcon}><UsersIcon size={16} color={colors.brand} /></View>
+                    <Text style={atg.roomName} numberOfLines={1}>{room.name}</Text>
+                    {addingRoomId === room.id
+                      ? <ActivityIndicator size="small" color={colors.brand} />
+                      : <ArrowRight size={16} color={colors.muted2} />}
+                  </Pressable>
+                )}
+              />
+            )}
+          </Pressable>
+        </Pressable>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
@@ -686,8 +919,9 @@ function SummaryBubble({ msg, onEdit, onConfirm, sending }: {
 }
 
 // ═══════════ RESULTS BUBBLE ═══════════
-function ResultsBubble({ msg }: { msg: Msg }) {
-  const matches: { projectId: string; projectName: string; city?: string; location?: string; score: number; slug?: string }[] =
+type MatchCard = { projectId: string; projectName: string; city?: string; location?: string; score: number; slug?: string };
+function ResultsBubble({ msg, onAddToGroup }: { msg: Msg; onAddToGroup?: (m: MatchCard) => void }) {
+  const matches: MatchCard[] =
     msg.template?.options?.matches || [];
   const hasMatches = matches.length > 0;
   return (
@@ -699,13 +933,20 @@ function ResultsBubble({ msg }: { msg: Msg }) {
           <Text style={rs.headText}>{msg.content}</Text>
         </View>
         {matches.map((m) => (
-          <View key={m.projectId} style={rs.card}>
-            <View style={rs.icon}><Building2 size={22} color={colors.brand} /></View>
-            <View style={{ flex: 1 }}>
-              <Text style={rs.name} numberOfLines={1}>{m.projectName || 'Project'}</Text>
-              <Text style={rs.loc} numberOfLines={1}>📍 {[m.location, m.city].filter(Boolean).join(', ') || '—'}</Text>
+          <View key={m.projectId} style={rs.cardCol}>
+            <View style={rs.cardTop}>
+              <View style={rs.icon}><Building2 size={22} color={colors.brand} /></View>
+              <View style={{ flex: 1 }}>
+                <Text style={rs.name} numberOfLines={1}>{m.projectName || 'Project'}</Text>
+                <Text style={rs.loc} numberOfLines={1}>📍 {[m.location, m.city].filter(Boolean).join(', ') || '—'}</Text>
+              </View>
+              <ScoreRing score={m.score} />
             </View>
-            <ScoreRing score={m.score} />
+            {/* Add to Group — shares this matched project into a group */}
+            <Pressable onPress={() => onAddToGroup?.(m)} style={rs.addGroupBtn}>
+              <UsersIcon size={14} color={colors.brand} />
+              <Text style={rs.addGroupText}>Add to Group</Text>
+            </Pressable>
           </View>
         ))}
       </View>
@@ -839,11 +1080,28 @@ const rs = StyleSheet.create({
   headCardMatch: { backgroundColor: colors.greenBg, borderColor: colors.greenBorder },
   headText: { flex: 1, fontSize: 13, fontWeight: '700', color: colors.ink },
   card: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line, borderRadius: 16, padding: 12 },
+  cardCol: { backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line, borderRadius: 16, padding: 12, gap: 10 },
+  cardTop: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   icon: { width: 46, height: 46, borderRadius: 12, backgroundColor: colors.brandTint, alignItems: 'center', justifyContent: 'center' },
   name: { fontSize: 13, fontWeight: '800', color: colors.ink },
   loc: { fontSize: 10.5, color: colors.muted2, marginTop: 2 },
   ring: { width: 44, height: 44, borderRadius: 22, borderWidth: 3, borderColor: colors.line, alignItems: 'center', justifyContent: 'center' },
   ringText: { fontSize: 10, fontWeight: '800' },
+  addGroupBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 9, borderRadius: 10, borderWidth: 1, borderColor: `${colors.brand}55`, backgroundColor: colors.brandTint },
+  addGroupText: { fontSize: 11.5, fontWeight: '800', color: colors.brand },
+});
+
+const atg = StyleSheet.create({
+  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
+  sheet: { backgroundColor: colors.white, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 16, paddingBottom: 28 },
+  head: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12 },
+  title: { fontSize: 15, fontWeight: '800', color: colors.ink },
+  sub: { fontSize: 11, color: colors.muted2, marginTop: 1 },
+  closeBtn: { padding: 6, borderRadius: 10, backgroundColor: colors.slateBg },
+  empty: { fontSize: 12, color: colors.muted2, textAlign: 'center', paddingVertical: 24, paddingHorizontal: 16, lineHeight: 18 },
+  roomRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, paddingHorizontal: 4, borderBottomWidth: 1, borderBottomColor: colors.line },
+  roomIcon: { width: 38, height: 38, borderRadius: 12, backgroundColor: colors.brandTint, alignItems: 'center', justifyContent: 'center' },
+  roomName: { flex: 1, fontSize: 13, fontWeight: '700', color: colors.ink },
 });
 
 const ab = StyleSheet.create({
@@ -854,6 +1112,21 @@ const ab = StyleSheet.create({
   btnPrimary: { backgroundColor: colors.brand },
   btnGhost: { backgroundColor: colors.white, borderWidth: 1, borderColor: `${colors.brand}44` },
   btnText: { fontSize: 12, fontWeight: '800' },
+});
+
+// ── Chat controls (Undo/Redo/Restart/End) styles ──
+const cc = StyleSheet.create({
+  bar: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 10, paddingVertical: 7,
+    backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.line,
+  },
+  btn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 9, paddingVertical: 6, borderRadius: 14, backgroundColor: colors.cream, borderWidth: 1, borderColor: colors.line },
+  btnEnd: { backgroundColor: '#FEF2F2', borderColor: '#FECACA' },
+  btnDim: { opacity: 0.4 },
+  btnText: { fontSize: 10.5, fontWeight: '700', color: colors.muted2 },
+  resumeBtn: { flexDirection: 'row', alignItems: 'center', gap: 7, backgroundColor: colors.brand, paddingHorizontal: 20, paddingVertical: 11, borderRadius: 14, marginTop: 18 },
+  resumeText: { fontSize: 13, fontWeight: '800', color: '#fff' },
 });
 
 // ── Persistent Chat Bar styles ──

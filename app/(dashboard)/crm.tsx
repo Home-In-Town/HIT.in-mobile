@@ -75,6 +75,8 @@ export default function HomeDashboard() {
   // Active Overview tab — AI Lead Matching is the default view.
   const [tab, setTab] = useState<OverviewTab>('ai');
   const [showTeamDev, setShowTeamDev] = useState(false);
+  // True while an AI Lead Matching conversation is active → hide the welcome banner.
+  const [chatActive, setChatActive] = useState(false);
 
   const canUpload = ['admin', 'builder', 'captain'].includes(user?.role ?? '');
 
@@ -136,8 +138,8 @@ export default function HomeDashboard() {
         )}
       </View>
 
-      {/* ── Welcome Banner (only on AI tab) — shown ABOVE the tab cards ── */}
-      {tab === 'ai' && (
+      {/* ── Welcome Banner (only on AI tab, hidden once a chat is active) ── */}
+      {tab === 'ai' && !chatActive && (
         <View style={s.welcomeCard}>
           <View style={s.welcomeGlow} />
           <View style={s.welcomeInner}>
@@ -164,8 +166,7 @@ export default function HomeDashboard() {
         <Pressable style={[s.tabCard, tab === 'ai' && s.tabCardActive]} onPress={() => setTab('ai')}>
           <View style={[s.quickIcon, tab === 'ai' && s.quickIconActive]}><Zap size={16} color={tab === 'ai' ? '#fff' : colors.brand} /></View>
           <View style={{ flex: 1 }}>
-            <Text style={[s.quickTitle, tab === 'ai' && s.quickTitleActive]} numberOfLines={1}>AI Lead Match</Text>
-            <Text style={[s.quickSub, tab === 'ai' && s.quickSubActive]}>MATCH & CONNECT</Text>
+            <Text style={[s.quickTitle, tab === 'ai' && s.quickTitleActive]} numberOfLines={1}>AI Lead Matching</Text>
           </View>
         </Pressable>
 
@@ -176,15 +177,13 @@ export default function HomeDashboard() {
           </View>
           <View style={{ flex: 1 }}>
             <Text style={[s.quickTitle, tab === 'crm' && s.quickTitleActive]} numberOfLines={1}>CRM</Text>
-            <Text style={[s.quickSub, tab === 'crm' && s.quickSubActive]}>PIPELINE</Text>
           </View>
         </Pressable>
 
         <Pressable style={[s.tabCard, tab === 'marketplace' && s.tabCardActive]} onPress={() => setTab('marketplace')}>
           <View style={[s.quickIcon, tab === 'marketplace' && s.quickIconActive]}><ShoppingBag size={16} color={tab === 'marketplace' ? '#fff' : colors.brand} /></View>
           <View style={{ flex: 1 }}>
-            <Text style={[s.quickTitle, tab === 'marketplace' && s.quickTitleActive]} numberOfLines={1}>Marketplace</Text>
-            <Text style={[s.quickSub, tab === 'marketplace' && s.quickSubActive]}>SELL & EARN</Text>
+            <Text style={[s.quickTitle, tab === 'marketplace' && s.quickTitleActive]} numberOfLines={1}>Project</Text>
           </View>
         </Pressable>
       </View>
@@ -208,7 +207,7 @@ export default function HomeDashboard() {
         <View style={{ flex: 1 }}>
           {/* The actual AI Lead Matching feature (AI Lead Matching / Groups / Chats) */}
           <View style={{ flex: 1 }}>
-            <LeadMatchingHub embedded />
+            <LeadMatchingHub embedded onChatActiveChange={setChatActive} />
           </View>
         </View>
       )}

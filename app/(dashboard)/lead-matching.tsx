@@ -27,8 +27,8 @@ const CONF_BG    = (c: number) => c >= 0.8 ? colors.greenBg  : c >= 0.5 ? colors
 
 // ── AI Assistant (lead slot-filling chat) ──────────────────
 // The rich, template-driven assistant lives in its own component.
-function AssistantTab({ onViewLeads }: { onViewLeads?: () => void }) {
-  return <AiAssistant onViewLeads={onViewLeads} />;
+function AssistantTab({ onViewLeads, onActiveChange }: { onViewLeads?: () => void; onActiveChange?: (active: boolean) => void }) {
+  return <AiAssistant onViewLeads={onViewLeads} onActiveChange={onActiveChange} />;
 }
 
 // ── Leads Tab (admin only) ─────────────────────────────────
@@ -163,7 +163,13 @@ function Chip({ label }: { label: string }) {
 }
 
 // ── Main Hub ─────────────────────────────────────────────────
-export default function LeadMatchingHub({ embedded = false }: { embedded?: boolean } = {}) {
+export default function LeadMatchingHub({
+  embedded = false,
+  onChatActiveChange,
+}: {
+  embedded?: boolean;
+  onChatActiveChange?: (active: boolean) => void;
+} = {}) {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const [tab, setTab] = useState<'chats' | 'assistant' | 'groups'>('assistant');
@@ -171,7 +177,17 @@ export default function LeadMatchingHub({ embedded = false }: { embedded?: boole
   // When a group room is opened, hide the header + top tab bar for a
   // full-screen chat experience (matches the website behavior).
   const [groupOpen, setGroupOpen] = useState(false);
+  // True while the assistant has an active (in-progress) conversation.
+  const [assistantActive, setAssistantActive] = useState(false);
   const isAdmin = ['admin', 'builder'].includes(user?.role ?? '');
+
+  // Report "chat active" to the parent (Overview) so it can hide the welcome
+  // banner. Active when: not on the assistant landing (groups/chats tabs), or
+  // the assistant has an in-progress conversation.
+  React.useEffect(() => {
+    const active = tab !== 'assistant' ? true : assistantActive;
+    onChatActiveChange?.(active);
+  }, [tab, assistantActive, onChatActiveChange]);
 
   const TABS: { key: 'chats' | 'assistant' | 'groups'; label: string; icon: React.ReactNode }[] = [
     { key: 'assistant', label: 'AI Lead Matching', icon: <Zap size={16} /> },
@@ -216,7 +232,7 @@ export default function LeadMatchingHub({ embedded = false }: { embedded?: boole
       {/* Tab content */}
       <View style={{ flex: 1 }}>
         {tab === 'chats'     && <ChatEmbedded />}
-        {tab === 'assistant' && <AssistantTab onViewLeads={() => { if (isAdmin) setShowLeads(true); }} />}
+        {tab === 'assistant' && <AssistantTab onViewLeads={() => { if (isAdmin) setShowLeads(true); }} onActiveChange={setAssistantActive} />}
         {tab === 'groups'    && <GroupChatEmbedded onRoomOpenChange={setGroupOpen} topInset={insets.top} />}
       </View>
 
