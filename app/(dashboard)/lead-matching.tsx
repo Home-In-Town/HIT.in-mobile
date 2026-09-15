@@ -182,12 +182,11 @@ export default function LeadMatchingHub({
   const isAdmin = ['admin', 'builder'].includes(user?.role ?? '');
 
   // Report "chat active" to the parent (Overview) so it can hide the welcome
-  // banner. Active when: not on the assistant landing (groups/chats tabs), or
-  // the assistant has an in-progress conversation.
+  // banner. The AI Lead Matching section is now the group chat, so it's always
+  // considered active.
   React.useEffect(() => {
-    const active = tab !== 'assistant' ? true : assistantActive;
-    onChatActiveChange?.(active);
-  }, [tab, assistantActive, onChatActiveChange]);
+    onChatActiveChange?.(true);
+  }, [tab, onChatActiveChange]);
 
   const TABS: { key: 'chats' | 'assistant' | 'groups'; label: string; icon: React.ReactNode }[] = [
     { key: 'assistant', label: 'AI Lead Matching', icon: <Zap size={16} /> },
@@ -195,6 +194,8 @@ export default function LeadMatchingHub({
     { key: 'chats',     label: 'Chats',        icon: <MessageSquare size={16} /> },
   ];
 
+  // Keep the tab bar visible on the AI Lead Matching section (it IS the primary
+  // section). Only hide chrome when a room is opened from the separate Groups tab.
   const chromeHidden = tab === 'groups' && groupOpen;
 
   return (
@@ -232,8 +233,17 @@ export default function LeadMatchingHub({
       {/* Tab content */}
       <View style={{ flex: 1 }}>
         {tab === 'chats'     && <ChatEmbedded />}
-        {tab === 'assistant' && <AssistantTab onViewLeads={() => { if (isAdmin) setShowLeads(true); }} onActiveChange={setAssistantActive} />}
-        {tab === 'groups'    && <GroupChatEmbedded onRoomOpenChange={setGroupOpen} topInset={insets.top} />}
+        {/* AI Lead Matching = the Universal Group (auto-opened). AI Assist is a
+            floating button inside this group chat; it reuses the group's input. */}
+        {tab === 'assistant' && (
+          <GroupChatEmbedded
+            onRoomOpenChange={setGroupOpen}
+            topInset={0}
+            autoOpenUniversal
+            hideThreadBack
+          />
+        )}
+        {tab === 'groups'    && <GroupChatEmbedded onRoomOpenChange={setGroupOpen} topInset={embedded ? 0 : insets.top} />}
       </View>
 
       {/* Leads overlay (opened from the top button) */}
@@ -265,12 +275,12 @@ const hub = StyleSheet.create({
   },
   tabBtn: {
     flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    gap: 5, paddingVertical: 11,
+    gap: 6, paddingVertical: 12,
     borderBottomWidth: 2, borderBottomColor: 'transparent',
   },
   tabBtnActive: { borderBottomColor: colors.brand },
-  tabText: { fontSize: 11, fontWeight: '600', color: colors.muted2 },
-  tabTextActive: { color: colors.brand },
+  tabText: { fontSize: 11.5, fontWeight: '700', color: colors.muted2 },
+  tabTextActive: { color: colors.brand, fontWeight: '800' },
   leadsBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 18, backgroundColor: colors.brandTint, borderWidth: 1, borderColor: colors.brand },
   leadsBtnText: { fontSize: 11.5, fontWeight: '800', color: colors.brand },
   closeBtn: { padding: 6, borderRadius: 10, backgroundColor: colors.slateBg },

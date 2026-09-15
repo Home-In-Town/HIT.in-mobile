@@ -50,11 +50,35 @@ function fmtTime(ts: string) {
   catch { return ''; }
 }
 
+export type AiAssistantApi = {
+  submitFreeText: (raw: string) => void;
+  activeTemplate: Template | undefined;
+  sending: boolean;
+  typing: boolean;
+  // End the current AI session (stops the conversation; keeps any found match).
+  endChat: () => void;
+  // Run matching on the collected requirement; reveals ALL matches with scores.
+  runMatching: () => void;
+  // Returns the property details the AI has collected so far (for the Post card).
+  getPostDraft: () => AiPostDraft;
+};
+
+export type AiPostDraft = {
+  intent: string | null; // 'sell' | 'rent' | 'buy' | null
+  isSellable: boolean;    // true when intent is sell/rent (a postable property)
+  fields: { label: string; value: string }[]; // labeled details for the card
+  title: string;          // e.g. "3BHK Apartment" or property type
+  subtitle: string;       // e.g. "Civil Lines, Nagpur"
+  price: string;          // formatted price if known
+};
+
 export default function AiAssistant({
   onViewLeads,
   onActiveChange,
   groupContext,
   onMatchShared,
+  hideOwnChrome = false,
+  onReady,
 }: {
   onViewLeads?: () => void;
   onActiveChange?: (active: boolean) => void;
@@ -63,6 +87,12 @@ export default function AiAssistant({
   // conversation still lives in the user's own assistant thread.
   groupContext?: { roomId: string; roomName: string };
   onMatchShared?: () => void;
+  // When true (used inside the group), hide the assistant's own control bar and
+  // free-text input; the host (group composer) drives text answers instead.
+  // Choice/multichoice chips still render inline as part of the chat area.
+  hideOwnChrome?: boolean;
+  // Exposes an imperative API so the host can route its single input box here.
+  onReady?: (api: AiAssistantApi) => void;
 }) {
   const { user } = useAuth();
   const toast = useToast();
@@ -114,14 +144,43 @@ export default function AiAssistant({
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), delay);
   }, []);
 
-  // ── Open / resume ──
+  // ── Open — ALWAYS start a fresh session ──
+  // We never show the previous AI Q&A / answers. We only keep the LATEST match
+  // result (if one exists) so the user still sees their last matched property,
+  // then we reset the flow to Step 1 so every open begins a brand-new session.
+  // The backend history/match data is preserved (nothing is deleted).
   const open = useCallback(async () => {
     setLoading(true);
     try {
       const res = await leadChatApi.open();
-      sessionIdRef.current = res.sessionId;
-      setFlowState(res.flowState);
-      setMessages(res.messages || []);
+      const sid = res.sessionId;
+      sessionIdRef.current = sid;
+
+      // Find the most recent match-results message from the persisted history.
+      const history: Msg[] = res.messages || [];
+      const latestResult = [...history].reverse().find(
+        (m) => m.messageType === 'system' && m.template?.inputType === 'results'
+      );
+
+      // Reset the backend flow to a fresh Step-1 intent question.
+      let freshQuestion: Msg | null = null;
+      try {
+        const fresh = await leadChatApi.newLead(sid);
+        setFlowState(fresh.flowState);
+        freshQuestion = fresh.message || null;
+      } catch {
+        // If reset fails, fall back to whatever the open returned.
+        setFlowState(res.flowState);
+      }
+
+      // Show only: [previous match result (if any)] + [fresh Step-1 question].
+      const initial: Msg[] = [];
+      if (latestResult) initial.push(latestResult);
+      if (freshQuestion) initial.push(freshQuestion);
+      setMessages(initial);
+      // Clear undo/redo history so old state can't be restored.
+      setUndoStack([]);
+      setRedoStack([]);
       scrollDown(200);
     } catch (e: any) {
       toast.show(e?.message || 'Failed to open assistant', 'error');
@@ -304,6 +363,87 @@ export default function AiAssistant({
     }
   }, [addTarget, toast, shareMatchToRoom]);
 
+  // ── Matching (finding properties) ──
+  // Runs the existing matching on the collected requirement (confirm → persists
+  // lead + runs MatchEngine over real Projects/Marketplace data) and reveals ALL
+  // matching properties with their score in the private AI panel. It does NOT
+  // post anything to the group — the user can share any card via "Add to Group".
+  const runMatching = useCallback(async () => {
+    const sid = sessionIdRef.current;
+    if (!sid || sending) return;
+    setSending(true);
+    try {
+      const res = await leadChatApi.confirm(sid);
+      setFlowState(res.flowState);
+      reveal([res.resultsMessage, res.closingMessage, res.actionsMessage].filter(Boolean) as Msg[]);
+      const matches: MatchCard[] = res.resultsMessage?.template?.options?.matches || [];
+      if (!matches.length) {
+        toast.show('Abhi koi match nahi mila — thodi aur detail add karein.', 'info');
+      } else {
+        toast.show(`${matches.length} matching ${matches.length === 1 ? 'property' : 'properties'} mili 🎯`, 'success');
+      }
+    } catch (e: any) {
+      // Backend rejects confirm when the conversation isn't complete yet.
+      toast.show(e?.message || 'Pehle kuch aur sawaalon ke jawab dein, phir match karein.', 'info');
+    } finally {
+      setSending(false);
+    }
+  }, [sending, reveal, toast]);
+
+  // ── Build a Post draft from the AI-collected details ──
+  // Reuses the details the user already gave the assistant (no manual re-entry).
+  // Prefers the labeled summary values (if the flow reached the summary), else
+  // derives labeled fields from the raw collected slots.
+  const getPostDraft = useCallback((): AiPostDraft => {
+    const intent: string | null = flowState?.intent ?? null;
+    const isSellable = intent === 'sell' || intent === 'rent';
+
+    // Preferred source: latest summary message's labeled values.
+    const summaryMsg = [...messages].reverse().find(
+      (m) => m.messageType === 'system' && m.template?.inputType === 'summary'
+    );
+    const summaryValues: { slotId: string; label: string; display: string }[] =
+      summaryMsg?.template?.options?.values || [];
+
+    const SKIPPED = /^skip/i;
+    let fields: { label: string; value: string }[] = [];
+
+    if (summaryValues.length) {
+      fields = summaryValues
+        .filter(v => v.display && !SKIPPED.test(v.display))
+        .map(v => ({ label: v.label, value: v.display }));
+    } else {
+      // Fallback: derive from raw slots with human labels.
+      const slots = flowState?.slots || {};
+      const LABELS: Record<string, string> = {
+        propertyTypeDetailed: 'Property Type', propertyType: 'Property Type',
+        category: 'Category', bhk: 'BHK', location: 'Location', city: 'City',
+        area: 'Area', expectedPrice: 'Price', projectStatus: 'Status',
+        possession: 'Possession', reraApproved: 'RERA', bankLoanAvailable: 'Bank Loan',
+        amenities: 'Amenities', urgency: 'Urgency', contact: 'Contact',
+      };
+      const fmtSlot = (v: any): string => {
+        if (v == null) return '';
+        if (Array.isArray(v)) return v.join(', ');
+        if (typeof v === 'object') return v.unit ? `${v.value} ${v.unit}` : String(v.value ?? '');
+        return String(v);
+      };
+      fields = Object.entries(slots)
+        .filter(([k]) => LABELS[k])
+        .map(([k, v]) => ({ label: LABELS[k], value: fmtSlot(v) }))
+        .filter(f => f.value && !SKIPPED.test(f.value));
+    }
+
+    const findVal = (labelRe: RegExp) => fields.find(f => labelRe.test(f.label))?.value || '';
+    const title = findVal(/property type|type|bhk|category/i) || (isSellable ? 'Your Property' : 'Requirement');
+    const loc = findVal(/location/i);
+    const city = findVal(/city/i);
+    const subtitle = [loc, city].filter(Boolean).join(', ');
+    const price = findVal(/price/i);
+
+    return { intent, isSellable, fields, title, subtitle, price };
+  }, [flowState, messages]);
+
   // The active template = last system message that carries one.
   const lastAssistant = [...messages].reverse().find(m => m.messageType === 'system' && m.template);
   const activeTemplate = lastAssistant?.template;
@@ -312,6 +452,46 @@ export default function AiAssistant({
 
   const showAnswerBar = !typing && activeTemplate?.inputType &&
     !['summary', 'results', 'actions'].includes(activeTemplate.inputType);
+
+  // ── Route a free-text answer through the correct backend call (mirrors the
+  //    PersistentChatBar routing). Used by the host group composer when the
+  //    assistant's own input is hidden. ──
+  const submitFreeText = useCallback((raw: string) => {
+    const trimmed = (raw || '').trim();
+    if (!trimmed || sending || typing) return;
+    const type = activeTemplate?.inputType;
+    const slotId = activeTemplate?.slotId || '';
+    const isCompleted = flowState?.status === 'completed';
+
+    // No active question (completed / fresh) → start a new requirement.
+    if (!activeTemplate || isCompleted) { newLead(); return; }
+    // Locked states (summary/results/actions) → ignore free text.
+    if (['summary', 'results', 'actions'].includes(type || '')) return;
+
+    if (type === 'phone') {
+      const digits = trimmed.replace(/\D/g, '').slice(0, 10);
+      if (digits.length < 10) return;
+      submit(slotId, digits, digits);
+      return;
+    }
+    if (type === 'number') {
+      const num = trimmed.replace(/[^\d.]/g, '');
+      if (!num) return;
+      const units = activeTemplate.unit || [];
+      const value = units.length ? { value: num, unit: units[0] } : num;
+      const display = units.length ? `${num} ${units[0]}` : num;
+      submit(slotId, value, display);
+      return;
+    }
+    // text / location / choice / multichoice free-text
+    submit(slotId, trimmed, trimmed);
+  }, [activeTemplate, flowState, sending, typing, submit, newLead]);
+
+  // Expose the imperative API to the host (group composer) when requested.
+  useEffect(() => {
+    if (!onReady) return;
+    onReady({ submitFreeText, activeTemplate, sending, typing, endChat, runMatching, getPostDraft });
+  }, [onReady, submitFreeText, activeTemplate, sending, typing, endChat, runMatching, getPostDraft]);
 
   // Report to the parent whether a conversation is active (used to hide the
   // Overview welcome banner). Active = not ended, and the flow is in progress
@@ -343,7 +523,39 @@ export default function AiAssistant({
   }
 
   // Ended state — chat closed by the user.
+  // In group mode (hideOwnChrome) we PRESERVE the transcript so any found match
+  // stays visible; we just show a compact "ended" bar + Start-new action. The
+  // full-screen ended view is only used in the standalone assistant.
   if (ended) {
+    if (hideOwnChrome) {
+      return (
+        <View style={{ flex: 1, backgroundColor: colors.cream }}>
+          <ScrollView
+            ref={scrollRef}
+            style={{ flex: 1 }}
+            contentContainerStyle={{ padding: 12, paddingBottom: 16, gap: 6 }}
+            showsVerticalScrollIndicator={false}
+          >
+            {messages.map((msg) => {
+              const t = msg.template;
+              if (msg.messageType === 'system' && t?.inputType === 'results') {
+                return <ResultsBubble key={msg._id} msg={msg} onAddToGroup={openAddToGroup} />;
+              }
+              // In the ended state we only keep the match result visible; other
+              // (Q&A) bubbles are hidden per the "don't show old conversation" rule.
+              return null;
+            })}
+            <View style={s.endedNote}>
+              <Text style={s.endedNoteText}>Chat ended. Aapka match upar save hai.</Text>
+              <Pressable onPress={resumeChat} style={s.endedStartBtn}>
+                <RotateCcw size={13} color="#fff" />
+                <Text style={s.endedStartText}>Start new chat</Text>
+              </Pressable>
+            </View>
+          </ScrollView>
+        </View>
+      );
+    }
     return (
       <View style={s.center}>
         <View style={s.botBubble}><Text style={{ fontSize: 25 }}>👋</Text></View>
@@ -359,7 +571,8 @@ export default function AiAssistant({
 
   return (
     <KeyboardAvoidingView style={{ flex: 1, backgroundColor: colors.cream }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      {/* ── Chat controls: Undo · Redo · Restart · End ── */}
+      {/* ── Chat controls: Undo · Redo · Restart · End (hidden when host provides chrome) ── */}
+      {!hideOwnChrome && (
       <View style={cc.bar}>
         <Pressable onPress={undo} disabled={undoStack.length === 0 || sending} style={[cc.btn, (undoStack.length === 0 || sending) && cc.btnDim]}>
           <Undo2 size={14} color={colors.muted2} />
@@ -379,6 +592,7 @@ export default function AiAssistant({
           <Text style={[cc.btnText, { color: colors.red }]}>End</Text>
         </Pressable>
       </View>
+      )}
 
       {/* Progress bar */}
       {progress && progress.total > 1 && (
@@ -438,23 +652,35 @@ export default function AiAssistant({
       {/* Structured answer controls (choice chips / multichoice / number unit picker).
           TextControl and PhoneControl are intentionally excluded here — the
           PersistentChatBar below handles those input types directly. */}
-      {showAnswerBar && activeTemplate &&
-        !['text', 'location', 'phone'].includes(activeTemplate.inputType || '') && (
-        <AnswerControl template={activeTemplate} disabled={sending} onSubmit={submit} />
-      )}
+      {hideOwnChrome ? (
+        // Inside the group: only render chip-style pickers (choice/multichoice)
+        // inline; text/location/phone/number are answered via the group's own
+        // input box (host-driven). No second text input is rendered here.
+        showAnswerBar && activeTemplate &&
+          ['choice', 'multichoice'].includes(activeTemplate.inputType || '') && (
+          <AnswerControl template={activeTemplate} disabled={sending} onSubmit={submit} />
+        )
+      ) : (
+        <>
+          {showAnswerBar && activeTemplate &&
+            !['text', 'location', 'phone'].includes(activeTemplate.inputType || '') && (
+            <AnswerControl template={activeTemplate} disabled={sending} onSubmit={submit} />
+          )}
 
-      {/* ── Persistent chat input bar — only shown when AnswerControl is NOT visible,
-          i.e. for text/location/phone slots, completed flow, or no active slot.
-          This prevents two input fields appearing simultaneously. ── */}
-      {!(showAnswerBar && activeTemplate &&
-         !['text', 'location', 'phone'].includes(activeTemplate.inputType || '')) && (
-        <PersistentChatBar
-          activeTemplate={activeTemplate}
-          flowState={flowState}
-          disabled={sending || typing}
-          onSubmitSlot={submit}
-          onNewLead={newLead}
-        />
+          {/* ── Persistent chat input bar — only shown when AnswerControl is NOT visible,
+              i.e. for text/location/phone slots, completed flow, or no active slot.
+              This prevents two input fields appearing simultaneously. ── */}
+          {!(showAnswerBar && activeTemplate &&
+             !['text', 'location', 'phone'].includes(activeTemplate.inputType || '')) && (
+            <PersistentChatBar
+              activeTemplate={activeTemplate}
+              flowState={flowState}
+              disabled={sending || typing}
+              onSubmitSlot={submit}
+              onNewLead={newLead}
+            />
+          )}
+        </>
       )}
 
       {/* ── Add to Group picker modal ── */}
@@ -999,6 +1225,10 @@ const s = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.cream },
   botBubble: { width: 60, height: 60, borderRadius: 18, backgroundColor: colors.brandTint, alignItems: 'center', justifyContent: 'center' },
   loadingText: { marginTop: 10, fontSize: 12, color: colors.muted2 },
+  endedNote: { alignItems: 'center', gap: 10, paddingVertical: 20 },
+  endedNoteText: { fontSize: 12, color: colors.muted2, textAlign: 'center' },
+  endedStartBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: colors.brand, paddingHorizontal: 16, paddingVertical: 9, borderRadius: 14 },
+  endedStartText: { color: '#fff', fontSize: 12, fontWeight: '800' },
   progressWrap: { paddingHorizontal: 16, paddingVertical: 10, backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.line },
   progressRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
   progressLabel: { fontSize: 9, fontWeight: '800', color: colors.muted, letterSpacing: 0.5, textTransform: 'uppercase' },

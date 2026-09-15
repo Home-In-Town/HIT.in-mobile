@@ -11,6 +11,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, FlatList, Pressable, StyleSheet, ActivityIndicator,
   TextInput, KeyboardAvoidingView, Platform, Modal, ScrollView, Switch, Alert,
+  Animated, PanResponder,
 } from 'react-native';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
@@ -23,7 +24,7 @@ import {
   Search, MapPin, Check, Camera, Paperclip, Sparkles,
 } from 'lucide-react-native';
 import { groupChatApi, shareApi, mediaApi, GroupRoom, GroupMessage } from '../lib/api';
-import AiAssistant from './AiAssistant';
+import AiAssistant, { AiAssistantApi, AiPostDraft } from './AiAssistant';
 import { useAuth } from '../lib/authContext';
 import { useSocket } from '../hooks/useSocket';
 import { useToast } from './Toast';
@@ -70,9 +71,79 @@ const POSSESSION_STATUS = [
   { v: 'ready', l: 'Ready to Move' }, { v: '6months', l: '6 Months' }, { v: '1year', l: '1 Year' }, { v: '2year+', l: '2+ Years' },
 ];
 
-export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0 }: {
+// ─── Draggable "AI Lead Assist" FAB ──────────────────────────────────────────
+// A movable floating button. It stays inside its parent (the message area) and
+// never leaves the viewport. A small movement threshold distinguishes a tap
+// (opens AI) from a drag (repositions the button), so tapping never triggers a
+// stray drag on mobile.
+const FAB_W = 128; // approx pill width (clamp margin)
+const FAB_H = 44;  // approx pill height
+const DRAG_THRESHOLD = 6; // px of movement before it's treated as a drag
+
+function DraggableFab({ onPress }: { onPress: () => void }) {
+  const pan = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
+  const bounds = useRef({ w: 0, h: 0 }).current;
+  const start = useRef({ x: 0, y: 0 });
+  const moved = useRef(false);
+
+  const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
+
+  const responder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      // Only claim the gesture once the finger actually moves — lets taps pass.
+      onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > DRAG_THRESHOLD || Math.abs(g.dy) > DRAG_THRESHOLD,
+      onPanResponderGrant: () => {
+        moved.current = false;
+        // @ts-ignore - _value exists at runtime
+        start.current = { x: pan.x._value, y: pan.y._value };
+      },
+      onPanResponderMove: (_e, g) => {
+        if (Math.abs(g.dx) > DRAG_THRESHOLD || Math.abs(g.dy) > DRAG_THRESHOLD) moved.current = true;
+        pan.setValue({ x: start.current.x + g.dx, y: start.current.y + g.dy });
+      },
+      onPanResponderRelease: (_e, g) => {
+        if (!moved.current && Math.abs(g.dx) < DRAG_THRESHOLD && Math.abs(g.dy) < DRAG_THRESHOLD) {
+          onPress();
+          return;
+        }
+        // Clamp final position inside the container (keep fully on-screen).
+        const maxX = 0;
+        const minX = -(bounds.w - FAB_W - 28); // 14px margins both sides
+        const maxY = 0;
+        const minY = -(bounds.h - FAB_H - 28);
+        const nx = clamp(start.current.x + g.dx, minX, maxX);
+        const ny = clamp(start.current.y + g.dy, minY, maxY);
+        Animated.spring(pan, { toValue: { x: nx, y: ny }, useNativeDriver: false, friction: 6 }).start();
+      },
+    })
+  ).current;
+
+  return (
+    <View
+      pointerEvents="box-none"
+      style={StyleSheet.absoluteFill}
+      onLayout={(e) => { bounds.w = e.nativeEvent.layout.width; bounds.h = e.nativeEvent.layout.height; }}
+    >
+      <Animated.View
+        {...responder.panHandlers}
+        style={[s.aiFab, { transform: pan.getTranslateTransform() }]}
+      >
+        <Sparkles size={16} color="#fff" />
+        <Text style={s.aiFabText}>AI Lead Assist</Text>
+      </Animated.View>
+    </View>
+  );
+}
+
+export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, autoOpenUniversal = false, hideThreadBack = false }: {
   onRoomOpenChange?: (open: boolean) => void;
   topInset?: number;
+  // When true, the Universal ("AI Lead Matching") room opens automatically and
+  // the thread's back button is hidden — used when this component IS the
+  // AI Lead Matching section (no separate room-list step).
+  autoOpenUniversal?: boolean;
+  hideThreadBack?: boolean;
 }) {
   const { user } = useAuth();
   const toast = useToast();
@@ -98,7 +169,14 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0 }: {
   const [shareProject, setShareProject] = useState<any>(null);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const [showAiAssist, setShowAiAssist] = useState(false);
+  // AI Assist mode — when on, the composer + a private inline panel drive the
+  // existing AI Lead Matching assistant instead of posting to the group.
+  const [aiMode, setAiMode] = useState(false);
+  const [showAiMenu, setShowAiMenu] = useState(false);
+  // Post card built from the AI-collected property details (no manual form).
+  const [postDraft, setPostDraft] = useState<AiPostDraft | null>(null);
+  const [postingDraft, setPostingDraft] = useState(false);
+  const aiApiRef = useRef<AiAssistantApi | null>(null);
   const flatRef = useRef<FlatList>(null);
 
   const role = user?.role ?? '';
@@ -162,6 +240,32 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0 }: {
     setActiveRoom(null);
     setShowMediaMenu(false);
     setShowRoomMenu(false);
+  };
+
+  // When used as the AI Lead Matching section, auto-open the Universal room so
+  // the group chat shows directly (no room-list step). Runs once after rooms load.
+  const autoOpenedRef = useRef(false);
+  useEffect(() => {
+    if (!autoOpenUniversal || autoOpenedRef.current || activeRoom || loading) return;
+    const universal = myRooms.find(r => r.isUniversal) || myRooms.find(r => /hit community/i.test(r.name));
+    if (universal) {
+      autoOpenedRef.current = true;
+      openRoom(universal);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoOpenUniversal, myRooms, loading, activeRoom]);
+
+  // Single composer handler: routes to AI when AI mode is on, else to the group.
+  const handleComposerSend = () => {
+    const t = text.trim();
+    if (!t) return;
+    if (aiMode) {
+      // Private AI answer — never posted to the group.
+      setText('');
+      aiApiRef.current?.submitFreeText(t);
+      return;
+    }
+    sendText();
   };
 
   const sendText = async () => {
@@ -290,6 +394,39 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0 }: {
       setPostMode('text');
       setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 150);
     } catch (e: any) { toast.show(e?.message || 'Failed to post', 'error'); }
+  };
+
+  // Publish the AI-collected property draft into the group as an inventory card
+  // (reuses the existing group posting). No manual form — details come from AI.
+  const publishDraft = async () => {
+    if (!activeRoom || !postDraft) return;
+    setPostingDraft(true);
+    const get = (re: RegExp) => postDraft.fields.find(f => re.test(f.label))?.value || '';
+    const priceStr = get(/price/i);
+    const priceNum = Number((priceStr.match(/[\d.]+/) || [])[0]) || 0;
+    const card = {
+      bhkOptions: get(/bhk|property type|type/i) ? [get(/bhk|property type|type/i)] : [],
+      priceRange: { min: priceNum, max: 0 },
+      area: get(/location/i) || get(/area/i),
+      city: get(/city/i),
+      possessionStatus: get(/status|possession/i) || 'ready',
+      bankLoanAvailable: /yes/i.test(get(/loan/i)),
+      commissionPercent: 0,
+      description: postDraft.fields.map(f => `${f.label}: ${f.value}`).join(' • '),
+    };
+    try {
+      const res = await groupChatApi.postMessage(activeRoom.id, { messageType: 'inventory_card', inventoryCard: card });
+      if (res?.message) setMessages(prev => [...prev, normalizeMsg(res.message, activeRoom.id)]);
+      toast.show('Property posted 📢', 'success');
+      setPostDraft(null);
+      setAiMode(false);
+      aiApiRef.current = null;
+      setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 150);
+    } catch (e: any) {
+      toast.show(e?.message || 'Failed to post', 'error');
+    } finally {
+      setPostingDraft(false);
+    }
   };
 
   const handleInterested = async (projectId: string, messageId: string) => {
@@ -536,7 +673,9 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0 }: {
     <KeyboardAvoidingView style={{ flex: 1, paddingTop: topInset }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       {/* Thread header */}
       <View style={s.threadHeader}>
-        <Pressable onPress={closeRoom} style={{ padding: 4 }}><ChevronLeft size={22} color={colors.ink} /></Pressable>
+        {!hideThreadBack && (
+          <Pressable onPress={closeRoom} style={{ padding: 4 }}><ChevronLeft size={22} color={colors.ink} /></Pressable>
+        )}
         <View style={s.threadAvatar}><Text style={{ fontSize: 15 }}>{ROOM_ICON[activeRoom.roomType] || '💬'}</Text></View>
         <View style={{ flex: 1 }}>
           <Text style={s.threadTitle} numberOfLines={1}>{roomDisplayName(activeRoom)}</Text>
@@ -606,58 +745,109 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0 }: {
         <Pressable style={StyleSheet.absoluteFill} onPress={() => { setShowRoomMenu(false); setShowMediaMenu(false); }} />
       )}
 
-      {/* ── AI Assist (inline, same screen) ──
-          Runs the existing AI Lead Matching assistant right inside the group
-          thread. The Q&A is private to this user (own assistant thread via
-          leadChatApi — never posted to the group), so other members don't see
-          it. Only a match card the user shares becomes visible to everyone. */}
-      {showAiAssist ? (
-        <>
-          <View style={s.aiInlineBanner}>
-            <Pressable onPress={() => setShowAiAssist(false)} style={s.aiBackBtn}>
-              <ChevronLeft size={16} color={colors.brand} />
-              <Text style={s.aiBackText}>Back to group</Text>
-            </Pressable>
-            <View style={s.aiPrivatePill}>
-              <Sparkles size={11} color={colors.brand} />
-              <Text style={s.aiPrivateText}>AI Assist · Private to you</Text>
-            </View>
-          </View>
-          <View style={{ flex: 1 }}>
-            <AiAssistant
-              groupContext={{ roomId: activeRoom.id, roomName: roomDisplayName(activeRoom) }}
-              onMatchShared={() => setShowAiAssist(false)}
-            />
-          </View>
-        </>
-      ) : (
-        <>
-      {/* Messages */}
+      {/* Messages — the group chat is ALWAYS the base view. */}
       {loadingMsgs ? <ActivityIndicator color={colors.brand} style={{ marginTop: 40 }} /> : (
-        <FlatList
-          ref={flatRef}
-          data={messages}
-          keyExtractor={m => m.id}
-          contentContainerStyle={{ padding: 12, gap: 8 }}
-          onContentSizeChange={() => flatRef.current?.scrollToEnd({ animated: false })}
-          renderItem={({ item: msg }) => (
-            <MessageBubble msg={msg} meId={user?.id || ''} onInterested={handleInterested} />
+        <View style={{ flex: 1 }}>
+          <FlatList
+            ref={flatRef}
+            data={messages}
+            keyExtractor={m => m.id}
+            contentContainerStyle={{ paddingHorizontal: 14, paddingVertical: 14, gap: 10 }}
+            onContentSizeChange={() => flatRef.current?.scrollToEnd({ animated: false })}
+            renderItem={({ item: msg }) => (
+              <MessageBubble msg={msg} meId={user?.id || ''} onInterested={handleInterested} />
+            )}
+          />
+
+          {/* ── AI Assist (inline, private) — overlays the message area while
+              active. Runs the existing AI Lead Matching assistant via the user's
+              own private thread (leadChatApi); other members see nothing. Only a
+              shared match becomes public. Uses the SAME group composer below. ── */}
+          {aiMode && (
+            <View style={s.aiOverlay}>
+              <View style={s.aiInlineBanner}>
+                <View style={s.aiPrivatePill}>
+                  <Sparkles size={11} color={colors.brand} />
+                  <Text style={s.aiPrivateText}>AI Assist · Private to you</Text>
+                </View>
+                {/* 3-dot menu (End Chat / Exit Chat / Post & Matching) */}
+                <Pressable onPress={() => setShowAiMenu(v => !v)} style={s.aiMenuBtn}>
+                  <MoreVertical size={18} color={colors.brand} />
+                </Pressable>
+              </View>
+
+              {showAiMenu && (
+                <>
+                  <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowAiMenu(false)} />
+                  <View style={s.aiMenu}>
+                    {/* Post — show the property the AI already collected as a small
+                        card (no manual re-entry). */}
+                    <Pressable
+                      style={s.aiMenuItem}
+                      onPress={() => {
+                        setShowAiMenu(false);
+                        const draft = aiApiRef.current?.getPostDraft();
+                        if (!draft || draft.fields.length === 0) {
+                          toast.show('Pehle AI ko apni property ki detail batayein.', 'info');
+                          return;
+                        }
+                        if (!draft.isSellable) {
+                          toast.show('Post sirf sell/rent property ke liye hai.', 'info');
+                          return;
+                        }
+                        setPostDraft(draft);
+                      }}
+                    >
+                      <Building2 size={15} color={colors.greenText} />
+                      <Text style={s.aiMenuText}>Post</Text>
+                    </Pressable>
+                    {/* Matching — run AI matching, reveal all matches with scores */}
+                    <Pressable
+                      style={s.aiMenuItem}
+                      onPress={() => { setShowAiMenu(false); aiApiRef.current?.runMatching(); }}
+                    >
+                      <Search size={15} color={colors.brand} />
+                      <Text style={s.aiMenuText}>Matching</Text>
+                    </Pressable>
+                    <Pressable
+                      style={s.aiMenuItem}
+                      onPress={() => { setShowAiMenu(false); aiApiRef.current?.endChat(); }}
+                    >
+                      <X size={15} color={colors.muted2} />
+                      <Text style={s.aiMenuText}>End Chat</Text>
+                    </Pressable>
+                    <Pressable
+                      style={s.aiMenuItem}
+                      onPress={() => { setShowAiMenu(false); setAiMode(false); aiApiRef.current = null; }}
+                    >
+                      <LogOut size={15} color={colors.muted2} />
+                      <Text style={s.aiMenuText}>Exit Chat</Text>
+                    </Pressable>
+                  </View>
+                </>
+              )}
+
+              <View style={{ flex: 1 }}>
+                <AiAssistant
+                  hideOwnChrome
+                  groupContext={{ roomId: activeRoom.id, roomName: roomDisplayName(activeRoom) }}
+                  onReady={(api) => { aiApiRef.current = api; }}
+                  onMatchShared={() => {}}
+                />
+              </View>
+            </View>
           )}
-        />
+
+          {/* AI Lead Assist floating button (FAB) — draggable; toggles AI mode. */}
+          {!aiMode && <DraggableFab onPress={() => setAiMode(true)} />}
+        </View>
       )}
 
-      {/* Composer — clean text bar + quick actions to open Requirement / Inventory sheets */}
+      {/* Composer — the SINGLE input box. Routes to the group when in normal
+          mode, and to the AI assistant when AI mode is active. */}
       <View style={s.composer}>
-        {/* AI Assist entry — replaces Requirement/Inventory. Opens the private
-            AI Lead Matching assistant. Only match results get shared to the group. */}
-        <View style={s.quickRow}>
-          <Pressable onPress={() => setShowAiAssist(true)} style={[s.quickChip, { flex: 1, justifyContent: 'center', backgroundColor: colors.brandTint, borderColor: `${colors.brand}55` }]}>
-            <Sparkles size={14} color={colors.brand} />
-            <Text style={[s.quickChipText, { color: colors.brand }]}>AI Assist — Find me a match</Text>
-          </Pressable>
-        </View>
-        {/* Attachment options: Camera / Gallery / Files */}
-        {showAttachMenu && (
+        {/* Attachment options: Camera / Gallery / Files (group mode only) */}
+        {!aiMode && showAttachMenu && (
           <View style={s.attachRow}>
             <Pressable onPress={pickFromCamera} disabled={uploading} style={s.attachOpt}>
               <View style={[s.attachIcon, { backgroundColor: '#EFF6FF' }]}><Camera size={17} color="#2563EB" /></View>
@@ -675,24 +865,35 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0 }: {
         )}
 
         <View style={s.textRow}>
-          <Pressable
-            onPress={() => setShowAttachMenu(v => !v)}
-            disabled={uploading}
-            style={[s.attachBtn, showAttachMenu && { backgroundColor: colors.brandTint }]}
-          >
-            {uploading
-              ? <ActivityIndicator size="small" color={colors.brand} />
-              : <Paperclip size={18} color={showAttachMenu ? colors.brand : colors.muted2} />}
-          </Pressable>
-          <TextInput value={text} onChangeText={setText} placeholder="Type a message…" placeholderTextColor={colors.muted}
-            style={s.textInput} multiline onSubmitEditing={sendText} />
-          <Pressable onPress={sendText} disabled={!text.trim()} style={[s.sendBtn, !text.trim() && { opacity: 0.4 }]}>
+          {!aiMode ? (
+            <Pressable
+              onPress={() => setShowAttachMenu(v => !v)}
+              disabled={uploading}
+              style={[s.attachBtn, showAttachMenu && { backgroundColor: colors.brandTint }]}
+            >
+              {uploading
+                ? <ActivityIndicator size="small" color={colors.brand} />
+                : <Paperclip size={18} color={showAttachMenu ? colors.brand : colors.muted2} />}
+            </Pressable>
+          ) : (
+            <View style={[s.attachBtn, { backgroundColor: colors.brandTint, borderColor: `${colors.brand}55` }]}>
+              <Sparkles size={16} color={colors.brand} />
+            </View>
+          )}
+          <TextInput
+            value={text}
+            onChangeText={setText}
+            placeholder={aiMode ? 'Answer the AI…' : 'Type a message…'}
+            placeholderTextColor={colors.muted}
+            style={s.textInput}
+            multiline
+            onSubmitEditing={handleComposerSend}
+          />
+          <Pressable onPress={handleComposerSend} disabled={!text.trim()} style={[s.sendBtn, !text.trim() && { opacity: 0.4 }]}>
             <Send size={16} color="#fff" />
           </Pressable>
         </View>
       </View>
-        </>
-      )}
 
       {/* Requirement composer sheet */}
       <RequirementSheet
@@ -711,6 +912,49 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0 }: {
         onClose={() => setPostMode('text')}
         onSubmit={postInventory}
       />
+
+      {/* ── Post Property Card — built from the AI-collected details (no manual
+          form). Shows a small property card; user just confirms to post. ── */}
+      <Modal visible={!!postDraft} transparent animationType="slide" onRequestClose={() => setPostDraft(null)}>
+        <Pressable style={pd.overlay} onPress={() => setPostDraft(null)}>
+          <Pressable style={pd.sheet} onPress={() => {}}>
+            <View style={pd.head}>
+              <Building2 size={18} color={colors.greenText} />
+              <View style={{ flex: 1 }}>
+                <Text style={pd.headTitle}>Your Property</Text>
+                <Text style={pd.headSub}>AI ne aapki di hui detail se banaya</Text>
+              </View>
+              <Pressable onPress={() => setPostDraft(null)} hitSlop={8}><X size={20} color={colors.ink} /></Pressable>
+            </View>
+
+            {/* Small property card */}
+            <View style={pd.card}>
+              <View style={pd.cardTop}>
+                <View style={pd.cardIcon}><Building2 size={22} color={colors.brand} /></View>
+                <View style={{ flex: 1 }}>
+                  <Text style={pd.cardTitle} numberOfLines={1}>{postDraft?.title || 'Property'}</Text>
+                  {postDraft?.subtitle ? <Text style={pd.cardLoc} numberOfLines={1}>📍 {postDraft.subtitle}</Text> : null}
+                </View>
+                {postDraft?.price ? <Text style={pd.cardPrice}>{postDraft.price}</Text> : null}
+              </View>
+              <View style={pd.detailList}>
+                {(postDraft?.fields || []).map((f, i) => (
+                  <View key={i} style={pd.detailRow}>
+                    <Text style={pd.detailLabel}>{f.label}</Text>
+                    <Text style={pd.detailValue} numberOfLines={1}>{f.value}</Text>
+                  </View>
+                ))}
+              </View>
+            </View>
+
+            <Pressable onPress={publishDraft} disabled={postingDraft} style={[pd.postBtn, postingDraft && { opacity: 0.6 }]}>
+              {postingDraft
+                ? <ActivityIndicator color="#fff" size="small" />
+                : <Text style={pd.postBtnText}>Post to Group 📢</Text>}
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       {/* Share sheet (Copy link / QR / brochure) */}
       {shareProject && <ShareModal project={shareProject} onClose={() => setShareProject(null)} />}
@@ -1103,10 +1347,10 @@ const s = StyleSheet.create({
   primaryBtn: { backgroundColor: colors.brand, paddingVertical: 14, borderRadius: 12, alignItems: 'center', marginTop: 4 },
   primaryBtnText: { color: '#fff', fontWeight: '800', fontSize: 13 },
 
-  threadHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 10, paddingVertical: 10, backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.line, zIndex: 20 },
-  threadAvatar: { width: 34, height: 34, borderRadius: 17, backgroundColor: colors.brandTint, alignItems: 'center', justifyContent: 'center' },
-  threadTitle: { fontSize: 14, fontWeight: '800', color: colors.ink },
-  threadSub: { fontSize: 10, color: colors.muted, marginTop: 1 },
+  threadHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 11, backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.line, zIndex: 20 },
+  threadAvatar: { width: 36, height: 36, borderRadius: 18, backgroundColor: colors.brandTint, alignItems: 'center', justifyContent: 'center' },
+  threadTitle: { fontSize: 14.5, fontWeight: '800', color: colors.ink, letterSpacing: -0.2 },
+  threadSub: { fontSize: 10.5, color: colors.muted, marginTop: 1 },
   menu: { position: 'absolute', right: 8, top: 52, backgroundColor: colors.white, borderRadius: 12, borderWidth: 1, borderColor: colors.line, paddingVertical: 4, minWidth: 180, zIndex: 30, shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 8 },
   menuItem: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 11 },
   menuText: { fontSize: 12.5, fontWeight: '600', color: colors.muted2 },
@@ -1115,13 +1359,30 @@ const s = StyleSheet.create({
   bannerName: { fontSize: 12.5, fontWeight: '800', color: colors.blueText },
   bannerMeta: { fontSize: 10, color: colors.blueText, marginTop: 1 },
 
-  composer: { backgroundColor: colors.white, borderTopWidth: 1, borderTopColor: colors.line, paddingHorizontal: 10, paddingTop: 8, paddingBottom: 10, gap: 8 },
+  composer: { backgroundColor: colors.white, borderTopWidth: 1, borderTopColor: colors.line, paddingHorizontal: 12, paddingTop: 10, paddingBottom: 12, gap: 10 },
   quickRow: { flexDirection: 'row', gap: 8 },
-  aiInlineBanner: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12, paddingVertical: 8, backgroundColor: colors.brandTint, borderBottomWidth: 1, borderBottomColor: `${colors.brand}33` },
-  aiBackBtn: { flexDirection: 'row', alignItems: 'center', gap: 2 },
-  aiBackText: { fontSize: 12, fontWeight: '700', color: colors.brand },
-  aiPrivatePill: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: colors.white, borderWidth: 1, borderColor: `${colors.brand}44`, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12 },
-  aiPrivateText: { fontSize: 9.5, fontWeight: '800', color: colors.brand },
+  aiInlineBanner: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 14, paddingVertical: 10, backgroundColor: colors.brandTint, borderBottomWidth: 1, borderBottomColor: `${colors.brand}33` },
+  aiBackBtn: { flexDirection: 'row', alignItems: 'center', gap: 3, paddingHorizontal: 8, paddingVertical: 5, borderRadius: 14, backgroundColor: colors.white, borderWidth: 1, borderColor: `${colors.brand}33` },
+  aiBackText: { fontSize: 11.5, fontWeight: '800', color: colors.brand },
+  aiPrivatePill: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: colors.white, borderWidth: 1, borderColor: `${colors.brand}44`, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 14 },
+  aiPrivateText: { fontSize: 10, fontWeight: '800', color: colors.brand, letterSpacing: 0.2 },
+  aiMenuBtn: { padding: 6, borderRadius: 10, backgroundColor: colors.white, borderWidth: 1, borderColor: `${colors.brand}33` },
+  aiMenu: { position: 'absolute', right: 12, top: 46, backgroundColor: colors.white, borderRadius: 12, borderWidth: 1, borderColor: colors.line, paddingVertical: 4, minWidth: 190, zIndex: 40, shadowColor: '#000', shadowOpacity: 0.14, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 10 },
+  aiMenuItem: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 11 },
+  aiMenuText: { fontSize: 12.5, fontWeight: '700', color: colors.ink },
+  // AI Assist overlay (covers the message area while AI mode is active)
+  aiOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: colors.cream },
+  // Floating AI Assist button over the group chat — compact brand pill, clearly
+  // visible but not oversized; brand orange with a subtle darker rim + shadow.
+  aiFab: {
+    position: 'absolute', right: 14, bottom: 14,
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: colors.blue,
+    paddingHorizontal: 14, paddingVertical: 10, borderRadius: 22,
+    borderWidth: 1, borderColor: colors.blueText,
+    shadowColor: colors.blueText, shadowOpacity: 0.3, shadowRadius: 8, shadowOffset: { width: 0, height: 4 }, elevation: 6,
+  },
+  aiFabText: { color: '#fff', fontSize: 12.5, fontWeight: '800', letterSpacing: 0.2 },
   quickChip: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 18, borderWidth: 1 },
   quickChipText: { fontSize: 11.5, fontWeight: '800' },
   modeRow: { flexDirection: 'row', gap: 6 },
@@ -1130,13 +1391,13 @@ const s = StyleSheet.create({
   modeText: { fontSize: 10.5, fontWeight: '800', color: colors.muted2 },
   modeTextActive: { color: '#fff' },
   textRow: { flexDirection: 'row', gap: 8, alignItems: 'flex-end' },
-  attachBtn: { width: 40, height: 40, borderRadius: 20, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.white, alignItems: 'center', justifyContent: 'center' },
+  attachBtn: { width: 42, height: 42, borderRadius: 21, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.cream, alignItems: 'center', justifyContent: 'center' },
   attachRow: { flexDirection: 'row', gap: 10, paddingBottom: 8, paddingHorizontal: 2 },
   attachOpt: { alignItems: 'center', gap: 4 },
   attachIcon: { width: 44, height: 44, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
   attachLabel: { fontSize: 10, fontWeight: '700', color: colors.muted2 },
-  textInput: { flex: 1, borderWidth: 1, borderColor: colors.line, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 9, fontSize: 13, color: colors.ink, backgroundColor: colors.cream, maxHeight: 100 },
-  sendBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.brand, alignItems: 'center', justifyContent: 'center' },
+  textInput: { flex: 1, borderWidth: 1, borderColor: colors.line, borderRadius: 21, paddingHorizontal: 16, paddingVertical: 10, fontSize: 13.5, color: colors.ink, backgroundColor: colors.cream, maxHeight: 100, minHeight: 42 },
+  sendBtn: { width: 42, height: 42, borderRadius: 21, backgroundColor: colors.brand, alignItems: 'center', justifyContent: 'center' },
   cardBox: { borderWidth: 1, borderRadius: 14, padding: 12, gap: 9 },
   cardTitle: { fontSize: 12, fontWeight: '800' },
   grid2: { flexDirection: 'row', gap: 8 },
@@ -1145,6 +1406,26 @@ const s = StyleSheet.create({
   switchLabel: { fontSize: 12, fontWeight: '700', color: colors.ink },
   postBtn: { paddingVertical: 12, borderRadius: 12, alignItems: 'center', marginTop: 2 },
   postBtnText: { color: '#fff', fontWeight: '800', fontSize: 12.5 },
+});
+
+const pd = StyleSheet.create({
+  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
+  sheet: { backgroundColor: colors.white, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 16, paddingBottom: 28, gap: 14 },
+  head: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  headTitle: { fontSize: 15, fontWeight: '800', color: colors.ink },
+  headSub: { fontSize: 10.5, color: colors.muted2, marginTop: 1 },
+  card: { backgroundColor: colors.cream, borderRadius: 16, borderWidth: 1, borderColor: colors.line, padding: 12, gap: 10 },
+  cardTop: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  cardIcon: { width: 46, height: 46, borderRadius: 12, backgroundColor: colors.brandTint, alignItems: 'center', justifyContent: 'center' },
+  cardTitle: { fontSize: 14, fontWeight: '800', color: colors.ink },
+  cardLoc: { fontSize: 11, color: colors.muted2, marginTop: 2 },
+  cardPrice: { fontSize: 14, fontWeight: '800', color: colors.brand },
+  detailList: { borderTopWidth: 1, borderTopColor: colors.line, paddingTop: 8, gap: 6 },
+  detailRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+  detailLabel: { fontSize: 11, fontWeight: '700', color: colors.muted2 },
+  detailValue: { fontSize: 12, fontWeight: '700', color: colors.ink, flexShrink: 1, textAlign: 'right' },
+  postBtn: { backgroundColor: colors.green, borderRadius: 14, paddingVertical: 13, alignItems: 'center', justifyContent: 'center' },
+  postBtnText: { color: '#fff', fontSize: 13.5, fontWeight: '800' },
 });
 
 const cs = StyleSheet.create({
