@@ -1,34 +1,99 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   View, Text, ScrollView, Pressable, StyleSheet,
-  RefreshControl, Image, TextInput, FlatList, Share,
+  RefreshControl, TextInput, FlatList, Share, Modal, Linking,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
-  Building2, Plus, Search, CheckCircle, Trash2,
-  LayoutGrid, List, MapPin, Link as LinkIcon, Info,
+  Building2, Plus, Search,
+  Pencil, LayoutTemplate, BarChart3, Link as LinkIcon, ExternalLink, Trash2, X,
 } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
-import { projectsApiExtended, Project } from '../../src/lib/api';
+import { projectsApiExtended, Project, MarketplaceListing } from '../../src/lib/api';
 import { useAuth } from '../../src/lib/authContext';
 import { useToast } from '../../src/components/Toast';
-import { SkeletonCard, SkeletonRow } from '../../src/components/Skeleton';
+import { SkeletonCard } from '../../src/components/Skeleton';
 import EmptyState from '../../src/components/EmptyState';
 import MenuButton from '../../src/components/MenuButton';
 import ProjectDetailsModal from '../../src/components/ProjectDetailsModal';
+import ListingCard from '../../src/components/ListingCard';
+import { ShareModal } from '../../src/components/ShareActions';
 import { colors } from '../../src/theme';
 
-function fmtPrice(n: number): string {
-  if (!n) return '—';
-  if (n >= 10000000) return `₹${(n / 10000000).toFixed(1)}Cr`;
-  if (n >= 100000) return `₹${(n / 100000).toFixed(0)}L`;
-  return `₹${n.toLocaleString('en-IN')}`;
+const SITE_ORIGIN = 'https://homeintown.in';
+// Web dashboard host (the "Advanced" web app). Edit Details / Layout Editor /
+// per-project Analytics open the existing web routes here.
+const WEB_DASHBOARD = 'https://sales.homeintown.in';
+const visitUrlOf = (p: Project) => `${SITE_ORIGIN}${p.slug ? `/visit/${p.slug}` : ''}`;
+
+// Render a Project through the shared marketplace ListingCard. The card's helpers
+// accept the flat Project shape directly, so we wrap it in a loose listing object
+// and flag it `isStd` (renders as a plain project card: STD badge, no commission).
+function projectToListing(p: Project): MarketplaceListing {
+  return {
+    id: p.id,
+    isStd: true,
+    listingType: 'selling',
+    commissionType: 'percentage',
+    commissionValue: 0,
+    status: 'Active',
+    project: p as any,
+  } as any;
 }
 
-function getCoverUrl(p: Project): string | null {
-  if (!p.coverImage) return null;
-  return typeof p.coverImage === 'string' ? p.coverImage : (p.coverImage as any).url ?? null;
+// ── Project 3-dot menu (bottom sheet). Options mirror the website exactly. ──
+function ProjectMenuSheet({ project, onClose, onEdit, onLayout, onAnalytics, onCopyLink, onVisit, onDelete }: {
+  project: Project | null;
+  onClose: () => void;
+  onEdit: (p: Project) => void;
+  onLayout: (p: Project) => void;
+  onAnalytics: (p: Project) => void;
+  onCopyLink: (p: Project) => void;
+  onVisit: (p: Project) => void;
+  onDelete: (p: Project) => void;
+}) {
+  if (!project) return null;
+  // Visibility mirrors the website (ProjectTable kebab): Analytics + Visit only
+  // appear for a published project; Visit also needs a slug.
+  const items = [
+    { label: 'Edit Details', icon: <Pencil size={17} color={colors.ink} />, onPress: () => onEdit(project), show: true },
+    { label: 'Layout Editor', icon: <LayoutTemplate size={17} color={colors.ink} />, onPress: () => onLayout(project), show: true },
+    { label: 'View Analytics', icon: <BarChart3 size={17} color={colors.ink} />, onPress: () => onAnalytics(project), show: !!project.isPublished },
+    { label: 'Copy Project Link', icon: <LinkIcon size={17} color={colors.ink} />, onPress: () => onCopyLink(project), show: true },
+    { label: 'Visit Project ↗', icon: <ExternalLink size={17} color={colors.ink} />, onPress: () => onVisit(project), show: !!project.isPublished && !!project.slug },
+    { label: 'Delete Project', icon: <Trash2 size={17} color={colors.redText} />, danger: true, onPress: () => onDelete(project), show: true },
+  ].filter(it => it.show);
+  return (
+    <Modal visible transparent animationType="slide" onRequestClose={onClose}>
+      <Pressable style={km.overlay} onPress={onClose}>
+        <Pressable style={km.sheet} onPress={() => {}}>
+          <View style={km.handle} />
+          <View style={km.head}>
+            <Text style={km.headTitle} numberOfLines={1}>{project.name}</Text>
+            <Pressable onPress={onClose} hitSlop={8}><X size={20} color={colors.ink} /></Pressable>
+          </View>
+          {items.map((it) => (
+            <Pressable key={it.label} style={km.row} onPress={() => { onClose(); setTimeout(it.onPress, 60); }}>
+              <View style={km.rowIcon}>{it.icon}</View>
+              <Text style={[km.rowLabel, it.danger && { color: colors.redText }]}>{it.label}</Text>
+            </Pressable>
+          ))}
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
 }
+
+const km = StyleSheet.create({
+  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' },
+  sheet: { backgroundColor: colors.white, borderTopLeftRadius: 22, borderTopRightRadius: 22, paddingHorizontal: 12, paddingBottom: 28, paddingTop: 8 },
+  handle: { alignSelf: 'center', width: 40, height: 4, borderRadius: 2, backgroundColor: colors.line, marginBottom: 8 },
+  head: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 6, paddingBottom: 6 },
+  headTitle: { flex: 1, fontSize: 14, fontWeight: '800', color: colors.ink, marginRight: 10 },
+  row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 13, paddingHorizontal: 8, borderTopWidth: 1, borderTopColor: colors.line },
+  rowIcon: { width: 24, alignItems: 'center' },
+  rowLabel: { fontSize: 14, fontWeight: '700', color: colors.ink },
+});
 
 // Filter chip labels
 const STATUS_LABEL: Record<string, string> = {
@@ -37,176 +102,6 @@ const STATUS_LABEL: Record<string, string> = {
   'under-construction': 'Under Construction',
   ready: 'Ready',
 };
-
-// Human-readable property label (mirrors web getPropertyLabel)
-function propertyLabel(p: Project): string {
-  if (p.propertyType) return p.propertyType;
-  if (p.category) return p.category;
-  if (p.type === 'plot') return 'Plot';
-  return 'Apartment';
-}
-
-// ── Grid Card (matches website ProjectGrid) ─────────────────
-function GridCard({ p, onPublish, onDelete, onCopyLink, onDetails, publishing, deleting }: {
-  p: Project; onPublish: (p: Project) => void; onDelete: (p: Project) => void;
-  onCopyLink: (p: Project) => void; onDetails: (p: Project) => void;
-  publishing: string | null; deleting: string | null;
-}) {
-  const cover = getCoverUrl(p);
-  return (
-    <View style={gc.card}>
-      {/* Header: Name + location */}
-      <View style={gc.head}>
-        <Text style={gc.name} numberOfLines={2}>{p.name}</Text>
-        <View style={gc.locationRow}>
-          <MapPin size={13} color={colors.brand} />
-          <Text style={gc.locationText} numberOfLines={1}>
-            {p.location ? `${p.location}, ` : ''}{p.city}
-          </Text>
-        </View>
-      </View>
-
-      {/* Cover image */}
-      {cover ? (
-        <Image source={{ uri: cover }} style={gc.img} resizeMode="cover" />
-      ) : (
-        <View style={[gc.img, gc.noImg]}>
-          <Building2 size={30} color={colors.muted} />
-          <Text style={gc.noImgText}>No Image</Text>
-        </View>
-      )}
-
-      {/* Details */}
-      <View style={gc.body}>
-        <View style={gc.pubRow}>
-          <View style={[gc.pubBadge, p.isPublished ? gc.pubBadgeLive : gc.pubBadgeDraft]}>
-            <Text style={[gc.pubBadgeText, { color: p.isPublished ? colors.greenText : colors.muted2 }]}>
-              {p.isPublished ? 'Published' : 'Draft'}
-            </Text>
-          </View>
-          <Text style={gc.price}>{fmtPrice(p.startingPrice)}</Text>
-        </View>
-
-        {p.reraApproved && (
-          <View style={gc.reraStrip}>
-            <CheckCircle size={13} color={colors.brand} />
-            <Text style={gc.reraText}>RERA VERIFIED</Text>
-          </View>
-        )}
-      </View>
-
-      {/* Actions: Details (primary) + Publish-tick (if draft) / Copy Link (if live) */}
-      <View style={gc.actions}>
-        <Pressable onPress={() => onDetails(p)} style={[gc.actionBtn, gc.detailsBtn]}>
-          <Info size={14} color="#fff" />
-          <Text style={gc.detailsBtnText}>Details</Text>
-        </Pressable>
-
-        {!p.isPublished ? (
-          <Pressable onPress={() => onPublish(p)} disabled={publishing === p.id} style={[gc.iconAction, gc.approveAction]}>
-            <CheckCircle size={17} color={colors.greenText} />
-          </Pressable>
-        ) : (
-          <Pressable onPress={() => onCopyLink(p)} style={[gc.iconAction, gc.linkAction]}>
-            <LinkIcon size={16} color={colors.brand} />
-          </Pressable>
-        )}
-      </View>
-    </View>
-  );
-}
-
-const gc = StyleSheet.create({
-  card: { flex: 1, backgroundColor: colors.white, borderRadius: 20, overflow: 'hidden', borderWidth: 1, borderColor: colors.line, shadowColor: '#000', shadowOpacity: 0.04, shadowRadius: 8, shadowOffset: { width: 0, height: 3 }, elevation: 2 },
-  head: { paddingHorizontal: 16, paddingTop: 14, paddingBottom: 10 },
-  name: { fontSize: 16, fontWeight: '800', color: colors.ink, letterSpacing: -0.3, marginBottom: 4 },
-  locationRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  locationText: { fontSize: 11, color: colors.muted2, fontWeight: '600', flex: 1 },
-  img: { width: '100%', height: 150 },
-  noImg: { backgroundColor: colors.cream, alignItems: 'center', justifyContent: 'center', gap: 6 },
-  noImgText: { fontSize: 9, color: colors.muted, fontWeight: '700', letterSpacing: 1 },
-  body: { padding: 16, gap: 12 },
-  pubRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  pubBadge: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8, borderWidth: 1 },
-  pubBadgeLive: { backgroundColor: colors.greenBg, borderColor: colors.greenBorder },
-  pubBadgeDraft: { backgroundColor: colors.cream, borderColor: colors.line },
-  pubBadgeText: { fontSize: 9, fontWeight: '800', letterSpacing: 0.5, textTransform: 'uppercase' },
-  price: { fontSize: 18, fontWeight: '800', color: colors.ink, letterSpacing: -0.5 },
-  infoGrid: { flexDirection: 'row', gap: 10 },
-  infoBox: { flex: 1, backgroundColor: colors.cream, borderRadius: 12, borderWidth: 1, borderColor: colors.line, padding: 10 },
-  infoLabel: { fontSize: 8, fontWeight: '800', color: colors.muted, letterSpacing: 1, marginBottom: 3 },
-  infoValue: { fontSize: 11.5, fontWeight: '800', color: colors.ink },
-  reraStrip: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.brandTint, borderWidth: 1, borderColor: `${colors.brand}22`, paddingVertical: 8, paddingHorizontal: 12, borderRadius: 10 },
-  reraText: { fontSize: 9, fontWeight: '800', color: colors.brand, letterSpacing: 1.5 },
-  actions: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 12, borderTopWidth: 1, borderTopColor: colors.line, backgroundColor: `${colors.cream}80` },
-  actionBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 11, borderRadius: 12 },
-  detailsBtn: { backgroundColor: colors.brand },
-  detailsBtnText: { fontSize: 13, fontWeight: '800', color: '#fff' },
-  iconAction: { width: 46, height: 46, alignItems: 'center', justifyContent: 'center', borderRadius: 12, borderWidth: 1 },
-  approveAction: { backgroundColor: colors.greenBg, borderColor: colors.greenBorder },
-  linkAction: { backgroundColor: colors.white, borderColor: colors.line },
-});
-
-// ── List Row ───────────────────────────────────────────────
-function ListRow({ p, onPublish, onDelete, onDetails, publishing, deleting }: {
-  p: Project; onPublish: (p: Project) => void; onDelete: (p: Project) => void;
-  onDetails: (p: Project) => void; publishing: string | null; deleting: string | null;
-}) {
-  const cover = getCoverUrl(p);
-  const STATUS_C: Record<string, { bg: string; text: string }> = {
-    'pre-launch': { bg: colors.amberBg, text: colors.amberText },
-    'under-construction': { bg: colors.blueBg, text: colors.blueText },
-    'ready': { bg: colors.greenBg, text: colors.greenText },
-    'ready-to-move': { bg: colors.greenBg, text: colors.greenText },
-  };
-  const sc = STATUS_C[p.projectStatus] || { bg: colors.slateBg, text: colors.slateText };
-  return (
-    <View style={lr.row}>
-      {cover ? (
-        <Image source={{ uri: cover }} style={lr.thumb} resizeMode="cover" />
-      ) : (
-        <View style={[lr.thumb, lr.noThumb]}><Building2 size={20} color={colors.muted} /></View>
-      )}
-      <View style={{ flex: 1, gap: 3 }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-          <Text style={lr.name} numberOfLines={1}>{p.name}</Text>
-          <View style={[lr.badge, { backgroundColor: sc.bg }]}>
-            <Text style={[lr.badgeText, { color: sc.text }]}>{p.projectStatus}</Text>
-          </View>
-        </View>
-        <Text style={lr.sub}>{p.city}{p.location ? ` · ${p.location}` : ''}</Text>
-        <Text style={lr.price}>{fmtPrice(p.startingPrice)}</Text>
-      </View>
-      <View style={lr.actions}>
-        {!p.isPublished && (
-          <Pressable onPress={() => onPublish(p)} disabled={publishing === p.id}
-            style={[lr.btn, { backgroundColor: colors.greenBg, borderColor: colors.greenBorder }]}>
-            <CheckCircle size={15} color={colors.greenText} />
-          </Pressable>
-        )}
-        <Pressable onPress={() => onDetails(p)} style={lr.detailsBtn}>
-          <Info size={14} color="#fff" />
-          <Text style={lr.detailsText}>Details</Text>
-        </Pressable>
-      </View>
-    </View>
-  );
-}
-
-const lr = StyleSheet.create({
-  row: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: colors.white, borderRadius: 14, borderWidth: 1, borderColor: colors.line, padding: 10 },
-  thumb: { width: 72, height: 72, borderRadius: 10 },
-  noThumb: { backgroundColor: colors.slateBg, alignItems: 'center', justifyContent: 'center' },
-  name: { fontSize: 13, fontWeight: '700', color: colors.ink, flex: 1 },
-  badge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
-  badgeText: { fontSize: 8, fontWeight: '800' },
-  sub: { fontSize: 10, color: colors.muted2 },
-  price: { fontSize: 12, fontWeight: '800', color: colors.brand },
-  actions: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  btn: { padding: 9, borderRadius: 10, borderWidth: 1 },
-  detailsBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: colors.brand, paddingHorizontal: 12, paddingVertical: 9, borderRadius: 10 },
-  detailsText: { fontSize: 11.5, fontWeight: '800', color: '#fff' },
-});
 
 // ── Main Screen ────────────────────────────────────────────
 export default function ProjectsScreen() {
@@ -220,10 +115,11 @@ export default function ProjectsScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
-  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
-  const [publishing, setPublishing] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [detailProject, setDetailProject] = useState<Project | null>(null);
+  const [shareProject, setShareProject] = useState<Project | null>(null);
+  const [menuProject, setMenuProject] = useState<Project | null>(null);
+  const [matchCounts, setMatchCounts] = useState<Record<string, number>>({});
 
   const canCreate = ['admin', 'builder'].includes(user?.role ?? '');
 
@@ -241,15 +137,16 @@ export default function ProjectsScreen() {
 
   useEffect(() => { load(); }, [load]);
 
-  const handlePublish = async (p: Project) => {
-    setPublishing(p.id);
-    try {
-      await projectsApiExtended.publish(p.id);
-      toast.show('Published! 🎉', 'success');
-      load();
-    } catch (e: any) { toast.show(e?.message || 'Publish failed', 'error'); }
-    finally { setPublishing(null); }
-  };
+  // Live buyer-match counts for the card badge (same source as marketplace).
+  useEffect(() => {
+    const ids = projects.map(p => p.id).filter(Boolean);
+    if (ids.length === 0) return;
+    let cancelled = false;
+    projectsApiExtended.matchCounts(ids)
+      .then(counts => { if (!cancelled) setMatchCounts(prev => ({ ...prev, ...counts })); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [projects]);
 
   const handleDelete = async (p: Project) => {
     setDeleting(p.id);
@@ -261,13 +158,31 @@ export default function ProjectsScreen() {
     finally { setDeleting(null); }
   };
 
-  const SITE_ORIGIN = 'https://homeintown.in';
   const handleCopyLink = async (p: Project) => {
-    const path = p.slug ? `/visit/${p.slug}` : '';
-    const url = `${SITE_ORIGIN}${path}`;
+    const url = visitUrlOf(p);
     try {
       await Share.share({ message: url, url });
     } catch { /* user dismissed */ }
+  };
+
+  // ── 3-dot menu actions ──
+  // Edit Details, Layout Editor and per-project Analytics reuse the EXISTING web
+  // dashboard implementations (there is no native RN screen for these). We open
+  // the same authenticated routes the website uses, via the browser — the same
+  // pattern the app already uses for the CRM "Advanced" panel and visit links.
+  // Publish (draft → live) lives inside the web edit form, so it is preserved
+  // there. Web dashboard host: https://sales.homeintown.in
+  const openWeb = async (path: string) => {
+    try { await Linking.openURL(`${WEB_DASHBOARD}${path}`); }
+    catch { toast.show('Could not open link', 'error'); }
+  };
+  const handleEdit = (p: Project) => openWeb(`/dashboard/projects/${p.id}/edit`);
+  const handleLayout = (p: Project) => openWeb(`/dashboard/projects/${p.id}/layout-editor`);
+  const handleAnalytics = (p: Project) => openWeb(`/dashboard/analytics/${p.id}`);
+  const handleVisit = async (p: Project) => {
+    const url = visitUrlOf(p);
+    try { await Linking.openURL(url); }
+    catch { toast.show('Could not open link', 'error'); }
   };
 
   const statuses = ['All', 'pre-launch', 'under-construction', 'ready'];
@@ -321,12 +236,6 @@ export default function ProjectsScreen() {
           </View>
         </View>
         <View style={{ flexDirection: 'row', gap: 8 }}>
-          {/* View toggle */}
-          <Pressable onPress={() => setViewMode(v => v === 'grid' ? 'list' : 'grid')} style={s.iconBtn}>
-            {viewMode === 'grid'
-              ? <List size={17} color={colors.muted2} />
-              : <LayoutGrid size={17} color={colors.muted2} />}
-          </Pressable>
           {canCreate && (
             <Pressable style={s.addBtn} onPress={() => router.push('/(dashboard)/add-project' as any)}>
               <Plus size={15} color="#fff" />
@@ -336,20 +245,19 @@ export default function ProjectsScreen() {
         </View>
       </View>
 
-      {/* Search + Filters scroll WITH the list (ListHeaderComponent) */}
+      {/* Search + Filters scroll WITH the list (ListHeaderComponent).
+          Project cards render through the shared marketplace ListingCard. */}
       {loading ? (
         <ScrollView contentContainerStyle={{ padding: 16, gap: 16 }}>
           {listHeader}
-          {viewMode === 'grid'
-            ? [0,1,2].map(i => <SkeletonCard key={i} />)
-            : [0,1,2,3].map(i => <SkeletonRow key={i} />)}
+          {[0, 1, 2].map(i => <SkeletonCard key={i} />)}
         </ScrollView>
-      ) : viewMode === 'grid' ? (
+      ) : (
         <FlatList
           data={filtered}
           keyExtractor={p => p.id}
           ListHeaderComponent={listHeader}
-          contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 40, gap: 16 }}
+          contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 40, gap: 12 }}
           showsVerticalScrollIndicator={false}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={colors.brand} />}
           ListEmptyComponent={
@@ -361,35 +269,34 @@ export default function ProjectsScreen() {
             />
           }
           renderItem={({ item: p }) => (
-            <GridCard p={p} onPublish={handlePublish} onDelete={handleDelete}
-              onCopyLink={handleCopyLink} onDetails={setDetailProject}
-              publishing={publishing} deleting={deleting} />
-          )}
-        />
-      ) : (
-        <FlatList
-          data={filtered}
-          keyExtractor={p => p.id}
-          ListHeaderComponent={listHeader}
-          contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 40, gap: 10 }}
-          showsVerticalScrollIndicator={false}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={colors.brand} />}
-          ListEmptyComponent={
-            <EmptyState
-              icon={<Building2 size={28} color={colors.muted} />}
-              title="No projects found"
-              subtitle="Try adjusting your search or filters."
+            <ListingCard
+              l={projectToListing(p)}
+              matchCount={matchCounts[p.id] || 0}
+              onView={() => setDetailProject(p)}
+              onShare={() => setShareProject(p)}
+              onMenu={() => setMenuProject(p)}
             />
-          }
-          renderItem={({ item: p }) => (
-            <ListRow p={p} onPublish={handlePublish} onDelete={handleDelete}
-              onDetails={setDetailProject} publishing={publishing} deleting={deleting} />
           )}
         />
       )}
 
       {/* Full project details popup */}
       <ProjectDetailsModal project={detailProject} onClose={() => setDetailProject(null)} />
+
+      {/* Share sheet (Copy link, QR, brochure/PDF) */}
+      {shareProject && <ShareModal project={shareProject} onClose={() => setShareProject(null)} />}
+
+      {/* 3-dot menu (Edit / Layout / Analytics / Copy link / Visit / Delete) */}
+      <ProjectMenuSheet
+        project={menuProject}
+        onClose={() => setMenuProject(null)}
+        onEdit={handleEdit}
+        onLayout={handleLayout}
+        onAnalytics={handleAnalytics}
+        onCopyLink={handleCopyLink}
+        onVisit={handleVisit}
+        onDelete={handleDelete}
+      />
     </View>
   );
 }

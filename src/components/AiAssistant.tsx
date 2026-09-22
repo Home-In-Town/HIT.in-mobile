@@ -15,6 +15,7 @@ import {
   ArrowRight, CheckCircle2, Undo2, Redo2, RotateCcw, XCircle, Users as UsersIcon, X as XIcon,
 } from 'lucide-react-native';
 import { leadChatApi, groupChatApi, GroupRoom } from '../lib/api';
+import { postDraftStorage, chatClearedBeforeIdStorage } from '../lib/storage';
 import { useAuth } from '../lib/authContext';
 import { useToast } from './Toast';
 import { colors } from '../theme';
@@ -45,9 +46,73 @@ interface Msg {
 
 const INTENT_ICON: Record<string, string> = { sell: '🏷️', buy: '🔑', rent: '🏠' };
 
+// The first question offers exactly three choices, in this order, with these
+// one-word labels. Values stay 'buy' | 'sell' | 'rent' — the whole flow branches
+// on them — only the presentation is fixed here.
+const INTENT_ORDER = ['buy', 'sell', 'rent'] as const;
+const INTENT_LABEL: Record<string, string> = { buy: 'Buy', sell: 'Sell', rent: 'Rent' };
+
+// ── Reference-only quick answers ────────────────────────────────────────────
+// Shown for slots the user would otherwise have to TYPE (number/text/location/
+// phone). Tapping a chip submits exactly the same value the user would have
+// typed — it does not change validation, branching, or any backend behavior.
+// Choice/multichoice slots already get their chips from the backend template.
+const NUMBER_SUGGESTIONS: Record<string, number[]> = {
+  area: [500, 1000, 1500, 2000],
+  expectedPrice: [25, 50, 75, 100],
+};
+
+const TEXT_SUGGESTIONS: Record<string, string[]> = {
+  city: ['Nagpur', 'Pune', 'Mumbai', 'Nashik'],
+  location: ['Besa', 'Manish Nagar', 'Wardha Road', 'Civil Lines', 'Saoner'],
+};
+
+// Build the tappable suggestion list for the active question.
+// Returns [] when the slot has no suggestions (then nothing is rendered).
+function buildSuggestions(
+  template: Template | undefined,
+  phonePrefill?: string,
+): { label: string; value: any }[] {
+  if (!template) return [];
+  const slotId = template.slotId || '';
+  const type = template.inputType || '';
+
+  if (type === 'phone') {
+    const p = String(template.prefill || phonePrefill || '').replace(/\D/g, '').slice(-10);
+    return p.length === 10 ? [{ label: `📱 ${p}`, value: p }] : [];
+  }
+
+  if (type === 'number') {
+    const unit = (template.unit && template.unit[0]) || '';
+    return (NUMBER_SUGGESTIONS[slotId] || []).map((n) => ({
+      label: unit ? `${n} ${unit}` : String(n),
+      // Unit slots expect { value, unit } — same shape the typed path builds.
+      value: unit ? { value: n, unit } : n,
+    }));
+  }
+
+  if (type === 'text' || type === 'location') {
+    return (TEXT_SUGGESTIONS[slotId] || []).map((v) => ({ label: v, value: v }));
+  }
+
+  return [];
+}
+
 function fmtTime(ts: string) {
   try { return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
   catch { return ''; }
+}
+
+// Human label for a disappearing-messages duration (mirrors the settings sheet).
+function disappearLabelFor(ms: number): string {
+  switch (ms) {
+    case 6 * 3600000: return '6 hours';
+    case 12 * 3600000: return '12 hours';
+    case 24 * 3600000: return '1 day';
+    case 7 * 24 * 3600000: return '7 days';
+    case 30 * 24 * 3600000: return '1 month';
+    default: return 'Never';
+  }
 }
 
 export type AiAssistantApi = {
@@ -55,12 +120,20 @@ export type AiAssistantApi = {
   activeTemplate: Template | undefined;
   sending: boolean;
   typing: boolean;
-  // End the current AI session (stops the conversation; keeps any found match).
+  // End the current AI session: clears the transcript and resets the backend
+  // flow, so starting again begins a brand-new conversation at step 1.
   endChat: () => void;
+  // Leave AI mode. Also resets the conversation so re-entering starts fresh.
+  exitChat: () => void;
+  // Jump straight into the flow with the intent already chosen (sell/buy/rent),
+  // so the assistant continues from the next question.
+  startWithIntent: (intent: 'sell' | 'buy' | 'rent') => void;
   // Run matching on the collected requirement; reveals ALL matches with scores.
   runMatching: () => void;
   // Returns the property details the AI has collected so far (for the Post card).
   getPostDraft: () => AiPostDraft;
+  // Clears the current post draft after the user posts it (stops re-triggering).
+  clearDraft: () => void;
 };
 
 export type AiPostDraft = {
@@ -79,6 +152,7 @@ export default function AiAssistant({
   onMatchShared,
   hideOwnChrome = false,
   onReady,
+  disappearMs = 0,
 }: {
   onViewLeads?: () => void;
   onActiveChange?: (active: boolean) => void;
@@ -93,11 +167,20 @@ export default function AiAssistant({
   hideOwnChrome?: boolean;
   // Exposes an imperative API so the host can route its single input box here.
   onReady?: (api: AiAssistantApi) => void;
+  // WhatsApp-style disappearing messages: hide AI messages older than this many
+  // ms. 0 = Never (default). Only affects display; backend thread is untouched.
+  disappearMs?: number;
 }) {
   const { user } = useAuth();
   const toast = useToast();
 
   const [messages, setMessages] = useState<Msg[]>([]);
+  // Mirror of `messages` so stable callbacks (e.g. resetConversation) can read
+  // the latest transcript without being re-created on every message.
+  const messagesRef = useRef<Msg[]>([]);
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
+  // Latest active question template, for stable callbacks.
+  const activeTemplateRef = useRef<Template | undefined>(undefined);
   const [flowState, setFlowState] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
@@ -105,6 +188,21 @@ export default function AiAssistant({
   const [ended, setEnded] = useState(false);
   const sessionIdRef = useRef<string | null>(null);
   const scrollRef = useRef<ScrollView>(null);
+  // Last property draft the user described (persisted), so "Post" still works
+  // after the AI session resets or the app restarts.
+  const savedDraftRef = useRef<AiPostDraft | null>(null);
+  // Signature of the last draft that was posted/cleared. Prevents the persist
+  // effect from re-saving (and re-showing as "Ready to post") a draft the user
+  // already posted — until a genuinely different draft is collected.
+  const clearedSigRef = useRef<string | null>(null);
+  useEffect(() => {
+    postDraftStorage.get().then((d) => { if (d) savedDraftRef.current = d; });
+  }, []);
+
+  // A stable signature for a draft (its field values), used to detect whether
+  // the current draft is the same one the user already posted.
+  const draftSig = (d: AiPostDraft | null): string =>
+    d ? d.fields.map(f => `${f.label}=${f.value}`).join('|') : '';
 
   // ── Undo / Redo history ──
   // Each entry is a snapshot of the visible transcript + flow state. We push a
@@ -156,28 +254,48 @@ export default function AiAssistant({
       const sid = res.sessionId;
       sessionIdRef.current = sid;
 
-      // Find the most recent match-results message from the persisted history.
-      const history: Msg[] = res.messages || [];
-      const latestResult = [...history].reverse().find(
-        (m) => m.messageType === 'system' && m.template?.inputType === 'results'
-      );
-
-      // Reset the backend flow to a fresh Step-1 intent question.
-      let freshQuestion: Msg | null = null;
-      try {
-        const fresh = await leadChatApi.newLead(sid);
-        setFlowState(fresh.flowState);
-        freshQuestion = fresh.message || null;
-      } catch {
-        // If reset fails, fall back to whatever the open returned.
-        setFlowState(res.flowState);
+      // Keep the persisted conversation so it survives app reopen (like
+      // WhatsApp), but never show anything up to the "cleared" watermark — the
+      // last message id present when the user explicitly ended/exited the chat.
+      // The disappearing-messages filter then hides by age on top of this.
+      const allHistory: Msg[] = res.messages || [];
+      const clearedBeforeId = await chatClearedBeforeIdStorage.get();
+      let history: Msg[] = allHistory;
+      if (clearedBeforeId) {
+        const idx = allHistory.findIndex((m) => m._id === clearedBeforeId);
+        // Found → keep only what came after it. Not found (e.g. thread pruned)
+        // → the watermark is stale, so show the thread as-is.
+        if (idx >= 0) history = allHistory.slice(idx + 1);
       }
 
-      // Show only: [previous match result (if any)] + [fresh Step-1 question].
-      const initial: Msg[] = [];
-      if (latestResult) initial.push(latestResult);
-      if (freshQuestion) initial.push(freshQuestion);
-      setMessages(initial);
+      // Does the transcript already end on a pending (unanswered) question? If so
+      // we continue that flow instead of forcing a brand-new Step-1 question, so
+      // reopening never wipes or duplicates the conversation.
+      const lastMsg = history[history.length - 1];
+      const endsOnPendingQuestion =
+        !!lastMsg &&
+        lastMsg.messageType === 'system' &&
+        !!lastMsg.template &&
+        lastMsg.template.inputType !== 'results' &&
+        lastMsg.template.inputType !== 'summary';
+
+      if (endsOnPendingQuestion) {
+        // Resume the existing flow exactly where it left off.
+        setFlowState(res.flowState);
+        setMessages(history);
+      } else {
+        // Conversation was complete (or empty): append a fresh Step-1 question to
+        // continue below the existing history, without deleting it.
+        let freshQuestion: Msg | null = null;
+        try {
+          const fresh = await leadChatApi.newLead(sid);
+          setFlowState(fresh.flowState);
+          freshQuestion = fresh.message || null;
+        } catch {
+          setFlowState(res.flowState);
+        }
+        setMessages(freshQuestion ? [...history, freshQuestion] : history);
+      }
       // Clear undo/redo history so old state can't be restored.
       setUndoStack([]);
       setRedoStack([]);
@@ -250,7 +368,9 @@ export default function AiAssistant({
     try {
       const res = await leadChatApi.confirm(sid);
       setFlowState(res.flowState);
-      reveal([res.resultsMessage, res.closingMessage, res.actionsMessage]);
+      // Only ONE confirmation: the results message already states the outcome, so
+      // the separate closing message is skipped (newer backends send null for it).
+      reveal([res.resultsMessage, res.actionsMessage]);
     } catch (e: any) {
       toast.show(e?.message || 'Could not confirm', 'error');
     } finally {
@@ -275,28 +395,89 @@ export default function AiAssistant({
     }
   }, [sending, reveal, snapshot]);
 
-  // ── Chat controls: End / Restart ──
-  // End Chat: stop the visible session (user can tap "Start" to reopen).
-  const endChat = useCallback(() => {
-    setEnded(true);
+  // ── Chat controls: End / Exit / Restart ──
+  // Hard reset of the visible conversation. Moves the "cleared" watermark to
+  // now (so nothing from this conversation is ever shown again) AND resets the
+  // backend flow to a fresh step-1 question — otherwise re-opening would resume
+  // the stale pending question. The backend thread itself is never deleted.
+  const resetConversation = useCallback(async () => {
+    const sid = sessionIdRef.current;
+
+    // 1) Watermark the newest message we know about, so everything up to and
+    //    including it is excluded from now on. Prefer the server-side tail so
+    //    nothing posted before the reset can reappear.
+    let lastId: string | null = null;
+    if (sid) {
+      try {
+        const snap = await leadChatApi.open();
+        const all: Msg[] = snap?.messages || [];
+        lastId = all.length ? all[all.length - 1]._id : null;
+      } catch { /* fall back to the local tail below */ }
+    }
+    if (!lastId) {
+      const localTail = messagesRef.current;
+      lastId = localTail.length ? localTail[localTail.length - 1]._id : null;
+    }
+    if (lastId) await chatClearedBeforeIdStorage.set(lastId);
+
+    // 2) Reset the backend flow. This posts a brand-new intent question AFTER
+    //    the watermark, so it becomes the first visible message next time.
+    if (sid) {
+      try { await leadChatApi.newLead(sid); } catch { /* non-fatal */ }
+    }
+
+    // 3) Clear local state.
+    setMessages([]);
+    setFlowState(null);
     setUndoStack([]);
     setRedoStack([]);
+  }, []);
+
+  // End Chat: clear the conversation and show the ended state. "Start new chat"
+  // then begins at step 1 with no trace of the previous conversation.
+  const endChat = useCallback(async () => {
+    await resetConversation();
+    setEnded(true);
     toast.show('Chat ended', 'info');
-  }, [toast]);
+  }, [resetConversation, toast]);
+
+  // Exit Chat: same reset, but the host leaves AI mode. Re-entering starts fresh.
+  const exitChat = useCallback(async () => {
+    await resetConversation();
+    toast.show('Chat closed', 'info');
+  }, [resetConversation, toast]);
 
   // Restart Chat: start a fresh requirement flow from scratch.
   const restartChat = useCallback(async () => {
     if (ended) { setEnded(false); await open(); return; }
-    setUndoStack([]);
-    setRedoStack([]);
-    await newLead();
-  }, [ended, newLead, open]);
+    await resetConversation();
+    await open();
+  }, [ended, open, resetConversation]);
 
-  // Reopen from the ended state.
+  // Reopen from the ended state — loads only post-watermark messages, i.e. the
+  // fresh step-1 question created by the reset.
   const resumeChat = useCallback(async () => {
     setEnded(false);
     await open();
   }, [open]);
+
+  // Start the flow with the intent already answered (from the Sell/Buy/Rent
+  // quick-start). If the conversation is already past the intent question we
+  // reset first, so the chosen intent always applies to a clean flow. The
+  // answer goes through the normal submit path — no special-casing downstream.
+  const startWithIntent = useCallback(async (intentValue: 'sell' | 'buy' | 'rent') => {
+    setEnded(false);
+    if (!sessionIdRef.current) await open();
+
+    // Already sitting on the intent question? Then just answer it.
+    const atIntent = activeTemplateRef.current?.slotId === 'intent';
+    if (!atIntent) {
+      await resetConversation();
+      await open();
+    }
+
+    submit('intent', intentValue, INTENT_LABEL[intentValue] || intentValue);
+  }, [open, resetConversation, submit]);
 
   // ── Add matched project to a group ──
   const [addTarget, setAddTarget] = useState<MatchCard | null>(null);
@@ -375,10 +556,13 @@ export default function AiAssistant({
     try {
       const res = await leadChatApi.confirm(sid);
       setFlowState(res.flowState);
-      reveal([res.resultsMessage, res.closingMessage, res.actionsMessage].filter(Boolean) as Msg[]);
+      // Single confirmation — see confirm() above.
+      reveal([res.resultsMessage, res.actionsMessage].filter(Boolean) as Msg[]);
       const matches: MatchCard[] = res.resultsMessage?.template?.options?.matches || [];
       if (!matches.length) {
-        toast.show('Abhi koi match nahi mila — thodi aur detail add karein.', 'info');
+        // Not the user's fault — usually there simply isn't matching inventory
+        // in that area/budget yet. The lead is saved and will match later.
+        toast.show('Abhi is area/budget me koi property nahi hai. Lead save hai — match milte hi bata denge.', 'info');
       } else {
         toast.show(`${matches.length} matching ${matches.length === 1 ? 'property' : 'properties'} mili 🎯`, 'success');
       }
@@ -441,12 +625,82 @@ export default function AiAssistant({
     const subtitle = [loc, city].filter(Boolean).join(', ');
     const price = findVal(/price/i);
 
-    return { intent, isSellable, fields, title, subtitle, price };
+    const live: AiPostDraft = { intent, isSellable, fields, title, subtitle, price };
+
+    // A draft the user already posted must NOT reappear as "Ready to post".
+    const liveIsCleared = live.isSellable && live.fields.length > 0 && draftSig(live) === clearedSigRef.current;
+
+    // If the live session has a valid sellable draft (and it isn't the one just
+    // posted), use it. Otherwise fall back to the last saved draft.
+    if (live.isSellable && live.fields.length > 0 && !liveIsCleared) return live;
+    if (savedDraftRef.current && savedDraftRef.current.fields.length > 0) {
+      return savedDraftRef.current;
+    }
+    // Nothing postable (or the only draft was already posted).
+    return { intent, isSellable: false, fields: [], title: live.title, subtitle: live.subtitle, price: live.price };
   }, [flowState, messages]);
+
+  // Persist the sellable draft as it's collected, so it survives session resets.
+  // Skip persisting the exact draft the user already posted (clearedSigRef).
+  useEffect(() => {
+    const d = getPostDraft();
+    if (d.isSellable && d.fields.length > 0 && draftSig(d) !== clearedSigRef.current) {
+      savedDraftRef.current = d;
+      postDraftStorage.set(d);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flowState, messages]);
+
+  // Clear the current post draft after the user posts it — so it stops showing
+  // as "Ready to post". Records its signature so the persist effect won't
+  // re-save it until a genuinely different draft is collected.
+  const clearDraft = useCallback(() => {
+    const cur = savedDraftRef.current;
+    clearedSigRef.current = draftSig(cur) || clearedSigRef.current;
+    savedDraftRef.current = null;
+    postDraftStorage.clear();
+  }, []);
+
+  // ── Disappearing messages ──
+  // Honors the chosen duration exactly (WhatsApp-style): every message older
+  // than the cutoff disappears — no exceptions. A ticking clock re-renders so
+  // messages vanish live as they age out. 0 (Never) shows everything.
+  // If the whole transcript ages out, the UI shows a "start fresh" prompt
+  // instead of a broken half-conversation (see emptyAfterDisappear below).
+  const [nowTick, setNowTick] = useState(Date.now());
+  useEffect(() => {
+    if (!disappearMs) return;
+    const id = setInterval(() => setNowTick(Date.now()), 30000);
+    return () => clearInterval(id);
+  }, [disappearMs]);
+
+  const visibleMessages = React.useMemo(() => {
+    if (!disappearMs) return messages;
+    const cutoff = nowTick - disappearMs;
+    return messages.filter((m) => {
+      const t = new Date(m.createdAt).getTime();
+      return isNaN(t) || t >= cutoff;
+    });
+  }, [messages, disappearMs, nowTick]);
+
+  // True when messages existed but all of them have now disappeared by age.
+  const emptyAfterDisappear = !!disappearMs && messages.length > 0 && visibleMessages.length === 0;
+
+  // Newest actions tray — only that one is rendered (see the render loop).
+  const latestActionsId = React.useMemo(() => {
+    for (let i = visibleMessages.length - 1; i >= 0; i--) {
+      const m = visibleMessages[i];
+      if (m.messageType === 'system' && m.template?.inputType === 'actions') return m._id;
+    }
+    return null;
+  }, [visibleMessages]);
 
   // The active template = last system message that carries one.
   const lastAssistant = [...messages].reverse().find(m => m.messageType === 'system' && m.template);
   const activeTemplate = lastAssistant?.template;
+  // Mirror for stable callbacks (startWithIntent) that must not capture a stale
+  // template from an earlier render.
+  useEffect(() => { activeTemplateRef.current = activeTemplate; }, [activeTemplate]);
   const progress = activeTemplate?.progress;
   const progressPct = progress && progress.total ? Math.round((progress.current / progress.total) * 100) : 0;
 
@@ -490,8 +744,8 @@ export default function AiAssistant({
   // Expose the imperative API to the host (group composer) when requested.
   useEffect(() => {
     if (!onReady) return;
-    onReady({ submitFreeText, activeTemplate, sending, typing, endChat, runMatching, getPostDraft });
-  }, [onReady, submitFreeText, activeTemplate, sending, typing, endChat, runMatching, getPostDraft]);
+    onReady({ submitFreeText, activeTemplate, sending, typing, endChat, exitChat, startWithIntent, runMatching, getPostDraft, clearDraft });
+  }, [onReady, submitFreeText, activeTemplate, sending, typing, endChat, exitChat, startWithIntent, runMatching, getPostDraft, clearDraft]);
 
   // Report to the parent whether a conversation is active (used to hide the
   // Overview welcome banner). Active = not ended, and the flow is in progress
@@ -522,37 +776,20 @@ export default function AiAssistant({
     );
   }
 
-  // Ended state — chat closed by the user.
-  // In group mode (hideOwnChrome) we PRESERVE the transcript so any found match
-  // stays visible; we just show a compact "ended" bar + Start-new action. The
-  // full-screen ended view is only used in the standalone assistant.
+  // Ended state — chat closed by the user. The transcript has been cleared and
+  // the backend flow reset, so "Start new chat" begins a genuinely fresh
+  // conversation at step 1 (no old Q&A, no stale pending question).
   if (ended) {
     if (hideOwnChrome) {
       return (
-        <View style={{ flex: 1, backgroundColor: colors.cream }}>
-          <ScrollView
-            ref={scrollRef}
-            style={{ flex: 1 }}
-            contentContainerStyle={{ padding: 12, paddingBottom: 16, gap: 6 }}
-            showsVerticalScrollIndicator={false}
-          >
-            {messages.map((msg) => {
-              const t = msg.template;
-              if (msg.messageType === 'system' && t?.inputType === 'results') {
-                return <ResultsBubble key={msg._id} msg={msg} onAddToGroup={openAddToGroup} />;
-              }
-              // In the ended state we only keep the match result visible; other
-              // (Q&A) bubbles are hidden per the "don't show old conversation" rule.
-              return null;
-            })}
-            <View style={s.endedNote}>
-              <Text style={s.endedNoteText}>Chat ended. Aapka match upar save hai.</Text>
-              <Pressable onPress={resumeChat} style={s.endedStartBtn}>
-                <RotateCcw size={13} color="#fff" />
-                <Text style={s.endedStartText}>Start new chat</Text>
-              </Pressable>
-            </View>
-          </ScrollView>
+        <View style={{ flex: 1, backgroundColor: colors.cream, justifyContent: 'center' }}>
+          <View style={s.endedNote}>
+            <Text style={s.endedNoteText}>Chat ended. Naya lead shuru karne ke liye tap karein.</Text>
+            <Pressable onPress={resumeChat} style={s.endedStartBtn}>
+              <RotateCcw size={13} color="#fff" />
+              <Text style={s.endedStartText}>Start new chat</Text>
+            </Pressable>
+          </View>
         </View>
       );
     }
@@ -594,27 +831,16 @@ export default function AiAssistant({
       </View>
       )}
 
-      {/* Progress bar */}
-      {progress && progress.total > 1 && (
-        <View style={s.progressWrap}>
-          <View style={s.progressRow}>
-            <Text style={s.progressLabel}>Step {progress.current} of {progress.total}</Text>
-            <Text style={s.progressPct}>{progressPct}%</Text>
-          </View>
-          <View style={s.progressTrack}>
-            <View style={[s.progressFill, { width: `${progressPct}%` }]} />
-          </View>
-        </View>
-      )}
+      {/* Progress bar removed per design — chat starts directly. */}
 
       <ScrollView
         ref={scrollRef}
         style={{ flex: 1 }}
-        contentContainerStyle={{ padding: 12, paddingBottom: 16, gap: 6 }}
+        contentContainerStyle={{ paddingHorizontal: 12, paddingTop: 12, paddingBottom: 16, gap: 6 }}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        {messages.map((msg) => {
+        {visibleMessages.map((msg) => {
           const isSystem = msg.messageType === 'system';
           const t = msg.template;
 
@@ -625,6 +851,9 @@ export default function AiAssistant({
             return <ResultsBubble key={msg._id} msg={msg} onAddToGroup={openAddToGroup} />;
           }
           if (isSystem && t?.inputType === 'actions') {
+            // Only the newest tray is shown. Each completed lead appends one, so
+            // older trays would otherwise stack up and look like duplicates.
+            if (msg._id !== latestActionsId) return null;
             return <ActionsBubble key={msg._id} msg={msg} onNewLead={newLead} onViewLeads={onViewLeads} disabled={sending} />;
           }
 
@@ -638,6 +867,19 @@ export default function AiAssistant({
             </View>
           );
         })}
+
+        {/* Whole transcript aged out per the disappearing-messages setting. */}
+        {emptyAfterDisappear && !typing && (
+          <View style={s.endedNote}>
+            <Text style={s.endedNoteText}>
+              Purane messages disappear ho gaye ({disappearLabelFor(disappearMs)}). Naya lead shuru karein.
+            </Text>
+            <Pressable onPress={restartChat} style={s.endedStartBtn}>
+              <RotateCcw size={13} color="#fff" />
+              <Text style={s.endedStartText}>Start new chat</Text>
+            </Pressable>
+          </View>
+        )}
 
         {typing && (
           <View style={[mb.row, mb.rowThem]}>
@@ -653,18 +895,38 @@ export default function AiAssistant({
           TextControl and PhoneControl are intentionally excluded here — the
           PersistentChatBar below handles those input types directly. */}
       {hideOwnChrome ? (
-        // Inside the group: only render chip-style pickers (choice/multichoice)
+        // Inside the group: render chip-style pickers (choice/multichoice)
         // inline; text/location/phone/number are answered via the group's own
-        // input box (host-driven). No second text input is rendered here.
-        showAnswerBar && activeTemplate &&
-          ['choice', 'multichoice'].includes(activeTemplate.inputType || '') && (
-          <AnswerControl template={activeTemplate} disabled={sending} onSubmit={submit} />
+        // input box (host-driven). For those, show tappable suggestions so the
+        // user isn't left guessing what to type.
+        showAnswerBar && activeTemplate && (
+          ['choice', 'multichoice'].includes(activeTemplate.inputType || '') ? (
+            <AnswerControl template={activeTemplate} disabled={sending} onSubmit={submit} />
+          ) : (
+            <SuggestionChips
+              template={activeTemplate}
+              disabled={sending || typing}
+              onSubmit={submit}
+              phonePrefill={user?.phone}
+            />
+          )
         )
       ) : (
         <>
           {showAnswerBar && activeTemplate &&
             !['text', 'location', 'phone'].includes(activeTemplate.inputType || '') && (
             <AnswerControl template={activeTemplate} disabled={sending} onSubmit={submit} />
+          )}
+
+          {/* Tappable reference answers for the typing slots. */}
+          {showAnswerBar && activeTemplate &&
+            ['text', 'location', 'phone'].includes(activeTemplate.inputType || '') && (
+            <SuggestionChips
+              template={activeTemplate}
+              disabled={sending || typing}
+              onSubmit={submit}
+              phonePrefill={user?.phone}
+            />
           )}
 
           {/* ── Persistent chat input bar — only shown when AnswerControl is NOT visible,
@@ -724,6 +986,52 @@ export default function AiAssistant({
     </KeyboardAvoidingView>
   );
 }
+
+// ── Suggestion chips (reference answers, tap to send) ──
+// Purely a shortcut: submits the same value the user could type. Rendered only
+// for slots that require typing, and only when suggestions exist for that slot.
+function SuggestionChips({ template, disabled, onSubmit, phonePrefill }: {
+  template: Template | undefined;
+  disabled?: boolean;
+  onSubmit: (slotId: string, value: any, display: string) => void;
+  phonePrefill?: string;
+}) {
+  const items = buildSuggestions(template, phonePrefill);
+  if (!template || items.length === 0) return null;
+  const slotId = template.slotId || '';
+
+  return (
+    <View style={sg.wrap}>
+      <Text style={sg.label}>Suggestions — tap to send</Text>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={sg.row}
+        keyboardShouldPersistTaps="handled"
+      >
+        {items.map((it) => (
+          <Pressable
+            key={it.label}
+            disabled={disabled}
+            onPress={() => onSubmit(slotId, it.value, it.label)}
+            style={[sg.chip, disabled && sg.chipDim]}
+          >
+            <Text style={sg.chipText}>{it.label}</Text>
+          </Pressable>
+        ))}
+      </ScrollView>
+    </View>
+  );
+}
+
+const sg = StyleSheet.create({
+  wrap: { paddingTop: 8, paddingBottom: 2, backgroundColor: colors.cream },
+  label: { fontSize: 9.5, fontWeight: '800', color: colors.muted, letterSpacing: 0.4, paddingHorizontal: 12, marginBottom: 6, textTransform: 'uppercase' },
+  row: { paddingHorizontal: 12, gap: 8, alignItems: 'center' },
+  chip: { backgroundColor: colors.white, borderWidth: 1, borderColor: `${colors.brand}55`, borderRadius: 999, paddingHorizontal: 13, paddingVertical: 8 },
+  chipDim: { opacity: 0.5 },
+  chipText: { fontSize: 12, fontWeight: '700', color: colors.brand },
+});
 
 // ── Typing dot ──
 function TypingDot({ delay }: { delay: number }) {
@@ -897,26 +1205,24 @@ function ChoiceControl({ template, disabled, onSubmit }: {
 
   return (
     <View style={ac.bar}>
-      {/* Intent slot: compact horizontal chips in one row */}
+      {/* Intent slot: exactly three simple chips — Buy / Sell / Rent.
+          Shown in a fixed order and with fixed one-word labels regardless of the
+          wording the backend sends, so this first step stays unambiguous. */}
       {isIntent ? (
         <View style={ac.intentRow}>
-          {options.map((opt) => {
-            const label = opt.label?.hi || opt.label?.en || String(opt.value);
-            return (
+          {INTENT_ORDER
+            .filter((v) => options.some((o) => o.value === v))
+            .map((v) => (
               <Pressable
-                key={opt.value}
+                key={v}
                 disabled={disabled}
-                onPress={() => onSubmit(slotId, opt.value, label)}
+                onPress={() => onSubmit(slotId, v, INTENT_LABEL[v])}
                 style={ac.intentChip}
               >
-                <Text style={ac.intentChipIcon}>{INTENT_ICON[opt.value] || '•'}</Text>
-                <View>
-                  <Text style={ac.intentChipLabel} numberOfLines={1}>{label}</Text>
-                  <Text style={ac.intentChipSub} numberOfLines={1}>{opt.label?.en}</Text>
-                </View>
+                <Text style={ac.intentChipIcon}>{INTENT_ICON[v] || '•'}</Text>
+                <Text style={ac.intentChipLabel} numberOfLines={1}>{INTENT_LABEL[v]}</Text>
               </Pressable>
-            );
-          })}
+            ))}
         </View>
       ) : (
       <ScrollView keyboardShouldPersistTaps="handled" style={{ maxHeight: 200 }} contentContainerStyle={ac.chipsWrap}>
@@ -1195,6 +1501,12 @@ function ActionsBubble({ msg, onNewLead, onViewLeads, disabled }: {
   msg: Msg; onNewLead: () => void; onViewLeads?: () => void; disabled: boolean;
 }) {
   const actions: { action: string; label: { en: string; hi: string }; icon?: string }[] = msg.template?.options?.actions || [];
+  // Presentation override so the labels are correct even against a backend that
+  // still sends the old wording ("Nayi requirement" / "Meri leads dekhein").
+  const LABEL: Record<string, string> = {
+    new_lead: 'New post',
+    view_leads: 'Matching project',
+  };
   const handle = (action: string) => {
     if (action === 'new_lead') onNewLead();
     else if (action === 'view_leads') onViewLeads?.();
@@ -1210,7 +1522,9 @@ function ActionsBubble({ msg, onNewLead, onViewLeads, disabled }: {
             return (
               <Pressable key={a.action} disabled={disabled} onPress={() => handle(a.action)} style={[ab.btn, primary ? ab.btnPrimary : ab.btnGhost]}>
                 {a.icon === 'plus' ? <Plus size={15} color={primary ? '#fff' : colors.brand} /> : <ListIcon size={15} color={primary ? '#fff' : colors.brand} />}
-                <Text style={[ab.btnText, { color: primary ? '#fff' : colors.brand }]}>{a.label?.hi || a.label?.en}</Text>
+                <Text style={[ab.btnText, { color: primary ? '#fff' : colors.brand }]}>
+                  {LABEL[a.action] || a.label?.hi || a.label?.en}
+                </Text>
               </Pressable>
             );
           })}
@@ -1266,11 +1580,11 @@ const ac = StyleSheet.create({
   intentLabel: { fontSize: 14, fontWeight: '800', color: colors.ink },
   intentSub: { fontSize: 10.5, color: colors.muted2, marginTop: 1 },
   // compact horizontal intent chips (used instead of intentCard for the slot === 'intent' row)
-  intentRow: { flexDirection: 'row', gap: 7 },
-  intentChip: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 9, paddingVertical: 8, borderRadius: 12, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.white },
-  intentChipIcon: { fontSize: 15 },
-  intentChipLabel: { fontSize: 11, fontWeight: '800', color: colors.ink },
-  intentChipSub: { fontSize: 8.5, color: colors.muted2, marginTop: 1 },
+  intentRow: { flexDirection: 'row', gap: 8 },
+  // Single-line label now (no sub-caption), so centre the icon + word.
+  intentChip: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, paddingHorizontal: 10, paddingVertical: 11, borderRadius: 12, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.white },
+  intentChipIcon: { fontSize: 16 },
+  intentChipLabel: { fontSize: 13, fontWeight: '800', color: colors.ink },
   customRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   inputRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   inputWrap: { flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: colors.cream, borderWidth: 1, borderColor: colors.line, borderRadius: 22, paddingHorizontal: 14 },

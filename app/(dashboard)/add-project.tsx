@@ -125,6 +125,9 @@ export default function AddProjectScreen() {
 
   // Section 5 — Pricing
   const [startingPrice, setStartingPrice] = useState('');
+  // Unit for the starting price. Value entered is multiplied by this on save so
+  // pricing.startingPrice is always stored in RUPEES (what the match engine expects).
+  const [priceUnit, setPriceUnit] = useState<'thousand' | 'lakh' | 'cr'>('lakh');
   const [priceRange, setPriceRange] = useState('');
   const [paymentPlan, setPaymentPlan] = useState('');
   const [bankLoanAvailable, setBankLoanAvailable] = useState(false);
@@ -269,13 +272,25 @@ export default function AddProjectScreen() {
   }
 
   // Derived pricePerSqFt (round(price / lower-bound-of-area))
+  // Convert the entered price + unit into full rupees (the stored/match unit).
+  const PRICE_UNIT_MULTIPLIER: Record<'thousand' | 'lakh' | 'cr', number> = {
+    thousand: 1000,
+    lakh: 100000,
+    cr: 10000000,
+  };
+  const priceInRupees = useMemo(() => {
+    const v = Number(startingPrice);
+    if (!v || isNaN(v)) return 0;
+    return Math.round(v * PRICE_UNIT_MULTIPLIER[priceUnit]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startingPrice, priceUnit]);
+
   const derivedPricePerSqFt = useMemo(() => {
-    const price = Number(startingPrice);
-    if (!price) return undefined;
+    if (!priceInRupees) return undefined;
     const area = parseAreaLowerBoundSqFt(isPlot ? plotSizeRange : carpetAreaRange);
     if (!area) return undefined;
-    return Math.round(price / area);
-  }, [startingPrice, carpetAreaRange, plotSizeRange, isPlot]);
+    return Math.round(priceInRupees / area);
+  }, [priceInRupees, carpetAreaRange, plotSizeRange, isPlot]);
 
   const numOrUndef = (v: string) => {
     const n = Number(v);
@@ -298,7 +313,8 @@ export default function AddProjectScreen() {
       projectStatus,
       amenities,
       pricing: {
-        startingPrice: Number(startingPrice),
+        // Always stored in full rupees (entered value × selected unit).
+        startingPrice: priceInRupees,
         pricePerSqFt: derivedPricePerSqFt,
         totalPriceRange: priceRange.trim(),
         paymentPlan: paymentPlan.trim(),
@@ -527,9 +543,27 @@ export default function AddProjectScreen() {
 
         {/* Section 5 — Pricing */}
         <Section icon={<IndianRupee size={16} color={colors.brand} />} title="Pricing & Payment" n={5}>
-          <Field label="Starting Price (₹)" required>
-            <TextInput style={s.input} value={startingPrice} onChangeText={setStartingPrice} placeholder="e.g. 5500000" placeholderTextColor={colors.muted} keyboardType="numeric" />
+          <Field label="Starting Price" required>
+            <TextInput style={s.input} value={startingPrice} onChangeText={setStartingPrice} placeholder="e.g. 80" placeholderTextColor={colors.muted} keyboardType="numeric" />
+            <View style={[s.chipsWrap, { marginTop: 8 }]}>
+              {([
+                { key: 'thousand', label: 'Thousand' },
+                { key: 'lakh', label: 'Lakh' },
+                { key: 'cr', label: 'Crore' },
+              ] as const).map(u => (
+                <Pressable
+                  key={u.key}
+                  onPress={() => setPriceUnit(u.key)}
+                  style={[s.chip, priceUnit === u.key && s.chipOn]}
+                >
+                  <Text style={[s.chipText, priceUnit === u.key && s.chipTextOn]}>{u.label}</Text>
+                </Pressable>
+              ))}
+            </View>
           </Field>
+          {priceInRupees ? (
+            <Text style={s.hint}>= ₹{priceInRupees.toLocaleString('en-IN')}</Text>
+          ) : null}
           {derivedPricePerSqFt ? (
             <Text style={s.hint}>Price / sq ft (auto): ₹{derivedPricePerSqFt.toLocaleString('en-IN')}</Text>
           ) : null}

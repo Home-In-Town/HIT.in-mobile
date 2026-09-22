@@ -25,8 +25,8 @@ import { SkeletonCard } from '../../src/components/Skeleton';
 import { colors } from '../../src/theme';
 // Reused screens rendered as embedded tab content (no duplication).
 import CrmLeadsScreen from './crm-leads';
-import MarketplaceScreen from './marketplace';
 import LeadMatchingHub from './lead-matching';
+import PropertyMap from '../../src/components/PropertyMap';
 
 type OverviewTab = 'ai' | 'crm' | 'marketplace';
 
@@ -78,7 +78,9 @@ export default function HomeDashboard() {
   // True while an AI Lead Matching conversation is active → hide the welcome banner.
   const [chatActive, setChatActive] = useState(false);
 
-  const canUpload = ['admin', 'builder', 'captain'].includes(user?.role ?? '');
+  // Agents can also list/upload projects (backend ProjectController.create allows
+  // builder/agent/admin/captain), so include 'agent' here to match permissions.
+  const canUpload = ['admin', 'builder', 'captain', 'agent'].includes(user?.role ?? '');
 
   const load = useCallback(async () => {
     try {
@@ -162,29 +164,25 @@ export default function HomeDashboard() {
       )}
 
       {/* ── Tab Switcher (always visible): AI Lead Matching · CRM · Marketplace ── */}
+      {/* Section switcher. Icon-above-label so each label gets the full card
+          width — "AI Leads" no longer truncates the way "AI Lead Mat…" did. */}
       <View style={s.tabRow}>
         <Pressable style={[s.tabCard, tab === 'ai' && s.tabCardActive]} onPress={() => setTab('ai')}>
-          <View style={[s.quickIcon, tab === 'ai' && s.quickIconActive]}><Zap size={16} color={tab === 'ai' ? '#fff' : colors.brand} /></View>
-          <View style={{ flex: 1 }}>
-            <Text style={[s.quickTitle, tab === 'ai' && s.quickTitleActive]} numberOfLines={1}>AI Lead Matching</Text>
-          </View>
+          <View style={[s.quickIcon, tab === 'ai' && s.quickIconActive]}><Zap size={17} color={tab === 'ai' ? '#fff' : colors.brand} /></View>
+          <Text style={[s.quickTitle, tab === 'ai' && s.quickTitleActive]} numberOfLines={1}>AI Leads</Text>
         </Pressable>
 
         <Pressable style={[s.tabCard, tab === 'crm' && s.tabCardActive]} onPress={() => setTab('crm')}>
           <View style={[s.quickIcon, tab === 'crm' && s.quickIconActive]}>
-            <BarChart3 size={16} color={tab === 'crm' ? '#fff' : colors.brand} />
+            <BarChart3 size={17} color={tab === 'crm' ? '#fff' : colors.brand} />
             {crmHot > 0 && <View style={s.hotDotInline} />}
           </View>
-          <View style={{ flex: 1 }}>
-            <Text style={[s.quickTitle, tab === 'crm' && s.quickTitleActive]} numberOfLines={1}>CRM</Text>
-          </View>
+          <Text style={[s.quickTitle, tab === 'crm' && s.quickTitleActive]} numberOfLines={1}>CRM</Text>
         </Pressable>
 
         <Pressable style={[s.tabCard, tab === 'marketplace' && s.tabCardActive]} onPress={() => setTab('marketplace')}>
-          <View style={[s.quickIcon, tab === 'marketplace' && s.quickIconActive]}><ShoppingBag size={16} color={tab === 'marketplace' ? '#fff' : colors.brand} /></View>
-          <View style={{ flex: 1 }}>
-            <Text style={[s.quickTitle, tab === 'marketplace' && s.quickTitleActive]} numberOfLines={1}>Project</Text>
-          </View>
+          <View style={[s.quickIcon, tab === 'marketplace' && s.quickIconActive]}><ShoppingBag size={17} color={tab === 'marketplace' ? '#fff' : colors.brand} /></View>
+          <Text style={[s.quickTitle, tab === 'marketplace' && s.quickTitleActive]} numberOfLines={1}>Project</Text>
         </Pressable>
       </View>
 
@@ -195,10 +193,10 @@ export default function HomeDashboard() {
         </View>
       )}
 
-      {/* ── Marketplace tab ── */}
+      {/* ── Project tab: full Google-map property view ── */}
       {tab === 'marketplace' && (
         <View style={{ flex: 1 }}>
-          <MarketplaceScreen embedded />
+          <PropertyMap isAdmin={user?.role === 'admin'} />
         </View>
       )}
 
@@ -374,17 +372,18 @@ const s = StyleSheet.create({
     backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line,
     borderRadius: 14, paddingHorizontal: 8, paddingVertical: 11,
   },
-  quickIcon: { width: 32, height: 32, borderRadius: 10, backgroundColor: `${colors.brand}15`, alignItems: 'center', justifyContent: 'center', position: 'relative' },
-  quickTitle: { fontSize: 10.5, fontWeight: '800', color: colors.ink },
+  quickIcon: { width: 30, height: 30, borderRadius: 9, backgroundColor: `${colors.brand}15`, alignItems: 'center', justifyContent: 'center', position: 'relative' },
+  quickTitle: { fontSize: 11, fontWeight: '800', color: colors.ink, textAlign: 'center' },
   quickSub: { fontSize: 8, color: colors.muted, fontWeight: '700', letterSpacing: 0.4, marginTop: 1 },
   hotDotInline: { position: 'absolute', top: 3, right: 3, width: 7, height: 7, borderRadius: 4, backgroundColor: '#EF4444', borderWidth: 1, borderColor: colors.white },
 
-  // Tab switcher (3 cards act as tabs)
-  tabRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 12, paddingVertical: 10, backgroundColor: colors.cream },
+  // Tab switcher (3 cards act as tabs). Compact but comfortably tappable, and
+  // a fixed height so the row never shifts when switching sections.
+  tabRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 12, paddingVertical: 8, backgroundColor: colors.cream },
   tabCard: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', gap: 7,
+    flex: 1, flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 5,
     backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line,
-    borderRadius: 14, paddingHorizontal: 8, paddingVertical: 11,
+    borderRadius: 14, paddingHorizontal: 6, paddingVertical: 9, minHeight: 62,
   },
   tabCardActive: { backgroundColor: colors.brand, borderColor: colors.brand },
   quickIconActive: { backgroundColor: 'rgba(255,255,255,0.22)' },

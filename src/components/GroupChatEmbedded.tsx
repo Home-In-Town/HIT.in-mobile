@@ -21,10 +21,11 @@ import { Image, Linking } from 'react-native';
 import {
   Users, Plus, Globe, ChevronLeft, Send, X, MoreVertical, Building2,
   Link as LinkIcon, FileText, QrCode, Image as ImageIcon, LogOut, Trash2,
-  Search, MapPin, Check, Camera, Paperclip, Sparkles,
+  Search, MapPin, Check, Camera, Paperclip, Sparkles, ChevronDown, ChevronUp, Clock,
 } from 'lucide-react-native';
-import { groupChatApi, shareApi, mediaApi, GroupRoom, GroupMessage } from '../lib/api';
+import { groupChatApi, shareApi, mediaApi, leadMatchingApi, projectsApiExtended, GroupRoom, GroupMessage } from '../lib/api';
 import AiAssistant, { AiAssistantApi, AiPostDraft } from './AiAssistant';
+import { postedListStorage, disappearStorage } from '../lib/storage';
 import { useAuth } from '../lib/authContext';
 import { useSocket } from '../hooks/useSocket';
 import { useToast } from './Toast';
@@ -71,6 +72,187 @@ const POSSESSION_STATUS = [
   { v: 'ready', l: 'Ready to Move' }, { v: '6months', l: '6 Months' }, { v: '1year', l: '1 Year' }, { v: '2year+', l: '2+ Years' },
 ];
 
+// Per-property "Post to Group" cooldown (8 hours). After posting, the button is
+// disabled/faded until this elapses, then returns to normal.
+const POST_COOLDOWN_MS = 8 * 60 * 60 * 1000;
+
+// Format a lakh amount the way the rest of the app does.
+function fmtLakhs(lakhs?: number | null): string {
+  if (!lakhs || lakhs <= 0) return '—';
+  if (lakhs >= 100) return `₹${(lakhs / 100).toFixed(1)} Cr`;
+  return `₹${Math.round(lakhs)} L`;
+}
+
+// Map a backend ExtractedLead (sell/rent) into the shape PostCard renders.
+// This is what makes the Post list survive a reinstall — the data comes from
+// the server, not from local storage.
+function leadToDisplay(lead: any) {
+  const p = lead?.params || {};
+  const bhk = p.bhkType || '';
+  const type = p.propertyType || '';
+  const areaTxt = p.area ? `${p.area} ${p.areaUnit || 'sqft'}` : '';
+
+  const fields: { label: string; value: string }[] = [];
+  const push = (label: string, value: any) => {
+    if (value === null || value === undefined || value === '' ) return;
+    fields.push({ label, value: String(value) });
+  };
+  push('Property Type', type);
+  push('BHK', bhk);
+  push('Area', areaTxt);
+  push('Location', p.location || p.locationRaw);
+  push('City', p.city);
+  push('Category', p.category);
+  push('Construction Status', p.projectStatus);
+  push('Expected Price', p.expectedPrice ? fmtLakhs(p.expectedPrice) : (p.budget ? fmtLakhs(p.budget) : ''));
+  push('RERA Approved', p.reraApproved === true ? 'Yes' : p.reraApproved === false ? 'No' : '');
+  push('RERA Number', p.reraNumber);
+  push('Bank Loan', p.bankLoanAvailable === true ? 'Yes' : p.bankLoanAvailable === false ? 'No' : '');
+  push('Amenities', Array.isArray(p.amenities) && p.amenities.length ? p.amenities.join(', ') : '');
+  push('Urgency', p.urgency);
+
+  return {
+    id: String(lead?._id || lead?.id || ''),
+    title: [bhk, type].filter(Boolean).join(' ') || 'Property',
+    subtitle: [p.location || p.locationRaw, p.city].filter(Boolean).join(', '),
+    price: fmtLakhs(p.expectedPrice ?? p.budget),
+    tags: [bhk, areaTxt, type].filter(Boolean),
+    fields,
+    direction: lead?.direction || 'sell',
+    createdAt: lead?.createdAt,
+  };
+}
+
+// WhatsApp-style disappearing-message durations for the AI Assist chat.
+const DISAPPEAR_OPTIONS: { label: string; ms: number }[] = [
+  { label: '6 hours', ms: 6 * 3600000 },
+  { label: '12 hours', ms: 12 * 3600000 },
+  { label: '1 day', ms: 24 * 3600000 },
+  { label: '7 days', ms: 7 * 24 * 3600000 },
+  { label: '1 month', ms: 30 * 24 * 3600000 },
+  { label: 'Never', ms: 0 },
+];
+const disappearLabel = (ms: number) => DISAPPEAR_OPTIONS.find(o => o.ms === ms)?.label || 'Never';
+
+function fmtCooldownLeft(ms: number): string {
+  const h = Math.floor(ms / 3600000);
+  const m = Math.floor((ms % 3600000) / 60000);
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+// Rupees → short label (₹80L / ₹1.2Cr).
+function fmtMoney(v: number): string {
+  if (!v || v <= 0) return '';
+  if (v >= 10000000) return `₹${(v / 10000000).toFixed(v % 10000000 === 0 ? 0 : 1)}Cr`;
+  if (v >= 100000) return `₹${Math.round(v / 100000)}L`;
+  return `₹${v.toLocaleString('en-IN')}`;
+}
+
+// A backend project → the common display shape used by PostCard / View Property.
+function projectToDisplay(p: any) {
+  return {
+    id: p.id,
+    projectId: p.id,
+    title: p.name || 'Property',
+    subtitle: [p.location, p.city].filter(Boolean).join(', '),
+    price: fmtMoney(p.startingPrice),
+    tags: [
+      ...(Array.isArray(p.bhkOptions) ? [p.bhkOptions.join(', ')] : []),
+      p.carpetAreaRange || '',
+      p.propertyType || p.category || '',
+    ].filter(Boolean),
+    fields: [
+      { label: 'Property Type', value: p.propertyType || p.category || '—' },
+      ...(p.bhkOptions?.length ? [{ label: 'BHK', value: p.bhkOptions.join(', ') }] : []),
+      { label: 'Location', value: p.location || '—' },
+      { label: 'City', value: p.city || '—' },
+      { label: 'Price', value: fmtMoney(p.startingPrice) || '—' },
+      ...(p.carpetAreaRange ? [{ label: 'Area', value: p.carpetAreaRange }] : []),
+      { label: 'Status', value: p.projectStatus || '—' },
+      { label: 'RERA', value: p.reraApproved ? 'Yes' : 'No' },
+      { label: 'Bank Loan', value: p.bankLoanAvailable ? 'Yes' : 'No' },
+      ...(p.amenities?.length ? [{ label: 'Amenities', value: p.amenities.join(', ') }] : []),
+    ],
+    posted: true,
+    postedAt: p.createdAt ? new Date(p.createdAt).getTime() : 0,
+  };
+}
+
+// Map an AI-collected sell draft (labeled fields) → a real project create payload
+// (same shape as add-project) + a group inventory card. Price is normalized to
+// full rupees so the property matches correctly.
+function buildProjectFromDraft(draft: AiPostDraft): { payload: any; card: any } {
+  const get = (re: RegExp) => draft.fields.find(f => re.test(f.label))?.value || '';
+  const propType = get(/property type|^type$/i) || 'Apartment / Flat';
+  const bhk = get(/bhk/i);
+  const location = get(/location/i) || get(/area/i);
+  const city = get(/city/i) || 'Nagpur';
+  const category = get(/category/i) || 'Residential';
+  const statusRaw = get(/status|possession|construction/i);
+  const rera = /yes|haan|approved/i.test(get(/rera/i));
+  const loan = /yes|haan|available/i.test(get(/loan/i));
+
+  // Price → full rupees. AI collects price in lakh (unit 'lakh'); handle cr too.
+  const priceStr = get(/price|budget/i);
+  const priceNum = Number((priceStr.match(/[\d.]+/) || [])[0]) || 0;
+  const isCr = /cr|crore/i.test(priceStr);
+  const priceRupees = Math.round(priceNum * (isCr ? 10000000 : 100000));
+
+  const isPlot = /plot|land|zameen/i.test(propType);
+  const projectStatus = /ready/i.test(statusRaw) ? 'ready-to-move'
+    : /under|construction/i.test(statusRaw) ? 'under-construction'
+    : 'ready-to-move';
+
+  // Auto project name: "{BHK} {PropertyType} - {Location}"
+  const namePieces = [bhk, propType].filter(Boolean).join(' ');
+  const projectName = [namePieces, location].filter(Boolean).join(' - ') || (draft.title || 'Property');
+
+  const payload = {
+    projectName,
+    projectType: isPlot ? 'plot' : 'flat',
+    city: city.trim(),
+    location: location.trim(),
+    latitude: 0,
+    longitude: 0,
+    googleMapLink: '',
+    category,
+    propertyType: propType,
+    reraApproved: rera,
+    reraNumber: '',
+    projectStatus,
+    amenities: (get(/amenit/i) || '').split(',').map(s => s.trim()).filter(Boolean),
+    pricing: {
+      startingPrice: priceRupees, // full rupees
+      totalPriceRange: '',
+      paymentPlan: '',
+      bankLoanAvailable: loan,
+    },
+    configuration: {
+      bhkOptions: bhk ? [bhk] : [],
+      carpetAreaRange: get(/area/i) || '',
+      floorRange: '',
+      plotSizeRange: '',
+      facingOptions: [],
+      gatedCommunity: false,
+    },
+    cta: { buttonText: '', whatsappNumber: '', callNumber: '' },
+  };
+
+  const card = {
+    bhkOptions: bhk ? [bhk] : [],
+    priceRange: { min: Math.round(priceRupees / 100000), max: 0 }, // card shows lakhs
+    area: location,
+    city,
+    possessionStatus: /ready/i.test(statusRaw) ? 'ready' : (statusRaw || 'ready'),
+    bankLoanAvailable: loan,
+    commissionPercent: 0,
+    description: draft.fields.map(f => `${f.label}: ${f.value}`).join(' • '),
+  };
+
+  return { payload, card };
+}
+
 // ─── Draggable "AI Lead Assist" FAB ──────────────────────────────────────────
 // A movable floating button. It stays inside its parent (the message area) and
 // never leaves the viewport. A small movement threshold distinguishes a tap
@@ -79,6 +261,65 @@ const POSSESSION_STATUS = [
 const FAB_W = 128; // approx pill width (clamp margin)
 const FAB_H = 44;  // approx pill height
 const DRAG_THRESHOLD = 6; // px of movement before it's treated as a drag
+
+// ─── Compact posted-property card (with expand toggle) ──────────────────────
+// Marketplace-style property card for the Post view.
+// - Draft (not yet posted): shows "Post to Group" (green) + "View Property".
+// - Posted: shows a "LISTED" badge; "Post to Group" is faded/disabled during the
+//   8h cooldown (shows remaining time), then re-enables.
+function PostCard({ item, posted, cooldownLeftMs, posting, onPost, onView }: {
+  item: { title?: string; subtitle?: string; price?: string; tags?: string[] };
+  posted: boolean;
+  cooldownLeftMs: number;
+  posting: boolean;
+  onPost: () => void;
+  onView: () => void;
+}) {
+  const inCooldown = cooldownLeftMs > 0;
+  const postDisabled = posting || inCooldown;
+  return (
+    <View style={pd.card}>
+      <View style={pd.cardTop}>
+        <View style={pd.cardIcon}><Building2 size={22} color={colors.brand} /></View>
+        <View style={{ flex: 1 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <View style={[pd.badge, { backgroundColor: posted ? `${colors.greenText}18` : `${colors.brand}18` }]}>
+              <Text style={[pd.badgeText, { color: posted ? colors.greenText : colors.brand }]}>{posted ? 'LISTED' : 'READY'}</Text>
+            </View>
+            <Text style={pd.cardTitle} numberOfLines={1}>{item.title || 'Property'}</Text>
+          </View>
+          {item.subtitle ? <Text style={pd.cardLoc} numberOfLines={1}>📍 {item.subtitle}</Text> : null}
+        </View>
+        {item.price ? <Text style={pd.cardPrice}>{item.price}</Text> : null}
+      </View>
+
+      {/* Tags row (BHK / area / type) */}
+      {item.tags && item.tags.length > 0 && (
+        <View style={pd.tagsRow}>
+          {item.tags.slice(0, 3).map((t, i) => (
+            <View key={i} style={pd.tag}><Text style={pd.tagText} numberOfLines={1}>{t}</Text></View>
+          ))}
+        </View>
+      )}
+
+      {/* Actions: Post to Group + View Property */}
+      <View style={pd.actionsRow}>
+        <Pressable
+          onPress={onPost}
+          disabled={postDisabled}
+          style={[pd.postBtn, postDisabled && pd.postBtnDim]}
+        >
+          {posting
+            ? <ActivityIndicator color="#fff" size="small" />
+            : <Text style={pd.postBtnText}>{inCooldown ? `Posted · ${fmtCooldownLeft(cooldownLeftMs)}` : 'Post to Group 📢'}</Text>}
+        </Pressable>
+        <Pressable onPress={onView} style={pd.viewBtn}>
+          <Text style={pd.viewBtnText}>View Property</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
 
 function DraggableFab({ onPress }: { onPress: () => void }) {
   const pan = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
@@ -173,10 +414,30 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   // existing AI Lead Matching assistant instead of posting to the group.
   const [aiMode, setAiMode] = useState(false);
   const [showAiMenu, setShowAiMenu] = useState(false);
+  // Disappearing messages setting for the AI Assist chat (ms; 0 = Never).
+  const [disappearMs, setDisappearMs] = useState(0);
+  const [showDisappear, setShowDisappear] = useState(false);
+
   // Post card built from the AI-collected property details (no manual form).
   const [postDraft, setPostDraft] = useState<AiPostDraft | null>(null);
   const [postingDraft, setPostingDraft] = useState(false);
+  // "Post" view: all properties the user has posted so far + the current draft.
+  const [showPost, setShowPost] = useState(false);
+  const [postedList, setPostedList] = useState<any[]>([]); // AiPostDraft + { projectId, postedAt, id }
+  const [postedLeads, setPostedLeads] = useState<any[]>([]); // backend ExtractedLeads (sell/rent)
+  const [myProjects, setMyProjects] = useState<any[]>([]); // backend published projects (source of truth)
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [viewProperty, setViewProperty] = useState<any | null>(null); // View Property detail sheet
+  // Free-text lead detection (mirrors the website's extract → confirm → match).
+  // When a typed message like "i need a flat in besa" is detected as a lead,
+  // we show a confirm sheet; on confirm we run matching (leadMatchingApi.confirm).
+  const [leadDetect, setLeadDetect] = useState<{ extraction: any; messageId?: string } | null>(null);
+  const [confirmingLead, setConfirmingLead] = useState(false);
   const aiApiRef = useRef<AiAssistantApi | null>(null);
+  // Action to run once AI mode is activated from a header button (post/match).
+  const pendingAiActionRef = useRef<'post' | 'match' | null>(null);
+  // Intent chosen from the Sell/Buy/Rent quick-start, applied once AI is ready.
+  const pendingAiIntentRef = useRef<'sell' | 'buy' | 'rent' | null>(null);
   const flatRef = useRef<FlatList>(null);
 
   const role = user?.role ?? '';
@@ -200,26 +461,27 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
 
   useEffect(() => { loadRooms(); }, [loadRooms]);
 
+  // Load the saved disappearing-messages setting once.
+  useEffect(() => { disappearStorage.get().then(setDisappearMs); }, []);
+
+  // Append a message only if it isn't already present (dedup by id). Prevents
+  // duplicates from optimistic append + socket echo, and stray double-renders.
+  const appendMessage = useCallback((msg: GroupMessage) => {
+    setMessages(prev => (prev.some(m => m.id === msg.id) ? prev : [...prev, msg]));
+    setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 100);
+  }, []);
+
   // Real-time incoming messages
   useEffect(() => {
     const unsub = socket.onGroupMessage((msg: any) => {
-      if ((msg.room || msg.roomId) !== activeRoom?.id) return;
-      const roomId = activeRoom?.id ?? '';
-      setMessages(prev => [...prev, {
-        id: String(msg._id || msg.id || Date.now()),
-        room: roomId,
-        sender: { id: String(msg.sender?._id || msg.sender?.id || ''), name: msg.sender?.name || '', role: msg.sender?.role || '', companyName: msg.sender?.companyName },
-        messageType: msg.messageType || 'text',
-        content: msg.content || '',
-        requirementCard: msg.requirementCard,
-        inventoryCard: msg.inventoryCard,
-        matchResults: msg.matchResults,
-        createdAt: msg.createdAt || new Date().toISOString(),
-      }]);
-      setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 100);
+      const incomingRoom = msg.room || msg.roomId;
+      if (!activeRoom?.id || incomingRoom !== activeRoom.id) return;
+      // appendMessage dedups by id, so an echo of our own optimistic message
+      // won't create a duplicate.
+      appendMessage(normalizeMsg(msg, activeRoom.id));
     });
     return unsub;
-  }, [activeRoom?.id, socket.onGroupMessage]);
+  }, [activeRoom?.id, socket.onGroupMessage, appendMessage]);
 
   const openRoom = async (room: GroupRoom) => {
     if (activeRoom) socket.leaveGroup(activeRoom.id);
@@ -271,12 +533,61 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const sendText = async () => {
     if (!text.trim() || !activeRoom) return;
     const content = text.trim();
+    const roomId = activeRoom.id;
     setText('');
+    let postedMessageId: string | undefined;
     try {
-      await groupChatApi.postMessage(activeRoom.id, { messageType: 'text', content });
-      // socket broadcast will echo the message back to us
+      // Persist via REST and append the created message immediately, so the
+      // sender always sees their own message (independent of socket echo).
+      // appendMessage dedups if the socket also echoes it back.
+      const res = await groupChatApi.postMessage(roomId, { messageType: 'text', content });
+      postedMessageId = res?.message?._id || res?.message?.id;
+      if (res?.message) appendMessage(normalizeMsg(res.message, roomId));
     } catch {
-      socket.sendGroupMessage({ roomId: activeRoom.id, content, messageType: 'text' });
+      // Fallback: try the socket, and still show the message locally.
+      socket.sendGroupMessage({ roomId, content, messageType: 'text' });
+      appendMessage(normalizeMsg({ _id: `local_${Date.now()}`, sender: { _id: user?.id, name: user?.name, role: user?.role }, messageType: 'text', content, createdAt: new Date().toISOString() }, roomId));
+    }
+
+    // Free-text lead detection (same as the website): after sending, run NLP
+    // extraction. If a buy/sell/rent requirement is detected, offer to find
+    // matches. Non-blocking — the message is already sent.
+    try {
+      const extraction = await leadMatchingApi.extract(content);
+      if (extraction?.detected) {
+        setLeadDetect({ extraction, messageId: postedMessageId });
+      }
+    } catch {
+      // Extraction is non-blocking — ignore failures.
+    }
+  };
+
+  // Confirm a detected free-text lead → run matching + persist (mirrors website).
+  const confirmDetectedLead = async () => {
+    if (!leadDetect || !activeRoom) return;
+    setConfirmingLead(true);
+    try {
+      const ex = leadDetect.extraction;
+      const res = await leadMatchingApi.confirm({
+        originalText: ex.extractedFrom || '',
+        messageId: leadDetect.messageId,
+        roomId: activeRoom.id,
+        source: 'group_chat',
+        intent: ex.intent || 'requirement',
+        params: ex.params,
+      });
+      const n = res?.matchCount ?? (res?.matches?.length || 0);
+      toast.show(
+        n > 0
+          ? `✓ Lead saved — ${n} match${n > 1 ? 'es' : ''} found 🎯`
+          : '✓ Lead saved — naya inventory aane par match batayenge',
+        'success',
+      );
+      setLeadDetect(null);
+    } catch (e: any) {
+      toast.show(e?.message || 'Could not find matches', 'error');
+    } finally {
+      setConfirmingLead(false);
     }
   };
 
@@ -364,7 +675,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     };
     try {
       const res = await groupChatApi.postMessage(activeRoom.id, { messageType: 'requirement_card', requirementCard: card });
-      if (res?.message) setMessages(prev => [...prev, normalizeMsg(res.message, activeRoom.id)]);
+      if (res?.message) appendMessage(normalizeMsg(res.message, activeRoom.id));
       const n = res?.message?.matchResults?.length || 0;
       toast.show(n > 0 ? `Posted — ${n} match${n > 1 ? 'es' : ''} found 🚀` : 'Posted — no matches yet', 'success');
       setReqForm({ bhkType: '2BHK', budget: '', area: '', city: '', possessionNeeded: 'immediate', loanRequired: false, urgency: 'normal', clientNotes: '' });
@@ -388,7 +699,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     };
     try {
       const res = await groupChatApi.postMessage(activeRoom.id, { messageType: 'inventory_card', inventoryCard: card });
-      if (res?.message) setMessages(prev => [...prev, normalizeMsg(res.message, activeRoom.id)]);
+      if (res?.message) appendMessage(normalizeMsg(res.message, activeRoom.id));
       toast.show('Inventory posted 📢', 'success');
       setInvForm({ bhkOptions: '', min: '', max: '', area: '', city: '', possessionStatus: 'ready', bankLoanAvailable: false, commissionPercent: '2', description: '' });
       setPostMode('text');
@@ -396,37 +707,218 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     } catch (e: any) { toast.show(e?.message || 'Failed to post', 'error'); }
   };
 
-  // Publish the AI-collected property draft into the group as an inventory card
-  // (reuses the existing group posting). No manual form — details come from AI.
+  // Publish the AI-collected property draft as a REAL published project (so it
+  // shows in Projects + becomes a match candidate) AND posts a group card.
+  // Details come from the AI conversation — no manual form.
   const publishDraft = async () => {
     if (!activeRoom || !postDraft) return;
     setPostingDraft(true);
-    const get = (re: RegExp) => postDraft.fields.find(f => re.test(f.label))?.value || '';
-    const priceStr = get(/price/i);
-    const priceNum = Number((priceStr.match(/[\d.]+/) || [])[0]) || 0;
-    const card = {
-      bhkOptions: get(/bhk|property type|type/i) ? [get(/bhk|property type|type/i)] : [],
-      priceRange: { min: priceNum, max: 0 },
-      area: get(/location/i) || get(/area/i),
-      city: get(/city/i),
-      possessionStatus: get(/status|possession/i) || 'ready',
-      bankLoanAvailable: /yes/i.test(get(/loan/i)),
-      commissionPercent: 0,
-      description: postDraft.fields.map(f => `${f.label}: ${f.value}`).join(' • '),
-    };
     try {
-      const res = await groupChatApi.postMessage(activeRoom.id, { messageType: 'inventory_card', inventoryCard: card });
-      if (res?.message) setMessages(prev => [...prev, normalizeMsg(res.message, activeRoom.id)]);
-      toast.show('Property posted 📢', 'success');
+      const built = buildProjectFromDraft(postDraft);
+
+      // 1) Create the project and publish it (real, matchable inventory).
+      let projectId: string | undefined;
+      try {
+        const created = await projectsApiExtended.create(built.payload);
+        projectId = created?.id;
+        if (projectId) {
+          try { await projectsApiExtended.publish(projectId); } catch { /* publish is best-effort */ }
+        }
+      } catch (e: any) {
+        // Non-fatal: still post the group card so the user isn't blocked.
+        console.warn('project create failed, posting card only:', e?.message);
+      }
+
+      // 2) Post the inventory card into the group (visible to members).
+      const res = await groupChatApi.postMessage(activeRoom.id, { messageType: 'inventory_card', inventoryCard: built.card });
+      if (res?.message) appendMessage(normalizeMsg(res.message, activeRoom.id));
+
+      // 3) Save to the local posted list with a cooldown timestamp (per-property).
+      const updated = await postedListStorage.add({ ...postDraft, projectId, postedAt: Date.now() });
+      // Refresh the durable backend list so the new post shows even after a reinstall.
+      loadPostedLeads();
+      setPostedList(updated);
+
+      // 4) Clear the AI draft so it stops re-appearing as "Ready to post".
+      aiApiRef.current?.clearDraft();
+      toast.show(projectId ? 'Property posted & published 📢' : 'Property posted 📢', 'success');
       setPostDraft(null);
-      setAiMode(false);
-      aiApiRef.current = null;
+      // Refresh backend-sourced posted projects.
+      loadMyProjects();
       setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 150);
     } catch (e: any) {
       toast.show(e?.message || 'Failed to post', 'error');
     } finally {
       setPostingDraft(false);
     }
+  };
+
+  // Re-post an already-published project's card into the group (after cooldown).
+  const repostProject = async (project: any, disp: any) => {
+    if (!activeRoom) return;
+    try {
+      const card = {
+        bhkOptions: Array.isArray(project.bhkOptions) ? project.bhkOptions : [],
+        priceRange: { min: Math.round((project.startingPrice || 0) / 100000), max: 0 },
+        area: project.location || '',
+        city: project.city || '',
+        possessionStatus: /ready/i.test(project.projectStatus || '') ? 'ready' : (project.projectStatus || 'ready'),
+        bankLoanAvailable: !!project.bankLoanAvailable,
+        commissionPercent: 0,
+        description: disp.fields.map((f: any) => `${f.label}: ${f.value}`).join(' • '),
+      };
+      const res = await groupChatApi.postMessage(activeRoom.id, { messageType: 'inventory_card', inventoryCard: card });
+      if (res?.message) appendMessage(normalizeMsg(res.message, activeRoom.id));
+      // Record a fresh cooldown timestamp for this project.
+      const updated = await postedListStorage.add({
+        title: disp.title, subtitle: disp.subtitle, price: disp.price,
+        fields: disp.fields, isSellable: true, intent: 'sell',
+        projectId: project.id, postedAt: Date.now(),
+      } as any);
+      setPostedList(updated);
+      toast.show('Property re-posted to group 📢', 'success');
+      setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 150);
+    } catch (e: any) {
+      toast.show(e?.message || 'Failed to post', 'error');
+    }
+  };
+
+  // Re-post a posted-list entry that has no backend project (create had failed),
+  // rebuilding the inventory card from its saved AI fields, and refresh cooldown.
+  const repostFromEntry = async (entry: any, disp: any) => {
+    if (!activeRoom) return;
+    try {
+      const built = buildProjectFromDraft(entry);
+      const res = await groupChatApi.postMessage(activeRoom.id, { messageType: 'inventory_card', inventoryCard: built.card });
+      if (res?.message) appendMessage(normalizeMsg(res.message, activeRoom.id));
+      const updated = await postedListStorage.add({ ...entry, postedAt: Date.now() } as any);
+      setPostedList(updated);
+      toast.show('Property re-posted to group 📢', 'success');
+      setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 150);
+    } catch (e: any) {
+      toast.show(e?.message || 'Failed to post', 'error');
+    }
+  };
+
+  // Load the user's own published properties from the backend (source of truth,
+  // survives reinstall). Server filters projects to the requesting user for agents.
+  const loadMyProjects = useCallback(async () => {
+    try {
+      const all = await projectsApiExtended.getAll();
+      setMyProjects(Array.isArray(all) ? all : []);
+    } catch {
+      setMyProjects([]);
+    }
+  }, []);
+
+  // Load the user's AI-posted properties from the BACKEND.
+  //
+  // Every sell/rent conversation persists an ExtractedLead server-side, so this
+  // is the durable record of "what I told the AI to sell" — it survives app
+  // reinstall, unlike the local posted list (AsyncStorage gets wiped). Normal
+  // add-project projects are not ExtractedLeads, so Post stays separate from
+  // the Project section.
+  const loadPostedLeads = useCallback(async () => {
+    try {
+      const res = await leadMatchingApi.getLeads({ limit: 50 });
+      const leads = Array.isArray(res?.leads) ? res.leads : [];
+      // Only sellable inventory (sell / rent) — buyer requirements aren't "posts".
+      const sellable = leads.filter((l: any) => {
+        const dir = String(l?.direction || '').toLowerCase();
+        return dir === 'sell' || dir === 'rent' || l?.intent === 'inventory';
+      });
+      setPostedLeads(sellable);
+    } catch {
+      setPostedLeads([]);
+    }
+  }, []);
+
+  // ── AI action handlers (used by the group header buttons/menu) ──
+  // Post = show ALL properties the user has posted so far, plus (if present) the
+  // current AI-collected draft as a postable card.
+  const doPost = async () => {
+    const list = await postedListStorage.getAll();
+    setPostedList(list);
+    loadMyProjects();   // backend published projects (for cooldown enrichment)
+    loadPostedLeads();  // backend AI-posted properties — the durable source
+    const draft = aiApiRef.current?.getPostDraft();
+    // Only treat the draft as postable if it's a new sellable draft not already
+    // in the posted list (avoid showing a just-posted item twice as "draft").
+    if (draft && draft.isSellable && draft.fields.length > 0) {
+      setPostDraft(draft);
+    } else {
+      setPostDraft(null);
+    }
+    setExpandedId(null);
+    setShowPost(true);
+  };
+  const doMatching = () => { aiApiRef.current?.runMatching(); };
+
+  // Members who joined in the last 7 days — shown in the room header next to the
+  // total. Members without a joinedAt (older records) simply aren't counted.
+  const newJoinCount = React.useMemo(() => {
+    if (!activeRoom) return 0;
+    const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    return activeRoom.members.reduce((n, m) => {
+      const t = m.joinedAt ? new Date(m.joinedAt).getTime() : NaN;
+      return !isNaN(t) && t >= cutoff ? n + 1 : n;
+    }, 0);
+  }, [activeRoom]);
+
+  // The Post list: backend AI-posted properties (durable) merged with any local
+  // entries that aren't on the server yet (e.g. posted while offline), deduped
+  // so the same property never shows twice.
+  const postedCards = React.useMemo(() => {
+    const cards = postedLeads.map(leadToDisplay);
+    const seen = new Set(cards.map((c) => `${c.title}|${c.subtitle}`));
+    for (const entry of postedList) {
+      const key = `${entry.title}|${entry.subtitle}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      cards.push({
+        id: entry.id || entry.projectId || String(entry.postedAt || Date.now()),
+        title: entry.title,
+        subtitle: entry.subtitle,
+        price: entry.price,
+        tags: (entry.fields || []).filter((f: any) => /bhk|area|type/i.test(f.label)).map((f: any) => f.value),
+        fields: entry.fields || [],
+        direction: entry.intent || 'sell',
+        createdAt: entry.postedAt ? new Date(entry.postedAt).toISOString() : undefined,
+      } as any);
+    }
+    return cards;
+  }, [postedLeads, postedList]);
+
+  // When Post/Matching is tapped while AI mode is OFF, we turn AI on and defer
+  // the action until the assistant API is ready (fired from onReady below).
+  const aiPost = () => {
+    if (aiMode && aiApiRef.current) { doPost(); return; }
+    pendingAiActionRef.current = 'post';
+    setAiMode(true);
+  };
+  const aiMatching = () => {
+    if (aiMode && aiApiRef.current) { doMatching(); return; }
+    pendingAiActionRef.current = 'match';
+    setAiMode(true);
+  };
+  // Quick-start: user picked Sell / Buy / Rent. Enter AI mode and let the
+  // assistant answer the intent question itself, so the chat continues from the
+  // next question instead of asking "what would you like to do?" again.
+  const aiStartWithIntent = (intent: 'sell' | 'buy' | 'rent') => {
+    if (aiMode && aiApiRef.current) { aiApiRef.current.startWithIntent(intent); return; }
+    pendingAiIntentRef.current = intent;
+    setAiMode(true);
+  };
+
+  const aiEndChat = () => { aiApiRef.current?.endChat(); };
+  // Exit Chat: reset the conversation (so re-entering starts fresh at step 1),
+  // then leave AI mode and return to the group thread.
+  const aiExitChat = () => {
+    const api = aiApiRef.current;
+    Promise.resolve(api?.exitChat?.()).finally(() => {
+      setAiMode(false);
+      aiApiRef.current = null;
+    });
   };
 
   const handleInterested = async (projectId: string, messageId: string) => {
@@ -676,14 +1168,65 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
         {!hideThreadBack && (
           <Pressable onPress={closeRoom} style={{ padding: 4 }}><ChevronLeft size={22} color={colors.ink} /></Pressable>
         )}
-        <View style={s.threadAvatar}><Text style={{ fontSize: 15 }}>{ROOM_ICON[activeRoom.roomType] || '💬'}</Text></View>
-        <View style={{ flex: 1 }}>
-          <Text style={s.threadTitle} numberOfLines={1}>{roomDisplayName(activeRoom)}</Text>
-          <Text style={s.threadSub} numberOfLines={1}>{activeRoom.members.length} members</Text>
+        {/* Universal room gets the globe symbol (matches the room list) so this
+            header reads as "the shared room", not a repeat of the tab name. */}
+        <View style={[s.threadAvatar, activeRoom.isUniversal && { backgroundColor: colors.brand }]}>
+          <Text style={{ fontSize: 15 }}>
+            {activeRoom.isUniversal ? '🌐' : (ROOM_ICON[activeRoom.roomType] || '💬')}
+          </Text>
         </View>
-        <Pressable onPress={() => { setShowRoomMenu(v => !v); setShowMediaMenu(false); }} style={{ padding: 4 }}>
-          <MoreVertical size={20} color={colors.ink} />
-        </Pressable>
+        {/* Membership stats instead of a repeated section name. The tab above
+            already says "AI Matching", so the room title added nothing and only
+            got truncated once the Post / Matching buttons were in the row. */}
+        <View style={{ flex: 1 }}>
+          <Text style={s.threadTitle} numberOfLines={1}>
+            {activeRoom.members.length} members
+          </Text>
+          <Text style={s.threadSub} numberOfLines={1}>
+            {newJoinCount > 0 ? `+${newJoinCount} new this week` : 'Universal group'}
+          </Text>
+        </View>
+
+        {/* AI actions in the header. Post · Matching are always available in the
+            AI Lead Matching section (tapping activates AI mode if needed). The
+            3-dot (End/Exit Chat) shows only while AI Assist is active. */}
+        {(hideThreadBack || aiMode) && (
+          <View style={s.headerAiRow}>
+            <Pressable onPress={aiPost} style={[s.headerAiBtn, { backgroundColor: '#F0FDF4', borderColor: colors.greenBorder }]}>
+              <Building2 size={13} color={colors.greenText} />
+              <Text style={[s.headerAiBtnText, { color: colors.greenText }]}>My Post</Text>
+            </Pressable>
+            <Pressable onPress={aiMatching} style={[s.headerAiBtn, { backgroundColor: colors.brandTint, borderColor: `${colors.brand}55` }]}>
+              <Search size={13} color={colors.brand} />
+              <Text style={[s.headerAiBtnText, { color: colors.brand }]}>Matching</Text>
+            </Pressable>
+            {aiMode && (
+              <Pressable onPress={() => setShowAiMenu(v => !v)} style={s.headerAiDots}>
+                <MoreVertical size={18} color={colors.ink} />
+              </Pressable>
+            )}
+          </View>
+        )}
+
+        {/* AI 3-dot dropdown (End Chat / Exit Chat) */}
+        {aiMode && showAiMenu && (
+          <>
+            <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowAiMenu(false)} />
+            <View style={s.menu}>
+              <Pressable style={s.menuItem} onPress={() => { setShowAiMenu(false); setShowDisappear(true); }}>
+                <Clock size={15} color={colors.muted2} />
+                <Text style={s.menuText}>Disappearing messages</Text>
+                <Text style={{ fontSize: 10, fontWeight: '700', color: colors.brand }}>{disappearLabel(disappearMs)}</Text>
+              </Pressable>
+              <Pressable style={s.menuItem} onPress={() => { setShowAiMenu(false); aiEndChat(); }}>
+                <X size={15} color={colors.muted2} /><Text style={s.menuText}>End Chat</Text>
+              </Pressable>
+              <Pressable style={s.menuItem} onPress={() => { setShowAiMenu(false); aiExitChat(); }}>
+                <LogOut size={15} color={colors.muted2} /><Text style={s.menuText}>Exit Chat</Text>
+              </Pressable>
+            </View>
+          </>
+        )}
 
         {/* Room options menu */}
         {showRoomMenu && (
@@ -765,81 +1308,65 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
               shared match becomes public. Uses the SAME group composer below. ── */}
           {aiMode && (
             <View style={s.aiOverlay}>
-              <View style={s.aiInlineBanner}>
-                <View style={s.aiPrivatePill}>
-                  <Sparkles size={11} color={colors.brand} />
-                  <Text style={s.aiPrivateText}>AI Assist · Private to you</Text>
-                </View>
-                {/* 3-dot menu (End Chat / Exit Chat / Post & Matching) */}
-                <Pressable onPress={() => setShowAiMenu(v => !v)} style={s.aiMenuBtn}>
-                  <MoreVertical size={18} color={colors.brand} />
-                </Pressable>
-              </View>
-
-              {showAiMenu && (
-                <>
-                  <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowAiMenu(false)} />
-                  <View style={s.aiMenu}>
-                    {/* Post — show the property the AI already collected as a small
-                        card (no manual re-entry). */}
-                    <Pressable
-                      style={s.aiMenuItem}
-                      onPress={() => {
-                        setShowAiMenu(false);
-                        const draft = aiApiRef.current?.getPostDraft();
-                        if (!draft || draft.fields.length === 0) {
-                          toast.show('Pehle AI ko apni property ki detail batayein.', 'info');
-                          return;
-                        }
-                        if (!draft.isSellable) {
-                          toast.show('Post sirf sell/rent property ke liye hai.', 'info');
-                          return;
-                        }
-                        setPostDraft(draft);
-                      }}
-                    >
-                      <Building2 size={15} color={colors.greenText} />
-                      <Text style={s.aiMenuText}>Post</Text>
-                    </Pressable>
-                    {/* Matching — run AI matching, reveal all matches with scores */}
-                    <Pressable
-                      style={s.aiMenuItem}
-                      onPress={() => { setShowAiMenu(false); aiApiRef.current?.runMatching(); }}
-                    >
-                      <Search size={15} color={colors.brand} />
-                      <Text style={s.aiMenuText}>Matching</Text>
-                    </Pressable>
-                    <Pressable
-                      style={s.aiMenuItem}
-                      onPress={() => { setShowAiMenu(false); aiApiRef.current?.endChat(); }}
-                    >
-                      <X size={15} color={colors.muted2} />
-                      <Text style={s.aiMenuText}>End Chat</Text>
-                    </Pressable>
-                    <Pressable
-                      style={s.aiMenuItem}
-                      onPress={() => { setShowAiMenu(false); setAiMode(false); aiApiRef.current = null; }}
-                    >
-                      <LogOut size={15} color={colors.muted2} />
-                      <Text style={s.aiMenuText}>Exit Chat</Text>
-                    </Pressable>
-                  </View>
-                </>
-              )}
-
+              {/* AI actions moved to the Universal Group header (Post / Matching / 3-dot). */}
               <View style={{ flex: 1 }}>
                 <AiAssistant
                   hideOwnChrome
+                  disappearMs={disappearMs}
                   groupContext={{ roomId: activeRoom.id, roomName: roomDisplayName(activeRoom) }}
-                  onReady={(api) => { aiApiRef.current = api; }}
+                  onReady={(api) => {
+                    aiApiRef.current = api;
+                    // Apply an intent chosen from the quick-start picker.
+                    if (pendingAiIntentRef.current) {
+                      const intent = pendingAiIntentRef.current;
+                      pendingAiIntentRef.current = null;
+                      setTimeout(() => api.startWithIntent(intent), 300);
+                    }
+                    // Run a header action that was tapped before AI mode turned on.
+                    if (pendingAiActionRef.current) {
+                      const action = pendingAiActionRef.current;
+                      pendingAiActionRef.current = null;
+                      setTimeout(() => {
+                        if (action === 'post') doPost();
+                        else if (action === 'match') doMatching();
+                      }, 300);
+                    }
+                  }}
                   onMatchShared={() => {}}
                 />
               </View>
             </View>
           )}
 
-          {/* AI Lead Assist floating button (FAB) — draggable; toggles AI mode. */}
-          {!aiMode && <DraggableFab onPress={() => setAiMode(true)} />}
+          {/* The floating "AI Lead Assist" button was removed — the Sell / Buy /
+              Rent starter chips above the composer are now the entry point. */}
+        </View>
+      )}
+
+      {/* ── Sell / Buy / Rent starters ──
+          Sits right above the input on the AI Lead Matching landing page, so a
+          new user immediately sees what this section does. Tapping one opens the
+          assistant with that intent already answered, continuing the flow. ── */}
+      {activeRoom && !aiMode && (hideThreadBack || activeRoom.isUniversal) && (
+        <View style={ip.stripWrap}>
+          <Text style={ip.stripLabel}>Shuru karein — tap karein</Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={ip.stripRow}
+            keyboardShouldPersistTaps="handled"
+          >
+            {([
+              { v: 'buy', icon: '🔑', label: 'Buy' },
+              { v: 'sell', icon: '🏷️', label: 'Sell' },
+              { v: 'rent', icon: '🏠', label: 'Rent' },
+            ] as const).map((opt) => (
+              <Pressable key={opt.v} style={ip.chip} onPress={() => aiStartWithIntent(opt.v)}>
+                <Text style={ip.chipIcon}>{opt.icon}</Text>
+                <Text style={ip.chipText}>{opt.label}</Text>
+              </Pressable>
+            ))}
+          </ScrollView>
         </View>
       )}
 
@@ -913,51 +1440,201 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
         onSubmit={postInventory}
       />
 
-      {/* ── Post Property Card — built from the AI-collected details (no manual
-          form). Shows a small property card; user just confirms to post. ── */}
-      <Modal visible={!!postDraft} transparent animationType="slide" onRequestClose={() => setPostDraft(null)}>
-        <Pressable style={pd.overlay} onPress={() => setPostDraft(null)}>
+      {/* ── Post view — lists ALL properties the user has posted so far, plus
+          (if present) the current AI-collected draft as a postable card. Each
+          card is compact with an expand toggle for full details. ── */}
+      <Modal visible={showPost} transparent animationType="slide" onRequestClose={() => setShowPost(false)}>
+        <Pressable style={pd.overlay} onPress={() => setShowPost(false)}>
           <Pressable style={pd.sheet} onPress={() => {}}>
             <View style={pd.head}>
               <Building2 size={18} color={colors.greenText} />
               <View style={{ flex: 1 }}>
-                <Text style={pd.headTitle}>Your Property</Text>
-                <Text style={pd.headSub}>AI ne aapki di hui detail se banaya</Text>
+                <Text style={pd.headTitle}>My Posts</Text>
+                <Text style={pd.headSub}>{postedCards.length} posted{postDraft ? ' · 1 ready to post' : ''} · AI Assist</Text>
               </View>
-              <Pressable onPress={() => setPostDraft(null)} hitSlop={8}><X size={20} color={colors.ink} /></Pressable>
+              <Pressable onPress={() => setShowPost(false)} hitSlop={8}><X size={20} color={colors.ink} /></Pressable>
             </View>
 
-            {/* Small property card */}
-            <View style={pd.card}>
-              <View style={pd.cardTop}>
-                <View style={pd.cardIcon}><Building2 size={22} color={colors.brand} /></View>
-                <View style={{ flex: 1 }}>
-                  <Text style={pd.cardTitle} numberOfLines={1}>{postDraft?.title || 'Property'}</Text>
-                  {postDraft?.subtitle ? <Text style={pd.cardLoc} numberOfLines={1}>📍 {postDraft.subtitle}</Text> : null}
-                </View>
-                {postDraft?.price ? <Text style={pd.cardPrice}>{postDraft.price}</Text> : null}
+            <ScrollView
+              style={{ maxHeight: '78%' }}
+              contentContainerStyle={{ gap: 10, paddingBottom: 12 }}
+              showsVerticalScrollIndicator
+              nestedScrollEnabled
+              keyboardShouldPersistTaps="handled"
+            >
+              {/* Draft ready to post (from the current AI conversation) */}
+              {postDraft && (
+                <PostCard
+                  item={{ title: postDraft.title, subtitle: postDraft.subtitle, price: postDraft.price, tags: postDraft.fields.filter(f => /bhk|area|type/i.test(f.label)).map(f => f.value) }}
+                  posted={false}
+                  cooldownLeftMs={0}
+                  posting={postingDraft}
+                  onPost={publishDraft}
+                  onView={() => setViewProperty({ title: postDraft.title, subtitle: postDraft.subtitle, price: postDraft.price, fields: postDraft.fields })}
+                />
+              )}
+
+              {/* Already-posted properties. Post stays SEPARATE from Projects.
+                  Source = backend ExtractedLeads (sell/rent) so the list survives
+                  an app reinstall; the local postedList is only consulted for the
+                  8h cooldown timestamp. Normal add-project projects never appear. */}
+              {postedCards.map((disp: any) => {
+                // Cooldown comes from whichever local record matches this lead —
+                // by leadId first, else by the property's title+location.
+                const local = postedList.find((x: any) =>
+                  (x.leadId && x.leadId === disp.id) ||
+                  (x.title && disp.title && x.title === disp.title && x.subtitle === disp.subtitle)
+                );
+                const postedAt = local?.postedAt || 0;
+                const leftMs = postedAt ? Math.max(0, POST_COOLDOWN_MS - (Date.now() - postedAt)) : 0;
+                const backend = local?.projectId ? myProjects.find((p) => p.id === local.projectId) : null;
+                return (
+                  <PostCard
+                    key={disp.id}
+                    item={disp}
+                    posted
+                    cooldownLeftMs={leftMs}
+                    posting={false}
+                    onPost={() => {
+                      // Re-post this property's card into the group (after cooldown).
+                      if (backend) repostProject(backend, disp);
+                      else repostFromEntry({ ...(local || {}), leadId: disp.id, title: disp.title, subtitle: disp.subtitle, price: disp.price, fields: disp.fields, isSellable: true, intent: 'sell' }, disp);
+                    }}
+                    onView={() => setViewProperty(disp)}
+                  />
+                );
+              })}
+
+              {postedCards.length === 0 && !postDraft && (
+                <Text style={pd.empty}>Abhi tak koi property post nahi ki. AI ko apni sell/rent property batayein, phir yahan se post karein.</Text>
+              )}
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* ── View Property detail sheet ── */}
+      <Modal visible={!!viewProperty} transparent animationType="slide" onRequestClose={() => setViewProperty(null)}>
+        <Pressable style={pd.overlay} onPress={() => setViewProperty(null)}>
+          <Pressable style={pd.sheet} onPress={() => {}}>
+            <View style={pd.head}>
+              <View style={pd.cardIcon}><Building2 size={22} color={colors.brand} /></View>
+              <View style={{ flex: 1 }}>
+                <Text style={pd.headTitle} numberOfLines={1}>{viewProperty?.title || 'Property'}</Text>
+                {viewProperty?.subtitle ? <Text style={pd.headSub} numberOfLines={1}>📍 {viewProperty.subtitle}</Text> : null}
               </View>
+              {viewProperty?.price ? <Text style={pd.cardPrice}>{viewProperty.price}</Text> : null}
+              <Pressable onPress={() => setViewProperty(null)} hitSlop={8}><X size={20} color={colors.ink} /></Pressable>
+            </View>
+
+            <ScrollView style={{ maxHeight: 420 }} contentContainerStyle={{ paddingBottom: 6 }} showsVerticalScrollIndicator={false}>
               <View style={pd.detailList}>
-                {(postDraft?.fields || []).map((f, i) => (
+                {(viewProperty?.fields || []).map((f: any, i: number) => (
                   <View key={i} style={pd.detailRow}>
                     <Text style={pd.detailLabel}>{f.label}</Text>
-                    <Text style={pd.detailValue} numberOfLines={1}>{f.value}</Text>
+                    <Text style={pd.detailValue} numberOfLines={3}>{f.value}</Text>
                   </View>
                 ))}
               </View>
-            </View>
 
-            <Pressable onPress={publishDraft} disabled={postingDraft} style={[pd.postBtn, postingDraft && { opacity: 0.6 }]}>
-              {postingDraft
-                ? <ActivityIndicator color="#fff" size="small" />
-                : <Text style={pd.postBtnText}>Post to Group 📢</Text>}
-            </Pressable>
+              {/* Future feature note */}
+              <View style={pd.futureNote}>
+                <Text style={pd.futureNoteText}>
+                  📸 Yaha par gallery, photos aur aur bhi details add kar sakte ho — ye feature abhi development mein hai.
+                </Text>
+              </View>
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* ── Disappearing messages options (WhatsApp-style) ── */}
+      <Modal visible={showDisappear} transparent animationType="slide" onRequestClose={() => setShowDisappear(false)}>
+        <Pressable style={pd.overlay} onPress={() => setShowDisappear(false)}>
+          <Pressable style={pd.sheet} onPress={() => {}}>
+            <View style={pd.head}>
+              <Clock size={18} color={colors.brand} />
+              <View style={{ flex: 1 }}>
+                <Text style={pd.headTitle}>Disappearing messages</Text>
+                <Text style={pd.headSub}>AI Assist ke messages chosen time ke baad apne aap gayab honge</Text>
+              </View>
+              <Pressable onPress={() => setShowDisappear(false)} hitSlop={8}><X size={20} color={colors.ink} /></Pressable>
+            </View>
+            <View style={{ gap: 2 }}>
+              {DISAPPEAR_OPTIONS.map(opt => (
+                <Pressable
+                  key={opt.ms}
+                  style={dp.optRow}
+                  onPress={async () => {
+                    setDisappearMs(opt.ms);
+                    await disappearStorage.set(opt.ms);
+                    setShowDisappear(false);
+                    toast.show(opt.ms ? `Messages disappear after ${opt.label}` : 'Disappearing off', 'success');
+                  }}
+                >
+                  <Text style={dp.optLabel}>{opt.label}</Text>
+                  {disappearMs === opt.ms && <Check size={17} color={colors.brand} />}
+                </Pressable>
+              ))}
+            </View>
           </Pressable>
         </Pressable>
       </Modal>
 
       {/* Share sheet (Copy link / QR / brochure) */}
       {shareProject && <ShareModal project={shareProject} onClose={() => setShareProject(null)} />}
+
+      {/* ── Lead detected from a free-text message (like the website) ──
+          Shows the parsed requirement; confirming runs matching + saves the lead. */}
+      <Modal visible={!!leadDetect} transparent animationType="slide" onRequestClose={() => setLeadDetect(null)}>
+        <Pressable style={ld.overlay} onPress={() => setLeadDetect(null)}>
+          <Pressable style={ld.sheet} onPress={() => {}}>
+            <View style={ld.head}>
+              <Sparkles size={18} color={colors.brand} />
+              <View style={{ flex: 1 }}>
+                <Text style={ld.title}>Requirement detected</Text>
+                <Text style={ld.sub}>Aapke message se ye detail mili — confirm karke match dekhein</Text>
+              </View>
+              <Pressable onPress={() => setLeadDetect(null)} hitSlop={8}><X size={20} color={colors.ink} /></Pressable>
+            </View>
+
+            {(() => {
+              const p = leadDetect?.extraction?.params || {};
+              const intent = leadDetect?.extraction?.intent || 'requirement';
+              const rows: { label: string; value: string }[] = [];
+              const push = (label: string, v: any) => { if (v != null && String(v).trim()) rows.push({ label, value: String(v) }); };
+              push('Looking to', intent === 'inventory' ? 'Sell / List' : 'Buy / Rent');
+              push('Property type', p.propertyType);
+              push('BHK', p.bhkType);
+              push('Location', p.location || p.locationRaw);
+              push('City', p.city);
+              push('Budget', p.budget ? `₹${p.budget}L${p.budgetMax ? ` – ₹${p.budgetMax}L` : ''}` : '');
+              push('Possession', p.possessionNeeded);
+              return (
+                <View style={ld.card}>
+                  {rows.length ? rows.map((r, i) => (
+                    <View key={i} style={ld.row}>
+                      <Text style={ld.rowLabel}>{r.label}</Text>
+                      <Text style={ld.rowValue} numberOfLines={1}>{r.value}</Text>
+                    </View>
+                  )) : <Text style={ld.rowValue}>Basic requirement detected.</Text>}
+                </View>
+              );
+            })()}
+
+            <View style={ld.actions}>
+              <Pressable onPress={() => setLeadDetect(null)} style={ld.dismissBtn}>
+                <Text style={ld.dismissText}>Dismiss</Text>
+              </Pressable>
+              <Pressable onPress={confirmDetectedLead} disabled={confirmingLead} style={[ld.findBtn, confirmingLead && { opacity: 0.6 }]}>
+                {confirmingLead
+                  ? <ActivityIndicator color="#fff" size="small" />
+                  : <><Search size={14} color="#fff" /><Text style={ld.findText}>Find Matches</Text></>}
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
     </KeyboardAvoidingView>
   );
@@ -1132,10 +1809,11 @@ function Field({ label, required, flex, children }: { label: string; required?: 
   );
 }
 
-// Normalize a posted message from REST into our GroupMessage shape.
+// Normalize a posted message from REST/socket into our GroupMessage shape.
+let _msgSeq = 0;
 function normalizeMsg(m: any, roomId: string): GroupMessage {
   return {
-    id: String(m._id || m.id || Date.now()),
+    id: String(m._id || m.id || `tmp_${Date.now()}_${_msgSeq++}`),
     room: String(m.room || roomId),
     sender: { id: String(m.sender?._id || m.sender?.id || ''), name: m.sender?.name || '', role: m.sender?.role || '', companyName: m.sender?.companyName },
     messageType: m.messageType || 'text',
@@ -1351,6 +2029,11 @@ const s = StyleSheet.create({
   threadAvatar: { width: 36, height: 36, borderRadius: 18, backgroundColor: colors.brandTint, alignItems: 'center', justifyContent: 'center' },
   threadTitle: { fontSize: 14.5, fontWeight: '800', color: colors.ink, letterSpacing: -0.2 },
   threadSub: { fontSize: 10.5, color: colors.muted, marginTop: 1 },
+  // AI action row in the group header (Post · Matching · 3-dot)
+  headerAiRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  headerAiBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 9, paddingVertical: 6, borderRadius: 16, borderWidth: 1 },
+  headerAiBtnText: { fontSize: 11, fontWeight: '800' },
+  headerAiDots: { padding: 4 },
   menu: { position: 'absolute', right: 8, top: 52, backgroundColor: colors.white, borderRadius: 12, borderWidth: 1, borderColor: colors.line, paddingVertical: 4, minWidth: 180, zIndex: 30, shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 8 },
   menuItem: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 11 },
   menuText: { fontSize: 12.5, fontWeight: '600', color: colors.muted2 },
@@ -1367,7 +2050,9 @@ const s = StyleSheet.create({
   aiPrivatePill: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: colors.white, borderWidth: 1, borderColor: `${colors.brand}44`, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 14 },
   aiPrivateText: { fontSize: 10, fontWeight: '800', color: colors.brand, letterSpacing: 0.2 },
   aiMenuBtn: { padding: 6, borderRadius: 10, backgroundColor: colors.white, borderWidth: 1, borderColor: `${colors.brand}33` },
-  aiMenu: { position: 'absolute', right: 12, top: 46, backgroundColor: colors.white, borderRadius: 12, borderWidth: 1, borderColor: colors.line, paddingVertical: 4, minWidth: 190, zIndex: 40, shadowColor: '#000', shadowOpacity: 0.14, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 10 },
+  // Small floating 3-dot menu button (top-right) after removing the banner bar.
+  aiMenuFloat: { position: 'absolute', right: 10, top: 8, zIndex: 40, padding: 6, borderRadius: 10, backgroundColor: colors.white, borderWidth: 1, borderColor: `${colors.brand}33`, shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 4, shadowOffset: { width: 0, height: 1 }, elevation: 3 },
+  aiMenu: { position: 'absolute', right: 10, top: 40, backgroundColor: colors.white, borderRadius: 12, borderWidth: 1, borderColor: colors.line, paddingVertical: 4, minWidth: 190, zIndex: 40, shadowColor: '#000', shadowOpacity: 0.14, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 10 },
   aiMenuItem: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 11 },
   aiMenuText: { fontSize: 12.5, fontWeight: '700', color: colors.ink },
   // AI Assist overlay (covers the message area while AI mode is active)
@@ -1408,9 +2093,41 @@ const s = StyleSheet.create({
   postBtnText: { color: '#fff', fontWeight: '800', fontSize: 12.5 },
 });
 
-const pd = StyleSheet.create({
+const ld = StyleSheet.create({
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
   sheet: { backgroundColor: colors.white, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 16, paddingBottom: 28, gap: 14 },
+  head: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  title: { fontSize: 15, fontWeight: '800', color: colors.ink },
+  sub: { fontSize: 10.5, color: colors.muted2, marginTop: 1 },
+  card: { backgroundColor: colors.cream, borderRadius: 14, borderWidth: 1, borderColor: colors.line, padding: 12, gap: 7 },
+  row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+  rowLabel: { fontSize: 11, fontWeight: '700', color: colors.muted2 },
+  rowValue: { fontSize: 12.5, fontWeight: '700', color: colors.ink, flexShrink: 1, textAlign: 'right' },
+  actions: { flexDirection: 'row', gap: 10 },
+  dismissBtn: { flex: 1, paddingVertical: 12, borderRadius: 12, borderWidth: 1, borderColor: colors.line, alignItems: 'center', justifyContent: 'center' },
+  dismissText: { fontSize: 13, fontWeight: '700', color: colors.muted2 },
+  findBtn: { flex: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 12, borderRadius: 12, backgroundColor: colors.brand },
+  findText: { color: '#fff', fontSize: 13.5, fontWeight: '800' },
+});
+
+// Sell / Buy / Rent starter chips shown above the composer.
+const ip = StyleSheet.create({
+  stripWrap: { backgroundColor: colors.white, borderTopWidth: 1, borderTopColor: colors.line, paddingTop: 9, paddingBottom: 3 },
+  stripLabel: { fontSize: 9.5, fontWeight: '800', color: colors.muted, letterSpacing: 0.4, paddingHorizontal: 12, marginBottom: 7, textTransform: 'uppercase' },
+  stripRow: { paddingHorizontal: 12, gap: 8, alignItems: 'center' },
+  chip: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: colors.brandTint, borderWidth: 1, borderColor: `${colors.brand}55`, borderRadius: 999, paddingHorizontal: 13, paddingVertical: 9 },
+  chipIcon: { fontSize: 14 },
+  chipText: { fontSize: 12, fontWeight: '800', color: colors.brand },
+});
+
+const dp = StyleSheet.create({
+  optRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 13, paddingHorizontal: 4, borderBottomWidth: 1, borderBottomColor: colors.line },
+  optLabel: { fontSize: 13.5, fontWeight: '700', color: colors.ink },
+});
+
+const pd = StyleSheet.create({
+  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
+  sheet: { backgroundColor: colors.white, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 16, paddingBottom: 28, gap: 14, maxHeight: '88%' },
   head: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   headTitle: { fontSize: 15, fontWeight: '800', color: colors.ink },
   headSub: { fontSize: 10.5, color: colors.muted2, marginTop: 1 },
@@ -1424,8 +2141,22 @@ const pd = StyleSheet.create({
   detailRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
   detailLabel: { fontSize: 11, fontWeight: '700', color: colors.muted2 },
   detailValue: { fontSize: 12, fontWeight: '700', color: colors.ink, flexShrink: 1, textAlign: 'right' },
-  postBtn: { backgroundColor: colors.green, borderRadius: 14, paddingVertical: 13, alignItems: 'center', justifyContent: 'center' },
-  postBtnText: { color: '#fff', fontSize: 13.5, fontWeight: '800' },
+  // tags row (BHK / area / type)
+  tagsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  tag: { backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4 },
+  tagText: { fontSize: 10, fontWeight: '700', color: colors.muted2, maxWidth: 140 },
+  // actions row (Post to Group + View Property)
+  actionsRow: { flexDirection: 'row', gap: 8, borderTopWidth: 1, borderTopColor: colors.line, paddingTop: 10 },
+  postBtn: { flex: 1, backgroundColor: colors.green, borderRadius: 12, paddingVertical: 11, alignItems: 'center', justifyContent: 'center' },
+  postBtnDim: { opacity: 0.45 },
+  postBtnText: { color: '#fff', fontSize: 12.5, fontWeight: '800' },
+  viewBtn: { flex: 1, backgroundColor: colors.white, borderWidth: 1, borderColor: `${colors.brand}55`, borderRadius: 12, paddingVertical: 11, alignItems: 'center', justifyContent: 'center' },
+  viewBtnText: { color: colors.brand, fontSize: 12.5, fontWeight: '800' },
+  badge: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 8 },
+  badgeText: { fontSize: 8.5, fontWeight: '800', letterSpacing: 0.3 },
+  empty: { fontSize: 12, color: colors.muted2, textAlign: 'center', paddingVertical: 28, paddingHorizontal: 10, lineHeight: 18 },
+  futureNote: { marginTop: 12, backgroundColor: colors.brandTint, borderRadius: 12, borderWidth: 1, borderColor: `${colors.brand}33`, padding: 12 },
+  futureNoteText: { fontSize: 11.5, color: colors.brand, fontWeight: '600', lineHeight: 17 },
 });
 
 const cs = StyleSheet.create({

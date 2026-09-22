@@ -878,7 +878,7 @@ export interface GroupRoom {
   roomType: 'project' | 'area' | 'universal';
   project?: { id: string; projectName: string; city?: string; slug?: string; pricing?: { startingPrice?: number }; media?: { coverImage?: { url: string } }; owner?: { name?: string; companyName?: string } };
   area?: { city: string; location: string };
-  members: Array<{ user: { id: string; name: string; role: string; companyName?: string }; role: string }>;
+  members: Array<{ user: { id: string; name: string; role: string; companyName?: string }; role: string; joinedAt?: string }>;
   description: string;
   isUniversal?: boolean;
   canLeave?: boolean;
@@ -911,6 +911,7 @@ function transformGroupRoom(raw: any): GroupRoom {
     members: (raw?.members || []).map((m: any) => ({
       user: { id: String(m?.user?._id || m?.user?.id || ''), name: m?.user?.name || '', role: m?.user?.role || '', companyName: m?.user?.companyName || '' },
       role: m?.role || 'member',
+      joinedAt: m?.joinedAt,
     })),
     description: raw?.description || '',
     isUniversal: !!raw?.isUniversal,

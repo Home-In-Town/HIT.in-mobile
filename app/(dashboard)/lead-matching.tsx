@@ -9,6 +9,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Users, MessageSquare, Zap, BarChart2, Send, RefreshCw, X } from 'lucide-react-native';
 import { leadMatchingApi, leadChatApi } from '../../src/lib/api';
+import { disappearStorage } from '../../src/lib/storage';
 import { useAuth } from '../../src/lib/authContext';
 import { useToast } from '../../src/components/Toast';
 import { colors } from '../../src/theme';
@@ -27,8 +28,12 @@ const CONF_BG    = (c: number) => c >= 0.8 ? colors.greenBg  : c >= 0.5 ? colors
 
 // ── AI Assistant (lead slot-filling chat) ──────────────────
 // The rich, template-driven assistant lives in its own component.
+// The disappearing-messages setting is global, so load it here too — otherwise
+// this tab would always behave as "Never" regardless of the user's choice.
 function AssistantTab({ onViewLeads, onActiveChange }: { onViewLeads?: () => void; onActiveChange?: (active: boolean) => void }) {
-  return <AiAssistant onViewLeads={onViewLeads} onActiveChange={onActiveChange} />;
+  const [disappearMs, setDisappearMs] = useState(0);
+  useEffect(() => { disappearStorage.get().then(setDisappearMs); }, []);
+  return <AiAssistant onViewLeads={onViewLeads} onActiveChange={onActiveChange} disappearMs={disappearMs} />;
 }
 
 // ── Leads Tab (admin only) ─────────────────────────────────
@@ -189,7 +194,9 @@ export default function LeadMatchingHub({
   }, [tab, onChatActiveChange]);
 
   const TABS: { key: 'chats' | 'assistant' | 'groups'; label: string; icon: React.ReactNode }[] = [
-    { key: 'assistant', label: 'AI Lead Matching', icon: <Zap size={16} /> },
+    // Shorter than the room title below it, so the same words don't repeat on
+    // three stacked levels (section button → this tab → room header).
+    { key: 'assistant', label: 'AI Matching', icon: <Zap size={16} /> },
     { key: 'groups',    label: 'Groups',       icon: <Users size={16} /> },
     { key: 'chats',     label: 'Chats',        icon: <MessageSquare size={16} /> },
   ];

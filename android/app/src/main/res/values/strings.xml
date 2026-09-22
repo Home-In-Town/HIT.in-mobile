@@ -1,4 +1,6 @@
 <resources>
   <string name="app_name">HomeInTown</string>
   <string name="expo_system_ui_user_interface_style" translatable="false">light</string>
+  <!-- Google Maps Android SDK key (react-native-maps). Replace with your real key. -->
+  <string name="google_maps_api_key" translatable="false">AIzaSyAzw6zVDMG0KFuWIeQtg6mlasy-hghuZM4</string>
 </resources>
