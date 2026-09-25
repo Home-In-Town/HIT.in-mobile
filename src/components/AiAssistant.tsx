@@ -165,6 +165,8 @@ export type AiAssistantApi = {
   getPostDraft: () => AiPostDraft;
   // Clears the current post draft after the user posts it (stops re-triggering).
   clearDraft: () => void;
+  // Returns the current collected params (for external matching)
+  getCurrentParams: () => Record<string, any>;
 };
 
 export type AiPostDraft = {
@@ -760,6 +762,12 @@ export default function AiAssistant({
     postDraftStorage.clear();
   }, []);
 
+  // Returns the current collected params for external matching
+  const getCurrentParams = useCallback((): Record<string, any> => {
+    if (!flowState || !flowState.collected) return {};
+    return { ...flowState.collected };
+  }, [flowState]);
+
   // ── Disappearing messages ──
   // Honors the chosen duration exactly (WhatsApp-style): every message older
   // than the cutoff disappears — no exceptions. A ticking clock re-renders so
@@ -859,8 +867,8 @@ export default function AiAssistant({
   // Expose the imperative API to the host (group composer) when requested.
   useEffect(() => {
     if (!onReady) return;
-    onReady({ submitFreeText, activeTemplate, sending, typing, endChat, exitChat, startWithIntent, runMatching, getPostDraft, clearDraft });
-  }, [onReady, submitFreeText, activeTemplate, sending, typing, endChat, exitChat, startWithIntent, runMatching, getPostDraft, clearDraft]);
+    onReady({ submitFreeText, activeTemplate, sending, typing, endChat, exitChat, startWithIntent, runMatching, getPostDraft, clearDraft, getCurrentParams });
+  }, [onReady, submitFreeText, activeTemplate, sending, typing, endChat, exitChat, startWithIntent, runMatching, getPostDraft, clearDraft, getCurrentParams]);
 
   // Report to the parent whether a conversation is active (used to hide the
   // Overview welcome banner). Active = not ended, and the flow is in progress

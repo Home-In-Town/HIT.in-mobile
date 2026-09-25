@@ -1103,6 +1103,23 @@ export const leadMatchingApi = {
     const r = await fetch(`${API_URL}/lead-matching/leads/${encodeURIComponent(id)}/status`, { method: 'PATCH', headers: await authHeaders(), body: JSON.stringify({ status }) });
     return handleResponse<any>(r);
   },
+  async testMatch(text: string): Promise<any> {
+    const r = await fetch(`${API_URL}/lead-matching/test-match`, { method: 'POST', headers: await authHeaders(), body: JSON.stringify({ text }) });
+    return handleResponse<any>(r);
+  },
+  async matchRequirement(params: any): Promise<any> {
+    // Convert AI-collected params into a search query text for matching
+    const parts: string[] = [];
+    if (params.bhkType) parts.push(params.bhkType);
+    if (params.propertyType) parts.push(params.propertyType);
+    if (params.location || params.locationRaw) parts.push(`near ${params.location || params.locationRaw}`);
+    if (params.city) parts.push(params.city);
+    if (params.budget) parts.push(`${params.budget} lakh budget`);
+    
+    const text = parts.join(' ');
+    const r = await fetch(`${API_URL}/lead-matching/test-match`, { method: 'POST', headers: await authHeaders(), body: JSON.stringify({ text }) });
+    return handleResponse<any>(r);
+  },
 };
 
 // ── Marketplace ─────────────────────────────────────────────

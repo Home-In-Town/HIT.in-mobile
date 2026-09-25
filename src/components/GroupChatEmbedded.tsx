@@ -421,6 +421,11 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const [myProjects, setMyProjects] = useState<any[]>([]); // backend published projects (source of truth)
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [viewProperty, setViewProperty] = useState<any | null>(null); // View Property detail sheet
+  // Matching results state
+  const [showMatching, setShowMatching] = useState(false);
+  const [matchingResults, setMatchingResults] = useState<any[]>([]);
+  const [matchingLoading, setMatchingLoading] = useState(false);
+  const [matchingError, setMatchingError] = useState<string | null>(null);
   // Free-text lead detection (mirrors the website's extract → confirm → match).
   // When a typed message like "i need a flat in besa" is detected as a lead,
   // we show a confirm sheet; on confirm we run matching (leadMatchingApi.confirm).
@@ -900,7 +905,33 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     setExpandedId(null);
     setShowPost(true);
   };
-  const doMatching = () => { aiApiRef.current?.runMatching(); };
+  const doMatching = async () => {
+    // Get the current AI-collected requirement params
+    const params = aiApiRef.current?.getCurrentParams?.();
+    if (!params || Object.keys(params).length === 0) {
+      toast.show('Please complete your requirement first', 'error');
+      return;
+    }
+
+    setShowMatching(true);
+    setMatchingLoading(true);
+    setMatchingError(null);
+    setMatchingResults([]);
+
+    try {
+      const result = await leadMatchingApi.matchRequirement(params);
+      if (result.detected && result.matches && result.matches.length > 0) {
+        setMatchingResults(result.matches);
+      } else {
+        setMatchingError('No matching properties found for your requirement');
+      }
+    } catch (err: any) {
+      console.error('Matching error:', err);
+      setMatchingError(err.message || 'Failed to find matches');
+    } finally {
+      setMatchingLoading(false);
+    }
+  };
 
   // Expose post/matching to the parent hub (headerless mode) so its sub-row can
   // trigger them. aiPost/aiMatching are defined below; a stable wrapper is fine
@@ -1404,24 +1435,12 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
           </Text>
         </View>
 
-        {/* AI actions in the header. Post · Matching are always available in the
-            AI Lead Matching section (tapping activates AI mode if needed). The
-            3-dot (End/Exit Chat) shows only while AI Assist is active. */}
-        {aiAllowed && (hideThreadBack || aiMode) && (
+        {/* AI 3-dot menu in the header (only visible when AI mode is active) */}
+        {aiAllowed && aiActive && (
           <View style={s.headerAiRow}>
-            <Pressable onPress={aiPost} style={[s.headerAiBtn, { backgroundColor: '#F0FDF4', borderColor: colors.greenBorder }]}>
-              <Building2 size={13} color={colors.greenText} />
-              <Text style={[s.headerAiBtnText, { color: colors.greenText }]}>My Post</Text>
+            <Pressable onPress={() => setShowAiMenu(v => !v)} style={s.headerAiDots}>
+              <MoreVertical size={18} color={colors.ink} />
             </Pressable>
-            <Pressable onPress={aiMatching} style={[s.headerAiBtn, { backgroundColor: colors.brandTint, borderColor: `${colors.brand}55` }]}>
-              <Search size={13} color={colors.brand} />
-              <Text style={[s.headerAiBtnText, { color: colors.brand }]}>Matching</Text>
-            </Pressable>
-            {aiActive && (
-              <Pressable onPress={() => setShowAiMenu(v => !v)} style={s.headerAiDots}>
-                <MoreVertical size={18} color={colors.ink} />
-              </Pressable>
-            )}
           </View>
         )}
 
@@ -1486,46 +1505,42 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
       </View>
       )}
 
-      {/* Headerless mode: the AI action row. My Post · Matching live here — their
-          original placement on the chat itself — rather than in the hub's
-          navigation sub-row, which should only switch panes. The 3-dot
-          (Disappearing / End / Exit) appears alongside them once AI Assist is
-          active, replacing the former floating button so there is only ever one. */}
+      {/* Headerless mode: Action buttons row below the tabs */}
       {headerless && aiAllowed && (
-        <>
-          <View style={s.aiActionBar}>
-            <Pressable onPress={aiPost} style={[s.headerAiBtn, { backgroundColor: '#F0FDF4', borderColor: colors.greenBorder }]}>
-              <Building2 size={13} color={colors.greenText} />
-              <Text style={[s.headerAiBtnText, { color: colors.greenText }]}>My Post</Text>
+        <View style={s.aiActionBar}>
+          <Pressable onPress={aiPost} style={[s.headerAiBtn, { backgroundColor: '#F0FDF4', borderColor: colors.greenBorder }]}>
+            <Building2 size={13} color={colors.greenText} />
+            <Text style={[s.headerAiBtnText, { color: colors.greenText }]}>My Post</Text>
+          </Pressable>
+          <Pressable onPress={aiMatching} style={[s.headerAiBtn, { backgroundColor: colors.brandTint, borderColor: `${colors.brand}55` }]}>
+            <Search size={13} color={colors.brand} />
+            <Text style={[s.headerAiBtnText, { color: colors.brand }]}>Matching</Text>
+          </Pressable>
+          {aiActive && (
+            <Pressable onPress={() => setShowAiMenu(v => !v)} style={s.headerAiDots}>
+              <MoreVertical size={18} color={colors.ink} />
             </Pressable>
-            <Pressable onPress={aiMatching} style={[s.headerAiBtn, { backgroundColor: colors.brandTint, borderColor: `${colors.brand}55` }]}>
-              <Search size={13} color={colors.brand} />
-              <Text style={[s.headerAiBtnText, { color: colors.brand }]}>Matching</Text>
-            </Pressable>
-            {aiActive && (
-              <Pressable onPress={() => setShowAiMenu(v => !v)} style={s.headerAiDots}>
-                <MoreVertical size={18} color={colors.ink} />
-              </Pressable>
-            )}
-          </View>
-          {aiActive && showAiMenu && (
-            <>
-              <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowAiMenu(false)} />
-              <View style={s.menu}>
-                <Pressable style={s.menuItem} onPress={() => { setShowAiMenu(false); setShowDisappear(true); }}>
-                  <Clock size={15} color={colors.muted2} />
-                  <Text style={s.menuText}>Disappearing messages</Text>
-                  <Text style={{ fontSize: 10, fontWeight: '700', color: colors.brand }}>{disappearLabel(disappearMs)}</Text>
-                </Pressable>
-                <Pressable style={s.menuItem} onPress={() => { setShowAiMenu(false); aiEndChat(); }}>
-                  <X size={15} color={colors.muted2} /><Text style={s.menuText}>End Chat</Text>
-                </Pressable>
-                <Pressable style={s.menuItem} onPress={() => { setShowAiMenu(false); aiExitChat(); }}>
-                  <LogOut size={15} color={colors.muted2} /><Text style={s.menuText}>Exit Chat</Text>
-                </Pressable>
-              </View>
-            </>
           )}
+        </View>
+      )}
+
+      {/* AI 3-dot menu (Disappearing / End / Exit) appears when AI is active */}
+      {headerless && aiAllowed && aiActive && showAiMenu && (
+        <>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowAiMenu(false)} />
+          <View style={s.menu}>
+            <Pressable style={s.menuItem} onPress={() => { setShowAiMenu(false); setShowDisappear(true); }}>
+              <Clock size={15} color={colors.muted2} />
+              <Text style={s.menuText}>Disappearing messages</Text>
+              <Text style={{ fontSize: 10, fontWeight: '700', color: colors.brand }}>{disappearLabel(disappearMs)}</Text>
+            </Pressable>
+            <Pressable style={s.menuItem} onPress={() => { setShowAiMenu(false); aiEndChat(); }}>
+              <X size={15} color={colors.muted2} /><Text style={s.menuText}>End Chat</Text>
+            </Pressable>
+            <Pressable style={s.menuItem} onPress={() => { setShowAiMenu(false); aiExitChat(); }}>
+              <LogOut size={15} color={colors.muted2} /><Text style={s.menuText}>Exit Chat</Text>
+            </Pressable>
+          </View>
         </>
       )}
 
@@ -1907,6 +1922,104 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                   : <><Search size={14} color="#fff" /><Text style={ld.findText}>Find Matches</Text></>}
               </Pressable>
             </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* ── Matching Results Modal ── */}
+      <Modal visible={showMatching} transparent animationType="slide" onRequestClose={() => setShowMatching(false)}>
+        <Pressable style={pd.overlay} onPress={() => setShowMatching(false)}>
+          <Pressable style={pd.sheet} onPress={() => {}}>
+            <View style={pd.head}>
+              <Search size={18} color={colors.brand} />
+              <View style={{ flex: 1 }}>
+                <Text style={pd.headTitle}>Matching Properties</Text>
+                <Text style={pd.headSub}>
+                  {matchingLoading ? 'Searching...' : 
+                   matchingResults.length > 0 ? `${matchingResults.length} properties found` : 
+                   'Results will appear here'}
+                </Text>
+              </View>
+              <Pressable onPress={() => setShowMatching(false)} hitSlop={8}><X size={20} color={colors.ink} /></Pressable>
+            </View>
+
+            {matchingLoading ? (
+              <View style={{ paddingVertical: 60, alignItems: 'center' }}>
+                <ActivityIndicator color={colors.brand} size="large" />
+                <Text style={{ fontSize: 12, color: colors.muted, marginTop: 12 }}>Finding matching properties...</Text>
+              </View>
+            ) : matchingError ? (
+              <View style={{ paddingVertical: 40, alignItems: 'center', paddingHorizontal: 20 }}>
+                <Text style={{ fontSize: 13, color: colors.muted2, textAlign: 'center' }}>{matchingError}</Text>
+              </View>
+            ) : matchingResults.length > 0 ? (
+              <ScrollView style={{ maxHeight: 500 }} contentContainerStyle={{ paddingBottom: 12 }} showsVerticalScrollIndicator={false}>
+                {matchingResults.map((match, idx) => {
+                  const project = match.project || {};
+                  const score = Math.round(match.score || 0);
+                  const matchedOn = match.matchedOn || [];
+                  const scoreColor = score >= 70 ? colors.greenText : score >= 50 ? colors.amberText : colors.muted2;
+
+                  return (
+                    <View key={idx} style={mts.card}>
+                      {/* Header with name and score */}
+                      <View style={mts.cardHeader}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={mts.projectName} numberOfLines={1}>{project.projectName || 'Property'}</Text>
+                          <Text style={mts.projectLoc} numberOfLines={1}>
+                            📍 {[project.location, project.city].filter(Boolean).join(', ') || 'Location not specified'}
+                          </Text>
+                        </View>
+                        <View style={[mts.scoreBadge, { backgroundColor: `${scoreColor}18`, borderColor: scoreColor }]}>
+                          <Text style={[mts.scoreText, { color: scoreColor }]}>{score}%</Text>
+                        </View>
+                      </View>
+
+                      {/* Property details */}
+                      <View style={mts.detailsRow}>
+                        {project.configuration?.bhkOptions && project.configuration.bhkOptions.length > 0 && (
+                          <View style={mts.detailChip}>
+                            <Text style={mts.detailChipText}>{project.configuration.bhkOptions.join(', ')}</Text>
+                          </View>
+                        )}
+                        {project.pricing?.startingPrice && (
+                          <View style={mts.detailChip}>
+                            <Text style={mts.detailChipText}>{fmtPrice(project.pricing.startingPrice)}</Text>
+                          </View>
+                        )}
+                      </View>
+
+                      {/* Matched criteria */}
+                      {matchedOn.length > 0 && (
+                        <View style={mts.matchedRow}>
+                          <Text style={mts.matchedLabel}>Matched on:</Text>
+                          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4, flex: 1 }}>
+                            {matchedOn.slice(0, 4).map((criterion: string, i: number) => (
+                              <View key={i} style={mts.matchTag}>
+                                <Text style={mts.matchTagText}>{criterion}</Text>
+                              </View>
+                            ))}
+                          </View>
+                        </View>
+                      )}
+
+                      {/* Owner info if available */}
+                      {project.owner && (
+                        <Text style={mts.ownerText} numberOfLines={1}>
+                          By {project.owner.name || 'Builder'}{project.owner.companyName ? ` · ${project.owner.companyName}` : ''}
+                        </Text>
+                      )}
+                    </View>
+                  );
+                })}
+              </ScrollView>
+            ) : (
+              <View style={{ paddingVertical: 40, alignItems: 'center', paddingHorizontal: 20 }}>
+                <Text style={{ fontSize: 13, color: colors.muted, textAlign: 'center' }}>
+                  No properties matched your requirement yet. Try adjusting your preferences.
+                </Text>
+              </View>
+            )}
           </Pressable>
         </Pressable>
       </Modal>
@@ -2331,6 +2444,42 @@ const s = StyleSheet.create({
     zIndex: 20,
   },
 
+  // Floating Action Buttons (FABs)
+  fabContainer: {
+    position: 'absolute',
+    right: 16,
+    bottom: 80, // Above the composer/input area
+    gap: 12,
+    zIndex: 100,
+  },
+  fab: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderRadius: 28,
+    borderWidth: 1.5,
+    shadowColor: '#000',
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 6,
+  },
+  fabMyPost: {
+    backgroundColor: '#F0FDF4',
+    borderColor: colors.greenBorder,
+  },
+  fabMatching: {
+    backgroundColor: colors.brandTint,
+    borderColor: `${colors.brand}88`,
+  },
+  fabText: {
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: 0.2,
+  },
+
   menu: { position: 'absolute', right: 8, top: 52, backgroundColor: colors.white, borderRadius: 12, borderWidth: 1, borderColor: colors.line, paddingVertical: 4, minWidth: 180, zIndex: 30, shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 8 },
   menuItem: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 11 },
   menuText: { fontSize: 12.5, fontWeight: '600', color: colors.muted2 },
@@ -2500,4 +2649,95 @@ const sh = StyleSheet.create({
   footer: { padding: 14, borderTopWidth: 1, borderTopColor: colors.line },
   submitBtn: { paddingVertical: 15, borderRadius: 14, alignItems: 'center' },
   submitText: { color: '#fff', fontSize: 14, fontWeight: '800' },
+});
+
+
+// Matching Results Styles
+const mts = StyleSheet.create({
+  card: {
+    backgroundColor: colors.white,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.line,
+    padding: 14,
+    marginHorizontal: 16,
+    marginTop: 12,
+    gap: 10,
+  },
+  cardHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+  },
+  projectName: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: colors.ink,
+    letterSpacing: -0.2,
+  },
+  projectLoc: {
+    fontSize: 11.5,
+    color: colors.muted2,
+    marginTop: 2,
+  },
+  scoreBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 12,
+    borderWidth: 1.5,
+  },
+  scoreText: {
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: 0.2,
+  },
+  detailsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  detailChip: {
+    backgroundColor: colors.slateBg,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.slateBorder,
+  },
+  detailChipText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.slateText,
+  },
+  matchedRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  matchedLabel: {
+    fontSize: 10.5,
+    fontWeight: '700',
+    color: colors.muted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    marginTop: 2,
+  },
+  matchTag: {
+    backgroundColor: `${colors.brand}12`,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: `${colors.brand}33`,
+  },
+  matchTagText: {
+    fontSize: 9.5,
+    fontWeight: '700',
+    color: colors.brand,
+  },
+  ownerText: {
+    fontSize: 10.5,
+    color: colors.muted,
+    fontStyle: 'italic',
+  },
 });
