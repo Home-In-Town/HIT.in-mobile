@@ -3,13 +3,11 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  View, Text, ScrollView, StyleSheet, Pressable, ActivityIndicator,
-  TextInput, KeyboardAvoidingView, Platform, FlatList, Modal,
+  View, Text, ScrollView, StyleSheet, Pressable, ActivityIndicator, Modal,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Users, MessageSquare, Zap, BarChart2, Send, RefreshCw, X } from 'lucide-react-native';
-import { leadMatchingApi, leadChatApi } from '../../src/lib/api';
-import { disappearStorage } from '../../src/lib/storage';
+import { Users, MessageSquare, BarChart2, X } from 'lucide-react-native';
+import { leadMatchingApi } from '../../src/lib/api';
 import { useAuth } from '../../src/lib/authContext';
 import { useToast } from '../../src/components/Toast';
 import { colors } from '../../src/theme';
@@ -19,22 +17,22 @@ import { colors } from '../../src/theme';
 import GroupChatEmbedded from '../../src/components/GroupChatEmbedded';
 import ChatEmbedded from '../../src/components/ChatEmbedded';
 import MenuButton from '../../src/components/MenuButton';
-import AiAssistant from '../../src/components/AiAssistant';
 
 type Tab = 'groups' | 'chats' | 'assistant' | 'leads';
+
+// Imperative triggers exposed by the embedded AI Lead Matching group.
+type GroupActions = {
+  post: () => void;
+  matching: () => void;
+  resetToLanding: () => void;
+};
 
 const CONF_COLOR = (c: number) => c >= 0.8 ? colors.greenText : c >= 0.5 ? colors.amberText : colors.redText;
 const CONF_BG    = (c: number) => c >= 0.8 ? colors.greenBg  : c >= 0.5 ? colors.amberBg  : colors.redBg;
 
-// ── AI Assistant (lead slot-filling chat) ──────────────────
-// The rich, template-driven assistant lives in its own component.
-// The disappearing-messages setting is global, so load it here too — otherwise
-// this tab would always behave as "Never" regardless of the user's choice.
-function AssistantTab({ onViewLeads, onActiveChange }: { onViewLeads?: () => void; onActiveChange?: (active: boolean) => void }) {
-  const [disappearMs, setDisappearMs] = useState(0);
-  useEffect(() => { disappearStorage.get().then(setDisappearMs); }, []);
-  return <AiAssistant onViewLeads={onViewLeads} onActiveChange={onActiveChange} disappearMs={disappearMs} />;
-}
+// Note: an `AssistantTab` wrapper used to live here. It was dead — the hub renders
+// GroupChatEmbedded (which hosts the assistant inline) or ChatEmbedded, never a
+// standalone AiAssistant — so it has been removed along with its imports.
 
 // ── Leads Tab (admin only) ─────────────────────────────────
 function LeadsTab() {
@@ -46,14 +44,28 @@ function LeadsTab() {
   const [updating, setUpdating] = useState<string | null>(null);
 
   useEffect(() => {
-    Promise.all([
+    // allSettled, not all: /stats is admin-only and 403s for builders, while
+    // /leads succeeds for them. Promise.all rejected on the stats 403 and threw
+    // away the leads that HAD loaded, so every builder saw "Failed to load" and
+    // an empty list. Each result is now applied independently.
+    let alive = true;
+    Promise.allSettled([
       leadMatchingApi.getLeads({ limit: 30 }),
       leadMatchingApi.getStats(),
-    ]).then(([ld, st]) => {
-      setLeads(ld.leads || []);
-      setStats(st);
-    }).catch(() => toast.show('Failed to load', 'error'))
-      .finally(() => setLoading(false));
+    ]).then(([leadsRes, statsRes]) => {
+      if (!alive) return;
+      if (leadsRes.status === 'fulfilled') {
+        setLeads(leadsRes.value.leads || []);
+      } else {
+        toast.show('Failed to load leads', 'error');
+      }
+      // Stats are admin-only; a 403 here is expected for builders and must not
+      // surface as an error.
+      if (statsRes.status === 'fulfilled') setStats(statsRes.value);
+      setLoading(false);
+    });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleStatus = async (id: string, status: string) => {
@@ -73,8 +85,11 @@ function LeadsTab() {
 
   return (
     <View style={{ flex: 1 }}>
+      {/* Stats is admin-only on the backend, so only offer the tab when we
+          actually have stats — otherwise selecting it silently fell through to
+          rendering the leads list, which looked broken. */}
       <View style={lt.tabs}>
-        {(['list', 'stats'] as const).map(t => (
+        {(stats ? (['list', 'stats'] as const) : (['list'] as const)).map(t => (
           <Pressable key={t} onPress={() => setLeadsTab(t)} style={[lt.tabBtn, leadsTab === t && lt.tabBtnActive]}>
             <Text style={[lt.tabText, leadsTab === t && lt.tabTextActive]}>{t === 'list' ? 'Extracted Leads' : 'Stats'}</Text>
           </Pressable>
@@ -171,34 +186,57 @@ function Chip({ label }: { label: string }) {
 export default function LeadMatchingHub({
   embedded = false,
   onChatActiveChange,
+  resetSignal = 0,
 }: {
   embedded?: boolean;
   onChatActiveChange?: (active: boolean) => void;
+  // Incremented by the parent each time the "AI Leads" section button is tapped.
+  // Every change returns this hub to its default landing view.
+  resetSignal?: number;
 } = {}) {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
+  // 'assistant' = the AI Lead Matching group chat (default). 'groups' / 'chats'
+  // switch the content pane. My Post / Matching are actions that live on the
+  // assistant chat itself, not in this hub's navigation.
   const [tab, setTab] = useState<'chats' | 'assistant' | 'groups'>('assistant');
   const [showLeads, setShowLeads] = useState(false);
+  // Post / Matching triggers exposed by the embedded assistant group.
+  const groupActionsRef = useRef<GroupActions | null>(null);
+  // Stable identity so the child's onActionsReady effect doesn't re-run each render.
+  const handleActionsReady = useCallback((a: GroupActions) => {
+    groupActionsRef.current = a;
+  }, []);
+
+  // Tapping the "AI Leads" section button returns to the default landing page —
+  // the same view the app opens on — instead of dropping the user back into a
+  // half-finished conversation. Skips the initial mount (resetSignal 0).
+  React.useEffect(() => {
+    if (!resetSignal) return;
+    setTab('assistant');
+    setShowLeads(false);
+    groupActionsRef.current?.resetToLanding();
+  }, [resetSignal]);
   // When a group room is opened, hide the header + top tab bar for a
   // full-screen chat experience (matches the website behavior).
   const [groupOpen, setGroupOpen] = useState(false);
-  // True while the assistant has an active (in-progress) conversation.
-  const [assistantActive, setAssistantActive] = useState(false);
   const isAdmin = ['admin', 'builder'].includes(user?.role ?? '');
 
   // Report "chat active" to the parent (Overview) so it can hide the welcome
-  // banner. The AI Lead Matching section is now the group chat, so it's always
-  // considered active.
+  // banner. The AI Lead Matching section IS the group chat, so this is always
+  // true — `tab` was in the deps but changed nothing, so it only re-fired.
   React.useEffect(() => {
     onChatActiveChange?.(true);
-  }, [tab, onChatActiveChange]);
+  }, [onChatActiveChange]);
 
-  const TABS: { key: 'chats' | 'assistant' | 'groups'; label: string; icon: React.ReactNode }[] = [
-    // Shorter than the room title below it, so the same words don't repeat on
-    // three stacked levels (section button → this tab → room header).
-    { key: 'assistant', label: 'AI Matching', icon: <Zap size={16} /> },
-    { key: 'groups',    label: 'Groups',       icon: <Users size={16} /> },
-    { key: 'chats',     label: 'Chats',        icon: <MessageSquare size={16} /> },
+  // Sub-row under the AI Leads section: Groups · Chats.
+  // Only the two pane switchers live here. My Post / Matching are actions on the
+  // assistant chat, not navigation, so they sit in the chat's own action row
+  // (GroupChatEmbedded) where they originally were — keeping them here made a
+  // 4-item bar that mixed navigation with actions.
+  const SUB = [
+    { key: 'groups', label: 'Groups', icon: Users,         kind: 'pane' as const },
+    { key: 'chats',  label: 'Chats',  icon: MessageSquare, kind: 'pane' as const },
   ];
 
   // Keep the tab bar visible on the AI Lead Matching section (it IS the primary
@@ -224,33 +262,59 @@ export default function LeadMatchingHub({
             </View>
           )}
 
-          <View style={hub.tabBar}>
-            {TABS.map(t => (
-              <Pressable key={t.key} onPress={() => setTab(t.key)} style={[hub.tabBtn, tab === t.key && hub.tabBtnActive]}>
-                <View style={{ opacity: tab === t.key ? 1 : 0.5 }}>
-                  {React.cloneElement(t.icon as React.ReactElement, { color: tab === t.key ? colors.brand : colors.muted2 })}
-                </View>
-                <Text style={[hub.tabText, tab === t.key && hub.tabTextActive]}>{t.label}</Text>
-              </Pressable>
-            ))}
+          {/* Sub-row: Groups · Chats */}
+          <View style={hub.subBar}>
+            {SUB.map(item => {
+              const Icon = item.icon;
+              const active =
+                (item.key === 'groups' && tab === 'groups') ||
+                (item.key === 'chats' && tab === 'chats');
+              return (
+                <Pressable
+                  key={item.key}
+                  onPress={() => setTab(item.key as 'groups' | 'chats')}
+                  style={[hub.subTab, active && hub.subTabActive]}
+                >
+                  <Icon size={15} color={active ? colors.brand : colors.muted2} />
+                  <Text style={[hub.subTabText, active && hub.subTabTextActive]}>{item.label}</Text>
+                </Pressable>
+              );
+            })}
           </View>
         </>
       )}
 
-      {/* Tab content */}
+      {/* Content: the AI Lead Matching group chat is the base view (headerless —
+          this hub's sub-row replaces its header). 'chats' / 'groups' swap panes. */}
       <View style={{ flex: 1 }}>
-        {tab === 'chats'     && <ChatEmbedded />}
-        {/* AI Lead Matching = the Universal Group (auto-opened). AI Assist is a
-            floating button inside this group chat; it reuses the group's input. */}
-        {tab === 'assistant' && (
+        {tab === 'chats' ? (
+          <ChatEmbedded />
+        ) : tab === 'groups' ? (
+          // Distinct `key` per pane is REQUIRED, not cosmetic. Both branches
+          // render GroupChatEmbedded at the same position in the same parent, so
+          // React reconciled them as one component and merely swapped props —
+          // meaning all internal state (aiMode, activeRoom, messages, drafts)
+          // survived the tab switch. That let an AI Assist conversation started in
+          // the AI Leads pane stay live after switching to Groups and opening a
+          // property group, so the assistant's greeting and Buy/Sell/Rent intent
+          // chips rendered inside an ordinary group. Separate keys force a clean
+          // unmount/mount of each pane.
           <GroupChatEmbedded
+            key="groups-pane"
+            onRoomOpenChange={setGroupOpen}
+            topInset={embedded ? 0 : insets.top}
+          />
+        ) : (
+          <GroupChatEmbedded
+            key="assistant-pane"
             onRoomOpenChange={setGroupOpen}
             topInset={0}
             autoOpenUniversal
             hideThreadBack
+            headerless
+            onActionsReady={handleActionsReady}
           />
         )}
-        {tab === 'groups'    && <GroupChatEmbedded onRoomOpenChange={setGroupOpen} topInset={embedded ? 0 : insets.top} />}
       </View>
 
       {/* Leads overlay (opened from the top button) */}
@@ -274,26 +338,13 @@ const hub = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.cream },
   header: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 12, backgroundColor: colors.white },
   headerTitle: { fontSize: 19, fontWeight: '800', color: colors.ink },
-  tabBar: {
-    flexDirection: 'row',
-    backgroundColor: colors.white,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.line,
-  },
-  tabBtn: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    gap: 6, paddingVertical: 12,
-    borderBottomWidth: 2, borderBottomColor: 'transparent',
-  },
-  tabBtnActive: { borderBottomColor: colors.brand },
-  tabText: { fontSize: 11.5, fontWeight: '700', color: colors.muted2 },
-  tabTextActive: { color: colors.brand, fontWeight: '800' },
+  // Sub-row (Groups · Chats)
+  subBar: { flexDirection: 'row', backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.line },
+  subTab: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, paddingVertical: 11, borderBottomWidth: 2, borderBottomColor: 'transparent' },
+  subTabActive: { borderBottomColor: colors.brand },
+  subTabText: { fontSize: 11, fontWeight: '700', color: colors.muted2 },
+  subTabTextActive: { color: colors.brand, fontWeight: '800' },
   leadsBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 18, backgroundColor: colors.brandTint, borderWidth: 1, borderColor: colors.brand },
   leadsBtnText: { fontSize: 11.5, fontWeight: '800', color: colors.brand },
   closeBtn: { padding: 6, borderRadius: 10, backgroundColor: colors.slateBg },
-  subRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 12, paddingVertical: 8, backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.line },
-  subBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 7, borderRadius: 18, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.white },
-  subBtnActive: { backgroundColor: colors.brand, borderColor: colors.brand },
-  subText: { fontSize: 11.5, fontWeight: '700', color: colors.muted2 },
-  subTextActive: { color: '#fff' },
 });

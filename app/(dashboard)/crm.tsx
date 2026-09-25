@@ -3,10 +3,10 @@
 // → quick actions (AI Lead Matching / Marketplace) → property reels
 // → bottom bar (CRM / Team). Tapping "CRM" opens the CRM leads view.
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, ScrollView, Pressable, StyleSheet, Image,
-  RefreshControl, Linking, Modal,
+  RefreshControl, Linking, Modal, Animated,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -35,6 +35,51 @@ function fmtPrice(n: number): string {
   if (n >= 10000000) return `₹${(n / 10000000).toFixed(2)} Cr`;
   if (n >= 100000) return `₹${(n / 100000).toFixed(1)} Lac`;
   return `₹${n.toLocaleString('en-IN')}`;
+}
+
+// One segment of the AI Leads / CRM / Project switcher.
+//
+// The three segments sit inside a single connected pill (s.tabPill), so the
+// active one reads as a filled pill within a light track rather than as three
+// separate cards. The fill is an absolutely-positioned layer whose opacity is
+// animated: that keeps the transition smooth while guaranteeing all three
+// segments stay exactly the same height and perfectly aligned (a scale/translate
+// animation would push the active segment out of the shared container).
+function SectionTab({ active, icon, label, badge, onPress }: {
+  active: boolean;
+  icon: React.ReactNode;
+  label: string;
+  badge?: boolean;
+  onPress: () => void;
+}) {
+  const anim = useRef(new Animated.Value(active ? 1 : 0)).current;
+  useEffect(() => {
+    Animated.timing(anim, {
+      toValue: active ? 1 : 0,
+      duration: 170,
+      useNativeDriver: true,
+    }).start();
+  }, [active, anim]);
+
+  return (
+    <Pressable
+      style={s.segment}
+      onPress={onPress}
+      accessibilityRole="tab"
+      accessibilityState={{ selected: active }}
+    >
+      <Animated.View pointerEvents="none" style={[s.segmentFill, { opacity: anim }]} />
+      <View style={s.segmentInner}>
+        <View style={s.segmentIcon}>
+          {icon}
+          {badge && <View style={s.hotDotInline} />}
+        </View>
+        <Text style={[s.segmentLabel, active && s.segmentLabelActive]} numberOfLines={1}>
+          {label}
+        </Text>
+      </View>
+    </Pressable>
+  );
 }
 
 function pricePerSqFt(price: number, area?: string): string | null {
@@ -77,6 +122,8 @@ export default function HomeDashboard() {
   const [showTeamDev, setShowTeamDev] = useState(false);
   // True while an AI Lead Matching conversation is active → hide the welcome banner.
   const [chatActive, setChatActive] = useState(false);
+  // Bumped on every "AI Leads" tap so the hub returns to its default landing page.
+  const [aiResetKey, setAiResetKey] = useState(0);
 
   // Agents can also list/upload projects (backend ProjectController.create allows
   // builder/agent/admin/captain), so include 'agent' here to match permissions.
@@ -163,27 +210,32 @@ export default function HomeDashboard() {
         </View>
       )}
 
-      {/* ── Tab Switcher (always visible): AI Lead Matching · CRM · Marketplace ── */}
-      {/* Section switcher. Icon-above-label so each label gets the full card
-          width — "AI Leads" no longer truncates the way "AI Lead Mat…" did. */}
+      {/* ── Tab Switcher (always visible): AI Leads · CRM · Project ──
+          A single connected pill: light track, active segment filled brand. */}
       <View style={s.tabRow}>
-        <Pressable style={[s.tabCard, tab === 'ai' && s.tabCardActive]} onPress={() => setTab('ai')}>
-          <View style={[s.quickIcon, tab === 'ai' && s.quickIconActive]}><Zap size={17} color={tab === 'ai' ? '#fff' : colors.brand} /></View>
-          <Text style={[s.quickTitle, tab === 'ai' && s.quickTitleActive]} numberOfLines={1}>AI Leads</Text>
-        </Pressable>
-
-        <Pressable style={[s.tabCard, tab === 'crm' && s.tabCardActive]} onPress={() => setTab('crm')}>
-          <View style={[s.quickIcon, tab === 'crm' && s.quickIconActive]}>
-            <BarChart3 size={17} color={tab === 'crm' ? '#fff' : colors.brand} />
-            {crmHot > 0 && <View style={s.hotDotInline} />}
-          </View>
-          <Text style={[s.quickTitle, tab === 'crm' && s.quickTitleActive]} numberOfLines={1}>CRM</Text>
-        </Pressable>
-
-        <Pressable style={[s.tabCard, tab === 'marketplace' && s.tabCardActive]} onPress={() => setTab('marketplace')}>
-          <View style={[s.quickIcon, tab === 'marketplace' && s.quickIconActive]}><ShoppingBag size={17} color={tab === 'marketplace' ? '#fff' : colors.brand} /></View>
-          <Text style={[s.quickTitle, tab === 'marketplace' && s.quickTitleActive]} numberOfLines={1}>Project</Text>
-        </Pressable>
+        <View style={s.tabPill} accessibilityRole="tablist">
+          <SectionTab
+            active={tab === 'ai'}
+            // Always bump the reset signal — tapping "AI Leads" should land on the
+            // default page whether we're switching to it or already on it.
+            onPress={() => { setTab('ai'); setAiResetKey((k) => k + 1); }}
+            icon={<Zap size={14} color={tab === 'ai' ? '#fff' : colors.muted2} />}
+            label="AI Leads"
+          />
+          <SectionTab
+            active={tab === 'crm'}
+            onPress={() => setTab('crm')}
+            icon={<BarChart3 size={14} color={tab === 'crm' ? '#fff' : colors.muted2} />}
+            label="CRM"
+            badge={crmHot > 0}
+          />
+          <SectionTab
+            active={tab === 'marketplace'}
+            onPress={() => setTab('marketplace')}
+            icon={<ShoppingBag size={14} color={tab === 'marketplace' ? '#fff' : colors.muted2} />}
+            label="Project"
+          />
+        </View>
       </View>
 
       {/* ── CRM tab ── */}
@@ -205,7 +257,7 @@ export default function HomeDashboard() {
         <View style={{ flex: 1 }}>
           {/* The actual AI Lead Matching feature (AI Lead Matching / Groups / Chats) */}
           <View style={{ flex: 1 }}>
-            <LeadMatchingHub embedded onChatActiveChange={setChatActive} />
+            <LeadMatchingHub embedded onChatActiveChange={setChatActive} resetSignal={aiResetKey} />
           </View>
         </View>
       )}
@@ -372,23 +424,41 @@ const s = StyleSheet.create({
     backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line,
     borderRadius: 14, paddingHorizontal: 8, paddingVertical: 11,
   },
-  quickIcon: { width: 30, height: 30, borderRadius: 9, backgroundColor: `${colors.brand}15`, alignItems: 'center', justifyContent: 'center', position: 'relative' },
-  quickTitle: { fontSize: 11, fontWeight: '800', color: colors.ink, textAlign: 'center' },
-  quickSub: { fontSize: 8, color: colors.muted, fontWeight: '700', letterSpacing: 0.4, marginTop: 1 },
-  hotDotInline: { position: 'absolute', top: 3, right: 3, width: 7, height: 7, borderRadius: 4, backgroundColor: '#EF4444', borderWidth: 1, borderColor: colors.white },
+  // CRM "hot lead" badge, overlaid on that segment's icon.
+  hotDotInline: { position: 'absolute', top: -3, right: -4, width: 7, height: 7, borderRadius: 4, backgroundColor: '#EF4444', borderWidth: 1, borderColor: colors.white },
 
-  // Tab switcher (3 cards act as tabs). Compact but comfortably tappable, and
-  // a fixed height so the row never shifts when switching sections.
-  tabRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 12, paddingVertical: 8, backgroundColor: colors.cream },
-  tabCard: {
-    flex: 1, flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 5,
-    backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line,
-    borderRadius: 14, paddingHorizontal: 6, paddingVertical: 9, minHeight: 62,
+  // ── Section switcher: one connected pill ──────────────────────────────────
+  // tabRow is the full-width band that sits on the page background; tabPill is
+  // the actual connected container holding the three segments.
+  tabRow: { paddingHorizontal: 14, paddingVertical: 8, backgroundColor: colors.cream },
+  tabPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.brandTint,          // light warm track
+    borderWidth: 1,
+    borderColor: `${colors.brand}22`,
+    borderRadius: 999,
+    padding: 4,                                  // inset so the active fill floats inside
   },
-  tabCardActive: { backgroundColor: colors.brand, borderColor: colors.brand },
-  quickIconActive: { backgroundColor: 'rgba(255,255,255,0.22)' },
-  quickTitleActive: { color: '#fff' },
-  quickSubActive: { color: 'rgba(255,255,255,0.7)' },
+  // Equal, fixed height on every segment keeps the three perfectly aligned.
+  segment: {
+    flex: 1,
+    height: 38,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  // Animated active fill. Absolute so it never affects layout.
+  segmentFill: {
+    position: 'absolute', top: 0, right: 0, bottom: 0, left: 0,
+    backgroundColor: colors.brand,
+    borderRadius: 999,
+  },
+  segmentInner: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  segmentIcon: { position: 'relative', alignItems: 'center', justifyContent: 'center' },
+  segmentLabel: { fontSize: 12, fontWeight: '800', color: colors.muted2 },
+  segmentLabelActive: { color: '#fff' },
 
   // Floating Team button (bottom right)
   teamFab: {

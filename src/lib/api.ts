@@ -847,6 +847,67 @@ export const chatApi = {
 };
 
 // ── Lead Chat (AI slot-filling assistant) ───────────────────
+// ── Places (Google autocomplete, proxied by our backend) ────────────────────
+// The API key lives only on the server, so the app never carries it.
+export interface PlacePrediction {
+  placeId: string;
+  text: string;
+  mainText: string;
+  secondaryText: string;
+  types: string[];
+}
+
+export interface PlaceDetails {
+  placeId: string;
+  name: string;
+  formattedAddress: string;
+  latitude: number | null;
+  longitude: number | null;
+  locality: string;
+  city: string;
+  state: string;
+  postalCode: string;
+  country: string;
+  types: string[];
+}
+
+export const placesApi = {
+  // kind: 'city' → cities only · 'area' → localities. lat/lng bias area results
+  // to the already-chosen city. Never throws — returns [] so typing still works.
+  async autocomplete(opts: {
+    input: string;
+    kind?: 'city' | 'area';
+    lat?: number | null;
+    lng?: number | null;
+    sessionToken?: string;
+  }): Promise<PlacePrediction[]> {
+    const q = new URLSearchParams({ input: opts.input });
+    if (opts.kind) q.set('kind', opts.kind);
+    if (opts.lat != null && opts.lng != null) { q.set('lat', String(opts.lat)); q.set('lng', String(opts.lng)); }
+    if (opts.sessionToken) q.set('sessionToken', opts.sessionToken);
+    try {
+      const r = await fetch(`${API_URL}/places/autocomplete?${q.toString()}`, { headers: await authHeaders() });
+      const data = await handleResponse<{ predictions?: PlacePrediction[] }>(r);
+      return data.predictions || [];
+    } catch {
+      return [];
+    }
+  },
+
+  // Resolves a prediction into a storable address + coordinates.
+  async details(placeId: string, sessionToken?: string): Promise<PlaceDetails | null> {
+    const q = new URLSearchParams({ placeId });
+    if (sessionToken) q.set('sessionToken', sessionToken);
+    try {
+      const r = await fetch(`${API_URL}/places/details?${q.toString()}`, { headers: await authHeaders() });
+      const data = await handleResponse<{ place?: PlaceDetails }>(r);
+      return data.place || null;
+    } catch {
+      return null;
+    }
+  },
+};
+
 export const leadChatApi = {
   async open(): Promise<any> {
     const r = await fetch(`${API_URL}/lead-chat/open`, { method: 'POST', headers: await authHeaders() });
@@ -876,12 +937,55 @@ export interface GroupRoom {
   id: string;
   name: string;
   roomType: 'project' | 'area' | 'universal';
-  project?: { id: string; projectName: string; city?: string; slug?: string; pricing?: { startingPrice?: number }; media?: { coverImage?: { url: string } }; owner?: { name?: string; companyName?: string } };
+  // Fully populated by GET /group-chat/rooms and POST .../join so a property
+  // group can render every available detail of its linked project.
+  project?: {
+    id: string;
+    projectName: string;
+    projectType?: string;
+    category?: string;
+    propertyType?: string;
+    city?: string;
+    location?: string;
+    latitude?: number;
+    longitude?: number;
+    googleMapLink?: string;
+    slug?: string;
+    status?: string;
+    projectStatus?: string;
+    reraApproved?: boolean;
+    reraNumber?: string;
+    amenities?: string[];
+    pricing?: {
+      startingPrice?: number;
+      pricePerSqFt?: number;
+      totalPriceRange?: string;
+      paymentPlan?: string;
+      bankLoanAvailable?: boolean;
+      maintenanceCharges?: string;
+    };
+    configuration?: {
+      bhkOptions?: string[];
+      carpetAreaRange?: string;
+      floorRange?: string;
+      plotSizeRange?: string;
+      facingOptions?: string[];
+      gatedCommunity?: boolean;
+    };
+    media?: {
+      coverImage?: { url: string };
+      galleryImages?: Array<{ url: string }>;
+      brochurePdf?: { url: string };
+      layoutImage?: { url: string };
+    };
+    owner?: { name?: string; companyName?: string };
+  };
   area?: { city: string; location: string };
   members: Array<{ user: { id: string; name: string; role: string; companyName?: string }; role: string; joinedAt?: string }>;
   description: string;
   isUniversal?: boolean;
   canLeave?: boolean;
+  isAutoCreated?: boolean;
   lastActivity: string;
 }
 
@@ -916,6 +1020,7 @@ function transformGroupRoom(raw: any): GroupRoom {
     description: raw?.description || '',
     isUniversal: !!raw?.isUniversal,
     canLeave: raw?.canLeave !== false,
+    isAutoCreated: !!raw?.isAutoCreated,
     lastActivity: raw?.lastActivity || raw?.updatedAt || '',
   };
 }

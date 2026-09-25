@@ -14,7 +14,7 @@ import {
   Send, Building2, MapPin, Check, Pencil, Plus, List as ListIcon,
   ArrowRight, CheckCircle2, Undo2, Redo2, RotateCcw, XCircle, Users as UsersIcon, X as XIcon,
 } from 'lucide-react-native';
-import { leadChatApi, groupChatApi, GroupRoom } from '../lib/api';
+import { leadChatApi, groupChatApi, placesApi, GroupRoom, PlacePrediction } from '../lib/api';
 import { postDraftStorage, chatClearedBeforeIdStorage } from '../lib/storage';
 import { useAuth } from '../lib/authContext';
 import { useToast } from './Toast';
@@ -32,8 +32,23 @@ interface Template {
   unit?: string[];
   skippable?: boolean;
   allowCustom?: boolean;
+  // Backend allows an "Other" answer: one chip + a free-text box. Submitted as
+  // { value: 'other', otherText } so the canonical value AND the words persist.
+  allowOther?: boolean;
   prefill?: string;
   progress?: { current: number; total: number };
+}
+
+// Canonical "none of the above" value — must match OTHER_VALUE in the backend
+// leadSlotSchema.
+const OTHER_VALUE = 'other';
+
+/** Format a rupee amount the way Indian real estate reads it. */
+function fmtPrice(rupees?: number | null): string {
+  if (!rupees || rupees <= 0) return '';
+  if (rupees >= 1e7) return `₹${(rupees / 1e7).toFixed(2).replace(/\.00$/, '')} Cr`;
+  if (rupees >= 1e5) return `₹${(rupees / 1e5).toFixed(2).replace(/\.00$/, '')} L`;
+  return `₹${rupees.toLocaleString('en-IN')}`;
 }
 interface Msg {
   _id: string;
@@ -51,6 +66,22 @@ const INTENT_ICON: Record<string, string> = { sell: '🏷️', buy: '🔑', rent
 // on them — only the presentation is fixed here.
 const INTENT_ORDER = ['buy', 'sell', 'rent'] as const;
 const INTENT_LABEL: Record<string, string> = { buy: 'Buy', sell: 'Sell', rent: 'Rent' };
+
+// Slot types that get their own rich inline control (chips, unit picker, or the
+// Places autocomplete) rather than being answered through a plain text box.
+// Exported because the host (GroupChatEmbedded) must hide its own composer while
+// one of these is on screen — otherwise two input rows stack up.
+export const AI_RICH_CONTROL_TYPES = ['choice', 'multichoice', 'number', 'city', 'location'];
+const RICH_CONTROL_TYPES = AI_RICH_CONTROL_TYPES;
+
+// Flow states that accept no typed input at all (the user acts on a card).
+export const AI_LOCKED_TYPES = ['summary', 'results', 'actions'];
+
+/** Does this template render its own input, leaving no room for a composer? */
+export function aiOwnsInput(template?: { inputType?: string } | null): boolean {
+  const t = template?.inputType || '';
+  return !!t && (AI_RICH_CONTROL_TYPES.includes(t) || AI_LOCKED_TYPES.includes(t));
+}
 
 // ── Reference-only quick answers ────────────────────────────────────────────
 // Shown for slots the user would otherwise have to TYPE (number/text/location/
@@ -152,6 +183,7 @@ export default function AiAssistant({
   onMatchShared,
   hideOwnChrome = false,
   onReady,
+  onTemplateChange,
   disappearMs = 0,
 }: {
   onViewLeads?: () => void;
@@ -167,6 +199,10 @@ export default function AiAssistant({
   hideOwnChrome?: boolean;
   // Exposes an imperative API so the host can route its single input box here.
   onReady?: (api: AiAssistantApi) => void;
+  // Fires whenever the active question changes. The host uses this to decide
+  // whether to show its own composer, so it must be a STABLE callback (useCallback)
+  // — an inline arrow would re-run the effect on every render.
+  onTemplateChange?: (template: Template | undefined) => void;
   // WhatsApp-style disappearing messages: hide AI messages older than this many
   // ms. 0 = Never (default). Only affects display; backend thread is untouched.
   disappearMs?: number;
@@ -181,12 +217,19 @@ export default function AiAssistant({
   useEffect(() => { messagesRef.current = messages; }, [messages]);
   // Latest active question template, for stable callbacks.
   const activeTemplateRef = useRef<Template | undefined>(undefined);
+  // Coordinates of the city chosen in this conversation. Used to bias the
+  // locality autocomplete to that city (Civil Lines in Nagpur, not elsewhere).
+  const [cityGeo, setCityGeo] = useState<{ lat: number; lng: number } | null>(null);
   const [flowState, setFlowState] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [typing, setTyping] = useState(false);
   const [ended, setEnded] = useState(false);
   const sessionIdRef = useRef<string | null>(null);
+  // Set the instant a confirm starts, so a rapid second tap cannot fire another
+  // confirm and persist a duplicate lead. Cleared whenever a new/edited flow
+  // makes confirming valid again.
+  const confirmingRef = useRef(false);
   const scrollRef = useRef<ScrollView>(null);
   // Last property draft the user described (persisted), so "Post" still works
   // after the AI session resets or the app restarts.
@@ -238,9 +281,30 @@ export default function AiAssistant({
     });
   }, [messages, flowState, toast]);
 
-  const scrollDown = useCallback((delay = 80) => {
-    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), delay);
+  // Every pending timer, so they can be cancelled on unmount. The assistant is
+  // unmounted whenever the host leaves AI mode (Exit Chat / the AI Leads reset),
+  // and a pending `reveal` timer would otherwise land setMessages/setTyping on an
+  // unmounted component.
+  const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const mountedRef = useRef(true);
+  useEffect(() => () => {
+    mountedRef.current = false;
+    timersRef.current.forEach(clearTimeout);
+    timersRef.current = [];
   }, []);
+
+  const later = useCallback((fn: () => void, delay: number) => {
+    const id = setTimeout(() => {
+      timersRef.current = timersRef.current.filter((t) => t !== id);
+      if (mountedRef.current) fn();
+    }, delay);
+    timersRef.current.push(id);
+    return id;
+  }, []);
+
+  const scrollDown = useCallback((delay = 80) => {
+    later(() => scrollRef.current?.scrollToEnd({ animated: true }), delay);
+  }, [later]);
 
   // ── Open — ALWAYS start a fresh session ──
   // We never show the previous AI Q&A / answers. We only keep the LATEST match
@@ -314,17 +378,25 @@ export default function AiAssistant({
   const reveal = useCallback((newMsgs: Msg[]) => {
     setTyping(true);
     scrollDown(60);
-    setTimeout(() => {
+    later(() => {
       setMessages(prev => [...prev, ...newMsgs.filter(Boolean)]);
       setTyping(false);
       scrollDown(60);
     }, TYPING_MS);
-  }, [scrollDown]);
+  }, [scrollDown, later]);
 
   // ── Submit an answer for the active slot ──
   const submit = useCallback(async (slotId: string, value: any, displayText: string) => {
     const sid = sessionIdRef.current;
     if (!sid || sending) return;
+
+    // Remember the city's coordinates so the next question (locality) can bias
+    // its suggestions to that city.
+    if (slotId === 'city' && value && typeof value === 'object'
+        && value.latitude != null && value.longitude != null) {
+      setCityGeo({ lat: value.latitude, lng: value.longitude });
+    }
+
     snapshot();
     setSending(true);
     // Optimistic user bubble
@@ -337,7 +409,10 @@ export default function AiAssistant({
     try {
       const res = await leadChatApi.answer({ sessionId: sid, slotId, value });
       setFlowState(res.flowState);
-      reveal([res.message]);
+      // On a rejected answer the backend re-asks the SAME question. Show its
+      // corrective hint first, otherwise the question just silently reappears
+      // and the user has no idea what was wrong.
+      reveal([(res as any).hintMessage, res.message].filter(Boolean) as Msg[]);
     } catch (e: any) {
       setMessages(prev => prev.filter(m => m._id !== optimistic._id));
       toast.show(e?.message || 'Could not submit answer', 'error');
@@ -350,6 +425,8 @@ export default function AiAssistant({
   const edit = useCallback(async (slotId: string) => {
     const sid = sessionIdRef.current;
     if (!sid || sending) return;
+    // Editing reopens the flow, so confirming becomes valid again.
+    confirmingRef.current = false;
     try {
       const res = await leadChatApi.edit({ sessionId: sid, slotId });
       setFlowState(res.flowState);
@@ -362,7 +439,10 @@ export default function AiAssistant({
   // ── Confirm & find matches ──
   const confirm = useCallback(async () => {
     const sid = sessionIdRef.current;
-    if (!sid || sending) return;
+    // Ref guard, not just `sending`: two taps in the same tick both read the old
+    // state value, which is how duplicate leads got created.
+    if (!sid || sending || confirmingRef.current) return;
+    confirmingRef.current = true;
     snapshot();
     setSending(true);
     try {
@@ -382,6 +462,7 @@ export default function AiAssistant({
   const newLead = useCallback(async () => {
     const sid = sessionIdRef.current;
     if (!sid || sending) return;
+    confirmingRef.current = false; // a fresh lead may be confirmed again
     snapshot();
     setSending(true);
     try {
@@ -426,11 +507,15 @@ export default function AiAssistant({
       try { await leadChatApi.newLead(sid); } catch { /* non-fatal */ }
     }
 
-    // 3) Clear local state.
+    // 3) Clear local state. Guarded: this runs after two awaited network calls,
+    //    by which time the host may already have unmounted us (Exit Chat does
+    //    exactly that — it awaits exitChat() then flips aiMode off).
+    if (!mountedRef.current) return;
     setMessages([]);
     setFlowState(null);
     setUndoStack([]);
     setRedoStack([]);
+    confirmingRef.current = false;
   }, []);
 
   // End Chat: clear the conversation and show the ended state. "Start new chat"
@@ -558,7 +643,12 @@ export default function AiAssistant({
       setFlowState(res.flowState);
       // Single confirmation — see confirm() above.
       reveal([res.resultsMessage, res.actionsMessage].filter(Boolean) as Msg[]);
-      const matches: MatchCard[] = res.resultsMessage?.template?.options?.matches || [];
+      // Count BOTH sources: published projects and properties posted by other
+      // members through the Sell flow.
+      const matches: MatchCard[] = [
+        ...(res.resultsMessage?.template?.options?.matches || []),
+        ...(res.resultsMessage?.template?.options?.inventoryMatches || []),
+      ];
       if (!matches.length) {
         // Not the user's fault — usually there simply isn't matching inventory
         // in that area/budget yet. The lead is saved and will match later.
@@ -583,9 +673,13 @@ export default function AiAssistant({
     const isSellable = intent === 'sell' || intent === 'rent';
 
     // Preferred source: latest summary message's labeled values.
-    const summaryMsg = [...messages].reverse().find(
-      (m) => m.messageType === 'system' && m.template?.inputType === 'summary'
-    );
+    // Backwards scan instead of copy+reverse — this runs from an effect on every
+    // message change.
+    let summaryMsg: Msg | undefined;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.messageType === 'system' && m.template?.inputType === 'summary') { summaryMsg = m; break; }
+    }
     const summaryValues: { slotId: string; label: string; display: string }[] =
       summaryMsg?.template?.options?.values || [];
 
@@ -644,10 +738,15 @@ export default function AiAssistant({
   // Skip persisting the exact draft the user already posted (clearedSigRef).
   useEffect(() => {
     const d = getPostDraft();
-    if (d.isSellable && d.fields.length > 0 && draftSig(d) !== clearedSigRef.current) {
-      savedDraftRef.current = d;
-      postDraftStorage.set(d);
-    }
+    if (!d.isSellable || d.fields.length === 0) return;
+    const sig = draftSig(d);
+    if (sig === clearedSigRef.current) return;
+    // Only touch AsyncStorage when the draft actually changed. This effect runs
+    // on every message, so it previously re-serialised and rewrote an identical
+    // draft on each assistant reply.
+    if (sig === draftSig(savedDraftRef.current)) return;
+    savedDraftRef.current = d;
+    postDraftStorage.set(d);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flowState, messages]);
 
@@ -696,8 +795,16 @@ export default function AiAssistant({
   }, [visibleMessages]);
 
   // The active template = last system message that carries one.
-  const lastAssistant = [...messages].reverse().find(m => m.messageType === 'system' && m.template);
-  const activeTemplate = lastAssistant?.template;
+  // Scanned backwards in place: the previous `[...messages].reverse().find(...)`
+  // copied and reversed the whole transcript on every render, including every
+  // keystroke in the host composer.
+  const activeTemplate = React.useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.messageType === 'system' && m.template) return m.template;
+    }
+    return undefined;
+  }, [messages]);
   // Mirror for stable callbacks (startWithIntent) that must not capture a stale
   // template from an earlier render.
   useEffect(() => { activeTemplateRef.current = activeTemplate; }, [activeTemplate]);
@@ -705,7 +812,15 @@ export default function AiAssistant({
   const progressPct = progress && progress.total ? Math.round((progress.current / progress.total) * 100) : 0;
 
   const showAnswerBar = !typing && activeTemplate?.inputType &&
-    !['summary', 'results', 'actions'].includes(activeTemplate.inputType);
+    !AI_LOCKED_TYPES.includes(activeTemplate.inputType);
+
+  // Tell the host which control is active so it can hide its own input while a
+  // rich control owns the screen. Keyed on primitives, not object identity, so
+  // this fires only on a real question change.
+  useEffect(() => {
+    onTemplateChange?.(activeTemplate);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTemplate?.slotId, activeTemplate?.inputType, typing, onTemplateChange]);
 
   // ── Route a free-text answer through the correct backend call (mirrors the
   //    PersistentChatBar routing). Used by the host group composer when the
@@ -895,13 +1010,12 @@ export default function AiAssistant({
           TextControl and PhoneControl are intentionally excluded here — the
           PersistentChatBar below handles those input types directly. */}
       {hideOwnChrome ? (
-        // Inside the group: render chip-style pickers (choice/multichoice)
-        // inline; text/location/phone/number are answered via the group's own
-        // input box (host-driven). For those, show tappable suggestions so the
-        // user isn't left guessing what to type.
+        // Inside the group: render the rich pickers inline (chips for choices,
+        // Places autocomplete for city/locality). Remaining typed slots are
+        // answered via the group's own input box, with tappable suggestions.
         showAnswerBar && activeTemplate && (
-          ['choice', 'multichoice'].includes(activeTemplate.inputType || '') ? (
-            <AnswerControl template={activeTemplate} disabled={sending} onSubmit={submit} />
+          RICH_CONTROL_TYPES.includes(activeTemplate.inputType || '') ? (
+            <AnswerControl template={activeTemplate} disabled={sending} onSubmit={submit} cityGeo={cityGeo} />
           ) : (
             <SuggestionChips
               template={activeTemplate}
@@ -914,13 +1028,13 @@ export default function AiAssistant({
       ) : (
         <>
           {showAnswerBar && activeTemplate &&
-            !['text', 'location', 'phone'].includes(activeTemplate.inputType || '') && (
-            <AnswerControl template={activeTemplate} disabled={sending} onSubmit={submit} />
+            !['text', 'phone'].includes(activeTemplate.inputType || '') && (
+            <AnswerControl template={activeTemplate} disabled={sending} onSubmit={submit} cityGeo={cityGeo} />
           )}
 
-          {/* Tappable reference answers for the typing slots. */}
+          {/* Tappable reference answers for the remaining typed slots. */}
           {showAnswerBar && activeTemplate &&
-            ['text', 'location', 'phone'].includes(activeTemplate.inputType || '') && (
+            ['text', 'phone'].includes(activeTemplate.inputType || '') && (
             <SuggestionChips
               template={activeTemplate}
               disabled={sending || typing}
@@ -930,10 +1044,10 @@ export default function AiAssistant({
           )}
 
           {/* ── Persistent chat input bar — only shown when AnswerControl is NOT visible,
-              i.e. for text/location/phone slots, completed flow, or no active slot.
+              i.e. for text/phone slots, completed flow, or no active slot.
               This prevents two input fields appearing simultaneously. ── */}
           {!(showAnswerBar && activeTemplate &&
-             !['text', 'location', 'phone'].includes(activeTemplate.inputType || '')) && (
+             !['text', 'phone'].includes(activeTemplate.inputType || '')) && (
             <PersistentChatBar
               activeTemplate={activeTemplate}
               flowState={flowState}
@@ -1166,9 +1280,12 @@ function PersistentChatBar({
 }
 
 // ═══════════ ANSWER CONTROL ═══════════
-function AnswerControl({ template, disabled, onSubmit }: {
+function AnswerControl({ template, disabled, onSubmit, cityGeo }: {
   template: Template; disabled: boolean;
   onSubmit: (slotId: string, value: any, display: string) => void;
+  // Coordinates of the city already chosen in this conversation — biases the
+  // locality autocomplete so "Civil Lines" resolves in the right city.
+  cityGeo?: { lat: number; lng: number } | null;
 }) {
   const slotId = template.slotId || '';
   const type = template.inputType;
@@ -1177,6 +1294,9 @@ function AnswerControl({ template, disabled, onSubmit }: {
   if (type === 'multichoice') return <MultiChoiceControl template={template} disabled={disabled} onSubmit={onSubmit} />;
   if (type === 'number') return <NumberControl slotId={slotId} units={template.unit || []} skippable={!!template.skippable} disabled={disabled} onSubmit={onSubmit} />;
   if (type === 'phone') return <PhoneControl slotId={slotId} prefill={template.prefill} disabled={disabled} onSubmit={onSubmit} />;
+  // City + locality use the Places autocomplete control.
+  if (type === 'city') return <PlaceControl slotId={slotId} kind="city" skippable={!!template.skippable} disabled={disabled} onSubmit={onSubmit} />;
+  if (type === 'location') return <PlaceControl slotId={slotId} kind="area" cityGeo={cityGeo} skippable={!!template.skippable} disabled={disabled} onSubmit={onSubmit} />;
   return <TextControl slotId={slotId} inputType={type} allowCustom={!!template.allowCustom} skippable={!!template.skippable} disabled={disabled} onSubmit={onSubmit} />;
 }
 
@@ -1194,14 +1314,33 @@ function ChoiceControl({ template, disabled, onSubmit }: {
   onSubmit: (slotId: string, value: any, display: string) => void;
 }) {
   const slotId = template.slotId || '';
-  const options: Option[] = Array.isArray(template.options) ? template.options : [];
+  const allOptions: Option[] = Array.isArray(template.options) ? template.options : [];
   const isIntent = slotId === 'intent';
   const [custom, setCustom] = useState('');
-  // "Other" chip reveals a free-text field. Available on any choice slot (even if
-  // the backend didn't flag allowCustom) so users can always type their own value.
   const [otherOpen, setOtherOpen] = useState(false);
-  const allowOther = !isIntent; // intent is a fixed set (sell/buy/rent)
-  const submitCustom = () => { if (custom.trim()) { onSubmit(slotId, custom.trim(), custom.trim()); setCustom(''); setOtherOpen(false); } };
+
+  // The backend may already include an "Other" option in its list. Pull it out so
+  // it renders as ONE chip that opens the text box — previously the list chip and
+  // a separate client-added chip both showed, with different behaviour.
+  const backendOther = allOptions.find((o) => String(o.value).toLowerCase() === OTHER_VALUE);
+  const options = allOptions.filter((o) => o !== backendOther);
+
+  // Offer "Other" only when it can actually be accepted. Showing it on a fixed
+  // enum slot was what trapped users in an endless re-ask loop.
+  const allowOther = !isIntent && (!!backendOther || !!template.allowOther || !!template.allowCustom);
+
+  const submitCustom = () => {
+    const text = custom.trim();
+    if (!text) return;
+    if (backendOther || template.allowOther) {
+      // Keep the canonical 'other' value AND the typed words.
+      onSubmit(slotId, { value: backendOther?.value ?? OTHER_VALUE, otherText: text }, text);
+    } else {
+      onSubmit(slotId, text, text);
+    }
+    setCustom('');
+    setOtherOpen(false);
+  };
 
   return (
     <View style={ac.bar}>
@@ -1235,10 +1374,12 @@ function ChoiceControl({ template, disabled, onSubmit }: {
           );
         })}
 
-        {/* "Other" chip — lets the user type a value not in the list */}
+        {/* Single "Other" chip — reveals a free-text box below. */}
         {allowOther && (
           <Pressable disabled={disabled} onPress={() => setOtherOpen(o => !o)} style={[ac.chip, otherOpen && ac.chipOn]}>
-            <Text style={[ac.chipText, otherOpen && ac.chipTextOn]}>Other</Text>
+            <Text style={[ac.chipText, otherOpen && ac.chipTextOn]}>
+              {backendOther ? (backendOther.label?.en || 'Other') : 'Other'}
+            </Text>
           </Pressable>
         )}
       </ScrollView>
@@ -1251,6 +1392,7 @@ function ChoiceControl({ template, disabled, onSubmit }: {
             placeholder="Type your answer…" placeholderTextColor={colors.muted}
             style={ac.input}
             onSubmitEditing={submitCustom}
+            returnKeyType="send"
           />
           <SendBtn disabled={disabled || !custom.trim()} onPress={submitCustom} />
         </View>
@@ -1399,6 +1541,175 @@ function TextControl({ slotId, inputType, allowCustom, skippable, disabled, onSu
   );
 }
 
+// ═══════════ PLACE CONTROL (city / locality autocomplete) ═══════════
+// Type-ahead backed by Google Places (via our backend proxy). Picking a
+// suggestion resolves the full address + coordinates and submits that whole
+// object, so the lead stores a verified location instead of raw text.
+// Free typing still works — if the user just hits send we submit plain text.
+function PlaceControl({ slotId, kind, cityGeo, skippable, disabled, onSubmit }: {
+  slotId: string;
+  kind: 'city' | 'area';
+  // Coordinates of the already-chosen city, used to bias locality results.
+  cityGeo?: { lat: number; lng: number } | null;
+  skippable: boolean;
+  disabled: boolean;
+  onSubmit: (slotId: string, value: any, display: string) => void;
+}) {
+  const [val, setVal] = useState('');
+  const [preds, setPreds] = useState<PlacePrediction[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [resolving, setResolving] = useState(false);
+  // True once a lookup has finished for the current text. Lets us tell "still
+  // typing" apart from "searched and genuinely found nothing".
+  const [searched, setSearched] = useState(false);
+  // One session token per lookup session keeps Google's billing to one session
+  // instead of charging every keystroke separately.
+  const sessionRef = useRef<string>(`s_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`);
+  const seqRef = useRef(0);
+
+  // Debounced lookup — 300ms after typing stops.
+  useEffect(() => {
+    const q = val.trim();
+    if (q.length < 2) { setPreds([]); setSearched(false); return; }
+    const mySeq = ++seqRef.current;
+    setBusy(true);
+    const t = setTimeout(async () => {
+      let list: PlacePrediction[] = [];
+      try {
+        list = await placesApi.autocomplete({
+          input: q,
+          kind,
+          lat: kind === 'area' ? cityGeo?.lat ?? null : null,
+          lng: kind === 'area' ? cityGeo?.lng ?? null : null,
+          sessionToken: sessionRef.current,
+        });
+      } catch {
+        list = []; // proxy unavailable / no API key — free typing still works
+      }
+      // Ignore results from a stale keystroke.
+      if (mySeq === seqRef.current) { setPreds(list); setBusy(false); setSearched(true); }
+    }, 300);
+    return () => clearTimeout(t);
+  }, [val, kind, cityGeo?.lat, cityGeo?.lng]);
+
+  const pick = async (p: PlacePrediction) => {
+    setResolving(true);
+    try {
+      const d = await placesApi.details(p.placeId, sessionRef.current);
+      // Display: the locality/city name. Value: the full structured place.
+      const display = p.mainText || d?.name || p.text;
+      if (d) {
+        onSubmit(slotId, {
+          text: kind === 'city' ? (d.city || d.name || p.mainText) : (d.locality || d.name || p.mainText),
+          placeId: d.placeId,
+          formattedAddress: d.formattedAddress,
+          latitude: d.latitude,
+          longitude: d.longitude,
+          city: d.city,
+          state: d.state,
+          postalCode: d.postalCode,
+        }, display);
+      } else {
+        // Details lookup failed — still accept the chosen text.
+        onSubmit(slotId, display, display);
+      }
+      setVal(''); setPreds([]); setSearched(false);
+      // Session is consumed once details are fetched; start a fresh one.
+      sessionRef.current = `s_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    } finally {
+      setResolving(false);
+    }
+  };
+
+  const sendRaw = () => {
+    const t = val.trim();
+    if (!t) return;
+    onSubmit(slotId, t, t);
+    setVal(''); setPreds([]); setSearched(false);
+  };
+
+  // Tapping a quick city chip answers straight away — no lookup needed. The city
+  // question is meant to be typed/tapped, not forced through autocomplete.
+  const sendCity = (name: string) => onSubmit(slotId, name, name);
+
+  const noMatches = searched && !busy && preds.length === 0 && val.trim().length >= 2;
+
+  return (
+    <View style={ac.bar}>
+      {/* Suggestions — tap to pick. Rendered above the input, newest query first. */}
+      {preds.length > 0 && (
+        <ScrollView style={pc.list} keyboardShouldPersistTaps="handled" nestedScrollEnabled>
+          {preds.map((p) => (
+            <Pressable key={p.placeId} style={pc.item} disabled={resolving} onPress={() => pick(p)}>
+              <MapPin size={14} color={colors.brand} />
+              <View style={{ flex: 1 }}>
+                <Text style={pc.itemMain} numberOfLines={1}>{p.mainText}</Text>
+                {!!p.secondaryText && <Text style={pc.itemSub} numberOfLines={1}>{p.secondaryText}</Text>}
+              </View>
+            </Pressable>
+          ))}
+        </ScrollView>
+      )}
+
+      {/* City: quick-pick chips shown before typing starts. The city is meant to
+          be typed or tapped — suggestions are a shortcut, not a requirement. */}
+      {kind === 'city' && !val.trim() && (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={pc.chipRow}
+        >
+          {(TEXT_SUGGESTIONS.city || []).map((c) => (
+            <Pressable key={c} disabled={disabled} onPress={() => sendCity(c)} style={ac.chip}>
+              <Text style={ac.chipText}>{c}</Text>
+            </Pressable>
+          ))}
+        </ScrollView>
+      )}
+
+      <View style={ac.inputRow}>
+        <View style={ac.inputWrap}>
+          <MapPin size={16} color={colors.brand} style={{ marginRight: 6 }} />
+          <TextInput
+            value={val}
+            onChangeText={setVal}
+            placeholder={kind === 'city' ? 'Type a city, e.g. Nagpur' : 'Search area / locality…'}
+            placeholderTextColor={colors.muted}
+            style={ac.input}
+            onSubmitEditing={sendRaw}
+            autoCorrect={false}
+            returnKeyType="send"
+          />
+          {(busy || resolving) && <ActivityIndicator size="small" color={colors.brand} />}
+        </View>
+        <SendBtn disabled={disabled || !val.trim() || resolving} onPress={sendRaw} />
+      </View>
+
+      {/* Nothing came back (no match, or the Places proxy is unavailable). Say so
+          rather than leaving the user staring at an empty list. */}
+      {noMatches && (
+        <Text style={pc.note}>
+          {kind === 'city'
+            ? 'No suggestions — tap send to use what you typed.'
+            : 'No map suggestions found. Tap send to use this locality as typed.'}
+        </Text>
+      )}
+
+      {skippable && <SkipBtn disabled={disabled} onPress={() => onSubmit(slotId, SKIP_VALUE, 'Skipped')} />}
+    </View>
+  );
+}
+
+const pc = StyleSheet.create({
+  list: { maxHeight: 190, marginBottom: 8, backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line, borderRadius: 12 },
+  item: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 12, paddingVertical: 11, borderBottomWidth: 1, borderBottomColor: colors.line },
+  itemMain: { fontSize: 13, fontWeight: '700', color: colors.ink },
+  itemSub: { fontSize: 10.5, color: colors.muted2, marginTop: 1 },
+  chipRow: { gap: 8, paddingBottom: 8, paddingRight: 4 },
+  note: { fontSize: 10.5, color: colors.muted2, marginTop: 6, paddingHorizontal: 2 },
+});
+
 function SendBtn({ onPress, disabled }: { onPress: () => void; disabled: boolean }) {
   return (
     <Pressable onPress={onPress} disabled={disabled} style={[ac.sendBtn, disabled && { opacity: 0.4 }]}>
@@ -1452,10 +1763,30 @@ function SummaryBubble({ msg, onEdit, onConfirm, sending }: {
 
 // ═══════════ RESULTS BUBBLE ═══════════
 type MatchCard = { projectId: string; projectName: string; city?: string; location?: string; score: number; slug?: string };
+
+// A property posted through the AI "sell" conversation. These live as leads, not
+// as published Projects, so they carry no projectId and can't be opened as a
+// project page — but they ARE real supply and must be shown.
+type InventoryMatchCard = {
+  leadId: string;
+  projectName: string;
+  city?: string;
+  location?: string;
+  score: number;
+  startingPrice?: number;
+  bhkOptions?: string[];
+  area?: number | null;
+  areaUnit?: string | null;
+  builderName?: string;
+  postedByRole?: string;
+};
+
 function ResultsBubble({ msg, onAddToGroup }: { msg: Msg; onAddToGroup?: (m: MatchCard) => void }) {
   const matches: MatchCard[] =
     msg.template?.options?.matches || [];
-  const hasMatches = matches.length > 0;
+  const inventory: InventoryMatchCard[] =
+    msg.template?.options?.inventoryMatches || [];
+  const hasMatches = matches.length > 0 || inventory.length > 0;
   return (
     <View style={[mb.row, mb.rowThem]}>
       <View style={mb.avatar}><Text style={{ fontSize: 14 }}>🤖</Text></View>
@@ -1479,6 +1810,37 @@ function ResultsBubble({ msg, onAddToGroup }: { msg: Msg; onAddToGroup?: (m: Mat
               <UsersIcon size={14} color={colors.brand} />
               <Text style={rs.addGroupText}>Add to Group</Text>
             </Pressable>
+          </View>
+        ))}
+
+        {/* Properties posted by other users through the Sell flow. Labelled so it
+            is obvious these are member listings rather than builder projects. */}
+        {inventory.length > 0 && (
+          <Text style={rs.sectionLabel}>
+            Also posted by members ({inventory.length})
+          </Text>
+        )}
+        {inventory.map((m) => (
+          <View key={m.leadId} style={[rs.cardCol, rs.cardColLead]}>
+            <View style={rs.cardTop}>
+              <View style={[rs.icon, { backgroundColor: '#F0FDF4' }]}>
+                <UsersIcon size={20} color={colors.greenText} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={rs.name} numberOfLines={1}>{m.projectName || 'Property'}</Text>
+                <Text style={rs.loc} numberOfLines={1}>
+                  📍 {[m.location, m.city].filter(Boolean).join(', ') || '—'}
+                </Text>
+                <Text style={rs.loc} numberOfLines={1}>
+                  {[
+                    m.startingPrice ? `💰 ${fmtPrice(m.startingPrice)}` : '',
+                    m.area ? `📐 ${m.area} ${m.areaUnit || 'sqft'}` : '',
+                    m.builderName ? `👤 ${m.builderName}` : '',
+                  ].filter(Boolean).join('  ')}
+                </Text>
+              </View>
+              <ScoreRing score={m.score} />
+            </View>
           </View>
         ))}
       </View>
@@ -1625,6 +1987,10 @@ const rs = StyleSheet.create({
   headText: { flex: 1, fontSize: 13, fontWeight: '700', color: colors.ink },
   card: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line, borderRadius: 16, padding: 12 },
   cardCol: { backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line, borderRadius: 16, padding: 12, gap: 10 },
+  // Member-posted listing (from the Sell flow) — green edge distinguishes it from
+  // a published builder project.
+  cardColLead: { borderColor: colors.greenBorder, backgroundColor: '#FBFEFB' },
+  sectionLabel: { fontSize: 10.5, fontWeight: '800', color: colors.muted2, letterSpacing: 0.3, marginTop: 4, marginLeft: 2 },
   cardTop: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   icon: { width: 46, height: 46, borderRadius: 12, backgroundColor: colors.brandTint, alignItems: 'center', justifyContent: 'center' },
   name: { fontSize: 13, fontWeight: '800', color: colors.ink },

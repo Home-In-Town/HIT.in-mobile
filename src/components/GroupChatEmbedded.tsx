@@ -11,7 +11,6 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, FlatList, Pressable, StyleSheet, ActivityIndicator,
   TextInput, KeyboardAvoidingView, Platform, Modal, ScrollView, Switch, Alert,
-  Animated, PanResponder,
 } from 'react-native';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
@@ -24,7 +23,7 @@ import {
   Search, MapPin, Check, Camera, Paperclip, Sparkles, ChevronDown, ChevronUp, Clock,
 } from 'lucide-react-native';
 import { groupChatApi, shareApi, mediaApi, leadMatchingApi, projectsApiExtended, GroupRoom, GroupMessage } from '../lib/api';
-import AiAssistant, { AiAssistantApi, AiPostDraft } from './AiAssistant';
+import AiAssistant, { AiAssistantApi, AiPostDraft, aiOwnsInput } from './AiAssistant';
 import { postedListStorage, disappearStorage } from '../lib/storage';
 import { useAuth } from '../lib/authContext';
 import { useSocket } from '../hooks/useSocket';
@@ -53,10 +52,35 @@ function fmtPrice(v: number): string {
 }
 
 // Display name override: the universal / "HIT Community" room shows as "AI Lead Matching".
+/** Stable no-op, so passing one as a prop doesn't change identity each render. */
+const noop = () => {};
+
 function roomDisplayName(room?: GroupRoom | null): string {
   if (!room) return '';
   if (room.isUniversal || /hit community/i.test(room.name)) return 'AI Lead Matching';
   return room.name;
+}
+
+/**
+ * One-line summary shown under a group name. Property groups lead with the
+ * linked property's location, price and configuration; area groups fall back to
+ * their locality.
+ */
+function roomSubtitle(room: GroupRoom): string {
+  const parts: string[] = [`${room.members.length} member${room.members.length !== 1 ? 's' : ''}`];
+  const p: any = room.project;
+
+  if (room.roomType === 'project' && p) {
+    const where = [p.location, p.city].filter(Boolean).join(', ');
+    if (where) parts.push(where);
+    if (p.pricing?.startingPrice) parts.push(`${fmtPrice(p.pricing.startingPrice)}+`);
+    const bhk = (p.configuration?.bhkOptions || []).filter(Boolean);
+    if (bhk.length) parts.push(bhk.join('/'));
+  } else if (room.area?.location) {
+    parts.push(room.area.location);
+  }
+
+  return parts.join(' · ');
 }
 
 type PostMode = 'text' | 'requirement' | 'inventory';
@@ -254,14 +278,6 @@ function buildProjectFromDraft(draft: AiPostDraft): { payload: any; card: any } 
 }
 
 // ─── Draggable "AI Lead Assist" FAB ──────────────────────────────────────────
-// A movable floating button. It stays inside its parent (the message area) and
-// never leaves the viewport. A small movement threshold distinguishes a tap
-// (opens AI) from a drag (repositions the button), so tapping never triggers a
-// stray drag on mobile.
-const FAB_W = 128; // approx pill width (clamp margin)
-const FAB_H = 44;  // approx pill height
-const DRAG_THRESHOLD = 6; // px of movement before it's treated as a drag
-
 // ─── Compact posted-property card (with expand toggle) ──────────────────────
 // Marketplace-style property card for the Post view.
 // - Draft (not yet posted): shows "Post to Group" (green) + "View Property".
@@ -321,63 +337,7 @@ function PostCard({ item, posted, cooldownLeftMs, posting, onPost, onView }: {
   );
 }
 
-function DraggableFab({ onPress }: { onPress: () => void }) {
-  const pan = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
-  const bounds = useRef({ w: 0, h: 0 }).current;
-  const start = useRef({ x: 0, y: 0 });
-  const moved = useRef(false);
-
-  const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
-
-  const responder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      // Only claim the gesture once the finger actually moves — lets taps pass.
-      onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > DRAG_THRESHOLD || Math.abs(g.dy) > DRAG_THRESHOLD,
-      onPanResponderGrant: () => {
-        moved.current = false;
-        // @ts-ignore - _value exists at runtime
-        start.current = { x: pan.x._value, y: pan.y._value };
-      },
-      onPanResponderMove: (_e, g) => {
-        if (Math.abs(g.dx) > DRAG_THRESHOLD || Math.abs(g.dy) > DRAG_THRESHOLD) moved.current = true;
-        pan.setValue({ x: start.current.x + g.dx, y: start.current.y + g.dy });
-      },
-      onPanResponderRelease: (_e, g) => {
-        if (!moved.current && Math.abs(g.dx) < DRAG_THRESHOLD && Math.abs(g.dy) < DRAG_THRESHOLD) {
-          onPress();
-          return;
-        }
-        // Clamp final position inside the container (keep fully on-screen).
-        const maxX = 0;
-        const minX = -(bounds.w - FAB_W - 28); // 14px margins both sides
-        const maxY = 0;
-        const minY = -(bounds.h - FAB_H - 28);
-        const nx = clamp(start.current.x + g.dx, minX, maxX);
-        const ny = clamp(start.current.y + g.dy, minY, maxY);
-        Animated.spring(pan, { toValue: { x: nx, y: ny }, useNativeDriver: false, friction: 6 }).start();
-      },
-    })
-  ).current;
-
-  return (
-    <View
-      pointerEvents="box-none"
-      style={StyleSheet.absoluteFill}
-      onLayout={(e) => { bounds.w = e.nativeEvent.layout.width; bounds.h = e.nativeEvent.layout.height; }}
-    >
-      <Animated.View
-        {...responder.panHandlers}
-        style={[s.aiFab, { transform: pan.getTranslateTransform() }]}
-      >
-        <Sparkles size={16} color="#fff" />
-        <Text style={s.aiFabText}>AI Lead Assist</Text>
-      </Animated.View>
-    </View>
-  );
-}
-
-export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, autoOpenUniversal = false, hideThreadBack = false }: {
+export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, autoOpenUniversal = false, hideThreadBack = false, headerless = false, onActionsReady }: {
   onRoomOpenChange?: (open: boolean) => void;
   topInset?: number;
   // When true, the Universal ("AI Lead Matching") room opens automatically and
@@ -385,6 +345,18 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   // AI Lead Matching section (no separate room-list step).
   autoOpenUniversal?: boolean;
   hideThreadBack?: boolean;
+  // When true, the whole thread header (avatar, member count, My Post / Matching
+  // buttons) is hidden — used when the parent (AI Leads hub) provides its own
+  // sub-row of Groups · Chats · My Post · Matching above this component.
+  headerless?: boolean;
+  // Exposes the post/matching triggers to the parent so its sub-row can drive
+  // them. Called once the component is ready.
+  onActionsReady?: (actions: {
+    post: () => void;
+    matching: () => void;
+    // Return to the default landing view (no AI conversation in progress).
+    resetToLanding: () => void;
+  }) => void;
 }) {
   const { user } = useAuth();
   const toast = useToast();
@@ -401,6 +373,11 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const [creating, setCreating] = useState(false);
   const [roomForm, setRoomForm] = useState({ name: '', city: '', location: '' });
   const [search, setSearch] = useState('');
+  // Collapsible search (YouTube-style): starts as a magnifier icon; tapping it
+  // reveals the input. Collapsing clears the query.
+  const [searchOpen, setSearchOpen] = useState(false);
+  // Which discoverable room is mid-join (shows a spinner on its Join button).
+  const [joiningId, setJoiningId] = useState<string | null>(null);
 
   // Thread UI state
   const [postMode, setPostMode] = useState<PostMode>('text');
@@ -414,6 +391,22 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   // existing AI Lead Matching assistant instead of posting to the group.
   const [aiMode, setAiMode] = useState(false);
   const [showAiMenu, setShowAiMenu] = useState(false);
+  // Input type of the assistant's current question. When the assistant renders
+  // its own rich control (chips / unit picker / place search) or is in a locked
+  // state, this composer must hide — otherwise TWO input rows stack up.
+  const [aiInputType, setAiInputType] = useState<string | undefined>(undefined);
+  const handleAiTemplate = useCallback((t?: { inputType?: string }) => {
+    setAiInputType(t?.inputType);
+  }, []);
+  // True once the embedded assistant has published its imperative API. Deferred
+  // actions (My Post / Matching / a chosen intent) are drained off this, rather
+  // than from inside onReady — see the drain effect below.
+  const [aiReady, setAiReady] = useState(false);
+  // Mirror of aiMode for stable callbacks. The action handlers below are exposed
+  // to the parent hub through an effect that runs ONCE, so reading `aiMode`
+  // directly would capture the first render's value (always false) forever.
+  const aiModeRef = useRef(false);
+  useEffect(() => { aiModeRef.current = aiMode; }, [aiMode]);
   // Disappearing messages setting for the AI Assist chat (ms; 0 = Never).
   const [disappearMs, setDisappearMs] = useState(0);
   const [showDisappear, setShowDisappear] = useState(false);
@@ -440,6 +433,33 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const pendingAiIntentRef = useRef<'sell' | 'buy' | 'rent' | null>(null);
   const flatRef = useRef<FlatList>(null);
 
+  // AI Assist belongs to the AI Lead Matching room only — it is a private
+  // slot-filling conversation, not a group feature. It must never run inside an
+  // individual property or area group, where its greeting, intent chips and
+  // My Post / Matching buttons make no sense.
+  //
+  // `hideThreadBack` identifies the AI Leads hub pane (whose auto-opened room IS
+  // the universal room); `isUniversal` covers the room being opened directly from
+  // the Groups list.
+  const aiAllowed = !!activeRoom && (activeRoom.isUniversal || hideThreadBack);
+
+  // Use this — never raw `aiMode` — for anything in the render path. It prevents
+  // a frame where the assistant UI paints over a property group before the
+  // safety-net effect below has run.
+  const aiActive = aiMode && aiAllowed;
+
+  // Safety net: if the active room changes to one where AI Assist doesn't belong,
+  // shut it down rather than leaving a stale assistant mounted over the thread.
+  useEffect(() => {
+    if (!aiMode || aiAllowed) return;
+    setAiMode(false);
+    setAiInputType(undefined);
+    setAiReady(false);
+    aiApiRef.current = null;
+    pendingAiActionRef.current = null;
+    pendingAiIntentRef.current = null;
+  }, [aiMode, aiAllowed]);
+
   const role = user?.role ?? '';
   const canRequirement = ['agent', 'admin', 'captain'].includes(role);
   const canInventory = ['builder', 'admin', 'captain', 'agent'].includes(role);
@@ -450,16 +470,31 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
 
   useEffect(() => { onRoomOpenChange?.(!!activeRoom); }, [activeRoom, onRoomOpenChange]);
 
-  const loadRooms = useCallback(async () => {
+  // Sequence guard: a slow earlier response must not overwrite a newer one.
+  const roomsSeqRef = useRef(0);
+
+  const loadRooms = useCallback(async (query?: string) => {
+    const seq = ++roomsSeqRef.current;
     try {
-      const data = await groupChatApi.getRooms(search ? { search } : undefined);
+      const q = query !== undefined ? query : search;
+      const data = await groupChatApi.getRooms(q ? { search: q } : undefined);
+      if (seq !== roomsSeqRef.current) return; // a newer request already answered
       setMyRooms(data.myRooms);
       setDiscoverRooms(data.discoverRooms);
     } catch { /* silent */ }
-    finally { setLoading(false); }
+    finally { if (seq === roomsSeqRef.current) setLoading(false); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search]);
 
-  useEffect(() => { loadRooms(); }, [loadRooms]);
+  // Debounced search. `search` is bound directly to the input, so this used to
+  // fire one request per keystroke with no debounce and no ordering guarantee —
+  // typing "besa" issued four requests and whichever landed last won.
+  useEffect(() => {
+    if (!search) { loadRooms(''); return; }
+    const t = setTimeout(() => loadRooms(search), 350);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search]);
 
   // Load the saved disappearing-messages setting once.
   useEffect(() => { disappearStorage.get().then(setDisappearMs); }, []);
@@ -472,6 +507,9 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   }, []);
 
   // Real-time incoming messages
+  // `socket.ready` is in the deps on purpose: on a cold start this effect can run
+  // before getSocket() resolves, in which case the subscription was a silent
+  // no-op and the room received no live messages until it was reopened.
   useEffect(() => {
     const unsub = socket.onGroupMessage((msg: any) => {
       const incomingRoom = msg.room || msg.roomId;
@@ -481,7 +519,14 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
       appendMessage(normalizeMsg(msg, activeRoom.id));
     });
     return unsub;
-  }, [activeRoom?.id, socket.onGroupMessage, appendMessage]);
+  }, [activeRoom?.id, socket.onGroupMessage, socket.ready, appendMessage]);
+
+  // Re-assert room membership once the socket becomes available, for the case
+  // where openRoom ran before it existed.
+  useEffect(() => {
+    if (socket.ready && activeRoom?.id) socket.joinGroup(activeRoom.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [socket.ready, activeRoom?.id]);
 
   const openRoom = async (room: GroupRoom) => {
     if (activeRoom) socket.leaveGroup(activeRoom.id);
@@ -521,7 +566,10 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const handleComposerSend = () => {
     const t = text.trim();
     if (!t) return;
-    if (aiMode) {
+    // aiActive, not aiMode: routing on raw aiMode meant that if the assistant was
+    // still mounted from another pane, a message typed in a PROPERTY group would
+    // be swallowed as an AI answer instead of being posted to the group.
+    if (aiActive) {
       // Private AI answer — never posted to the group.
       setText('');
       aiApiRef.current?.submitFreeText(t);
@@ -854,6 +902,12 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   };
   const doMatching = () => { aiApiRef.current?.runMatching(); };
 
+  // Expose post/matching to the parent hub (headerless mode) so its sub-row can
+  // trigger them. aiPost/aiMatching are defined below; a stable wrapper is fine
+  // because they read refs/state at call time.
+  // (The onActionsReady publish effect lives further down, after aiPost /
+  // aiMatching / aiResetToLanding are declared — it depends on their identities.)
+
   // Members who joined in the last 7 days — shown in the room header next to the
   // total. Members without a joinedAt (older records) simply aren't counted.
   const newJoinCount = React.useMemo(() => {
@@ -891,24 +945,64 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
 
   // When Post/Matching is tapped while AI mode is OFF, we turn AI on and defer
   // the action until the assistant API is ready (fired from onReady below).
-  const aiPost = () => {
-    if (aiMode && aiApiRef.current) { doPost(); return; }
+  // These read aiModeRef, not aiMode: they are handed to the parent hub once and
+  // then called much later, so a captured `aiMode` would be permanently stale.
+  // When AI mode is already on they act immediately; otherwise the action is
+  // queued and the drain effect below runs it as soon as the assistant is ready.
+  const aiPost = useCallback(() => {
+    if (aiModeRef.current && aiApiRef.current) { doPost(); return; }
     pendingAiActionRef.current = 'post';
     setAiMode(true);
-  };
-  const aiMatching = () => {
-    if (aiMode && aiApiRef.current) { doMatching(); return; }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const aiMatching = useCallback(() => {
+    if (aiModeRef.current && aiApiRef.current) { doMatching(); return; }
     pendingAiActionRef.current = 'match';
     setAiMode(true);
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // Quick-start: user picked Sell / Buy / Rent. Enter AI mode and let the
   // assistant answer the intent question itself, so the chat continues from the
   // next question instead of asking "what would you like to do?" again.
-  const aiStartWithIntent = (intent: 'sell' | 'buy' | 'rent') => {
-    if (aiMode && aiApiRef.current) { aiApiRef.current.startWithIntent(intent); return; }
+  const aiStartWithIntent = useCallback((intent: 'sell' | 'buy' | 'rent') => {
+    if (aiModeRef.current && aiApiRef.current) { aiApiRef.current.startWithIntent(intent); return; }
     pendingAiIntentRef.current = intent;
     setAiMode(true);
-  };
+  }, []);
+
+  // Stable onReady. It used to be an inline arrow, which gave the prop a new
+  // identity on every render of this component — and because the composer's
+  // `text` state lives here, that meant every keystroke re-ran the assistant's
+  // publish effect and re-allocated its whole API object. Mirrors the pattern
+  // already used for onTemplateChange.
+  const handleAiReady = useCallback((api: AiAssistantApi) => {
+    aiApiRef.current = api;
+    setAiReady(true);
+  }, []);
+
+  // Drain deferred actions once the assistant is genuinely mounted and ready.
+  // Previously this lived inside onReady and fired on a blind setTimeout(300),
+  // which raced the assistant's own session open() — and only worked at all
+  // because the unstable onReady kept re-firing the effect.
+  useEffect(() => {
+    if (!aiMode || !aiReady) return;
+    const api = aiApiRef.current;
+    if (!api) return;
+
+    if (pendingAiIntentRef.current) {
+      const intent = pendingAiIntentRef.current;
+      pendingAiIntentRef.current = null;
+      api.startWithIntent(intent);
+      return;
+    }
+    if (pendingAiActionRef.current) {
+      const action = pendingAiActionRef.current;
+      pendingAiActionRef.current = null;
+      if (action === 'post') doPost();
+      else if (action === 'match') doMatching();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aiMode, aiReady]);
 
   const aiEndChat = () => { aiApiRef.current?.endChat(); };
   // Exit Chat: reset the conversation (so re-entering starts fresh at step 1),
@@ -917,18 +1011,60 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     const api = aiApiRef.current;
     Promise.resolve(api?.exitChat?.()).finally(() => {
       setAiMode(false);
+      setAiInputType(undefined);
+      setAiReady(false);
       aiApiRef.current = null;
     });
   };
 
-  const handleInterested = async (projectId: string, messageId: string) => {
+  // Return to the default landing view — the same state the section shows when
+  // the app is first opened: group thread visible, Sell/Buy/Rent starters above
+  // the composer, no AI conversation in progress. Used when the user taps the
+  // "AI Leads" section button. Resets the backend flow too, so re-entering starts
+  // at step 1 instead of resuming a half-finished question.
+  const aiResetToLanding = useCallback(() => {
+    const api = aiApiRef.current;
+    setShowPost(false);
+    setShowAiMenu(false);
+    setShowDisappear(false);
+    setText('');
+    pendingAiActionRef.current = null;
+    pendingAiIntentRef.current = null;
+    Promise.resolve(api?.exitChat?.()).finally(() => {
+      setAiMode(false);
+      setAiInputType(undefined);
+      setAiReady(false);
+      aiApiRef.current = null;
+    });
+  }, []);
+
+  // Expose post / matching / reset to the parent hub. All three are
+  // useCallback-stable and read live state through refs, so publishing them is
+  // safe — the previous version captured the first render's `aiMode` (always
+  // false), which is why "My Post" and "Matching" sometimes did nothing.
+  useEffect(() => {
+    onActionsReady?.({ post: aiPost, matching: aiMatching, resetToLanding: aiResetToLanding });
+  }, [onActionsReady, aiPost, aiMatching, aiResetToLanding]);
+
+  const handleInterested = useCallback(async (projectId: string, messageId: string) => {
     try {
       const res = await groupChatApi.showInterest({ projectId, messageId, roomId: activeRoom?.id });
       toast.show(res?.message || 'Builder notified! Deal room created.', 'success');
     } catch (e: any) {
       toast.show(e?.message?.includes('exists') ? 'Deal already exists' : (e?.message || 'Failed'), 'error');
     }
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeRoom?.id, toast]);
+
+  // Stable renderItem so the memoised MessageBubble can actually bail out.
+  // Previously this was an inline arrow with a fresh onInterested on every
+  // render, which defeated memoisation entirely.
+  const renderMessage = useCallback(
+    ({ item: msg }: { item: GroupMessage }) => (
+      <MessageBubble msg={msg} meId={user?.id || ''} onInterested={handleInterested} />
+    ),
+    [user?.id, handleInterested]
+  );
 
   // ── Project media menu ──
   const projectForShare = () => {
@@ -948,9 +1084,10 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
 
   const handleCopyLink = async () => {
     setShowMediaMenu(false);
-    const slug = (activeRoom?.project as any)?.slug;
-    const url = slug ? `https://homeintown.in/visit/${slug}` : 'https://homeintown.in';
-    setShareProject(projectForShare()); // ShareModal has Copy/QR/brochure
+    // ShareModal builds the link itself (Copy / QR / brochure), so nothing to
+    // compute here. Two unused locals (and the only hardcoded domain in this
+    // file) were removed.
+    setShareProject(projectForShare());
   };
 
   const handlePdfOrQr = () => {
@@ -1028,13 +1165,19 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   };
 
   const handleJoin = async (room: GroupRoom) => {
+    if (joiningId) return; // guard against double-taps creating duplicate joins
+    setJoiningId(room.id);
     try {
       const r = await groupChatApi.joinRoom(room.id);
-      setMyRooms(prev => [r, ...prev]);
+      // Move the room from Discover into My Groups, de-duping in case the list
+      // already has it (e.g. a refresh landed mid-join).
+      setMyRooms(prev => [r, ...prev.filter(x => x.id !== r.id)]);
       setDiscoverRooms(prev => prev.filter(x => x.id !== room.id));
       setShowDiscover(false);
+      toast.show(`Joined ${roomDisplayName(r)}`, 'success');
       openRoom(r);
     } catch (e: any) { toast.show(e?.message || 'Failed', 'error'); }
+    finally { setJoiningId(null); }
   };
 
   const handleCreate = async () => {
@@ -1054,28 +1197,89 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
 
   // ═══════════ ROOM LIST ═══════════
   if (!activeRoom) {
+    // The universal ("AI Lead Matching") room is the AI Leads section itself, so
+    // it must NOT appear in the Groups list. Only real, joinable groups here.
+    const listRooms = myRooms.filter(r => !r.isUniversal);
+
+    // Public groups the user hasn't joined. The backend already excludes joined
+    // rooms and the universal room; this second guard keeps the list correct if
+    // a join resolves while a refresh is in flight, so a group can never show up
+    // in both My Groups and Discover.
+    const joinedIds = new Set(myRooms.map(r => r.id));
+    const discoverList = discoverRooms.filter(r => !r.isUniversal && !joinedIds.has(r.id));
+
+    // Rendered below the user's own groups (the globe icon still opens the same
+    // list as a full sheet).
+    const discoverSection = discoverList.length ? (
+      <View style={s.discoverSection}>
+        <View style={s.discoverSectionHeader}>
+          <Globe size={13} color={colors.brand} />
+          <Text style={s.discoverSectionTitle}>Discover Groups</Text>
+          <View style={s.discoverCountPill}>
+            <Text style={s.discoverCountText}>{discoverList.length}</Text>
+          </View>
+        </View>
+
+        {discoverList.map(room => (
+          <View key={room.id} style={s.discoverInlineRow}>
+            <View style={s.roomAvatar}>
+              <Text style={{ fontSize: 17 }}>{ROOM_ICON[room.roomType] || '💬'}</Text>
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={s.roomName} numberOfLines={1}>{roomDisplayName(room)}</Text>
+              <Text style={s.roomMeta} numberOfLines={1}>{roomSubtitle(room)}</Text>
+            </View>
+            <Pressable
+              onPress={() => handleJoin(room)}
+              disabled={joiningId === room.id}
+              style={[s.smallJoin, joiningId === room.id && { opacity: 0.6 }]}
+              accessibilityRole="button"
+              accessibilityLabel={`Join ${roomDisplayName(room)}`}
+            >
+              {joiningId === room.id
+                ? <ActivityIndicator size="small" color={colors.brand} />
+                : <Text style={s.smallJoinText}>Join Group</Text>}
+            </Pressable>
+          </View>
+        ))}
+      </View>
+    ) : null;
+
     return (
       <View style={{ flex: 1 }}>
-        <View style={s.searchRow}>
-          <Search size={15} color={colors.muted} />
-          <TextInput value={search} onChangeText={setSearch} placeholder="Search groups…"
-            placeholderTextColor={colors.muted} style={s.searchInput} onSubmitEditing={loadRooms} />
-        </View>
+        {/* Header: group count + search magnifier + globe + create.
+            Search is YouTube-style — a small icon that expands into an input. */}
         <View style={s.listHeader}>
-          <Text style={s.listTitle}>{myRooms.length} group{myRooms.length !== 1 ? 's' : ''}</Text>
-          <View style={{ flexDirection: 'row', gap: 8 }}>
-            <Pressable onPress={() => setShowDiscover(true)} style={s.iconBtn}><Globe size={15} color={colors.brand} /></Pressable>
-            <Pressable onPress={() => setShowCreate(true)} style={s.iconBtn}><Plus size={15} color={colors.brand} /></Pressable>
-          </View>
+          {searchOpen ? (
+            <View style={s.searchInline}>
+              <Search size={15} color={colors.muted} />
+              <TextInput
+                value={search}
+                onChangeText={setSearch}
+                placeholder="Search groups…"
+                placeholderTextColor={colors.muted}
+                style={s.searchInput}
+                onSubmitEditing={() => loadRooms(search)}
+                autoFocus
+              />
+              <Pressable onPress={() => { setSearch(''); setSearchOpen(false); }} hitSlop={8}>
+                <X size={16} color={colors.muted2} />
+              </Pressable>
+            </View>
+          ) : (
+            <>
+              <Text style={s.listTitle}>{listRooms.length} group{listRooms.length !== 1 ? 's' : ''}</Text>
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <Pressable onPress={() => setSearchOpen(true)} style={s.iconBtn}><Search size={15} color={colors.brand} /></Pressable>
+                <Pressable onPress={() => setShowDiscover(true)} style={s.iconBtn}><Globe size={15} color={colors.brand} /></Pressable>
+                <Pressable onPress={() => setShowCreate(true)} style={s.iconBtn}><Plus size={15} color={colors.brand} /></Pressable>
+              </View>
+            </>
+          )}
         </View>
         {loading ? <ActivityIndicator color={colors.brand} style={{ marginTop: 40 }} /> : (
           <FlatList
-            data={[...myRooms].sort((a, b) => {
-              // Universal (pinned) always first
-              if (a.isUniversal && !b.isUniversal) return -1;
-              if (!a.isUniversal && b.isUniversal) return 1;
-              return 0;
-            })}
+            data={listRooms}
             keyExtractor={r => r.id}
             ListEmptyComponent={
               <View style={s.empty}>
@@ -1096,14 +1300,17 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                     </Text>
                   </View>
                   <Text style={s.roomMeta} numberOfLines={1}>
-                    {room.members.length} member{room.members.length !== 1 ? 's' : ''}
-                    {!room.isUniversal && room.area?.location ? ` · ${room.area.location}` : ''}
+                    {room.isUniversal
+                      ? `${room.members.length} member${room.members.length !== 1 ? 's' : ''}`
+                      : roomSubtitle(room)}
                   </Text>
                 </View>
                 <Text style={s.roomTime}>{timeStr(room.lastActivity)}</Text>
               </Pressable>
             )}
             ItemSeparatorComponent={() => <View style={{ height: 1, backgroundColor: colors.line, marginLeft: 64 }} />}
+            ListFooterComponent={discoverSection}
+            contentContainerStyle={{ paddingBottom: 24 }}
           />
         )}
 
@@ -1115,7 +1322,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
               <Pressable onPress={() => setShowDiscover(false)}><X size={20} color={colors.ink} /></Pressable>
             </View>
             <FlatList
-              data={discoverRooms}
+              data={discoverList}
               keyExtractor={r => r.id}
               contentContainerStyle={{ padding: 16, gap: 10 }}
               ListEmptyComponent={<Text style={{ textAlign: 'center', color: colors.muted, marginTop: 40 }}>No groups to discover</Text>}
@@ -1123,11 +1330,19 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                 <View style={s.discoverRow}>
                   <Text style={{ fontSize: 19 }}>{ROOM_ICON[room.roomType] || '💬'}</Text>
                   <View style={{ flex: 1 }}>
-                    <Text style={s.roomName}>{roomDisplayName(room)}</Text>
-                    <Text style={s.roomMeta}>{room.members.length} members</Text>
+                    <Text style={s.roomName} numberOfLines={1}>{roomDisplayName(room)}</Text>
+                    <Text style={s.roomMeta} numberOfLines={1}>{roomSubtitle(room)}</Text>
                   </View>
-                  <Pressable onPress={() => handleJoin(room)} style={s.smallJoin}>
-                    <Text style={s.smallJoinText}>Join</Text>
+                  <Pressable
+                    onPress={() => handleJoin(room)}
+                    disabled={joiningId === room.id}
+                    style={[s.smallJoin, joiningId === room.id && { opacity: 0.6 }]}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Join ${roomDisplayName(room)}`}
+                  >
+                    {joiningId === room.id
+                      ? <ActivityIndicator size="small" color={colors.brand} />
+                      : <Text style={s.smallJoinText}>Join Group</Text>}
                   </Pressable>
                 </View>
               )}
@@ -1163,7 +1378,9 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const proj = (activeRoom.project as any) || null;
   return (
     <KeyboardAvoidingView style={{ flex: 1, paddingTop: topInset }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      {/* Thread header */}
+      {/* Thread header — hidden entirely in headerless mode (the AI Leads hub
+          provides its own Groups · Chats · My Post · Matching sub-row instead). */}
+      {!headerless && (
       <View style={s.threadHeader}>
         {!hideThreadBack && (
           <Pressable onPress={closeRoom} style={{ padding: 4 }}><ChevronLeft size={22} color={colors.ink} /></Pressable>
@@ -1190,7 +1407,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
         {/* AI actions in the header. Post · Matching are always available in the
             AI Lead Matching section (tapping activates AI mode if needed). The
             3-dot (End/Exit Chat) shows only while AI Assist is active. */}
-        {(hideThreadBack || aiMode) && (
+        {aiAllowed && (hideThreadBack || aiMode) && (
           <View style={s.headerAiRow}>
             <Pressable onPress={aiPost} style={[s.headerAiBtn, { backgroundColor: '#F0FDF4', borderColor: colors.greenBorder }]}>
               <Building2 size={13} color={colors.greenText} />
@@ -1200,7 +1417,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
               <Search size={13} color={colors.brand} />
               <Text style={[s.headerAiBtnText, { color: colors.brand }]}>Matching</Text>
             </Pressable>
-            {aiMode && (
+            {aiActive && (
               <Pressable onPress={() => setShowAiMenu(v => !v)} style={s.headerAiDots}>
                 <MoreVertical size={18} color={colors.ink} />
               </Pressable>
@@ -1209,7 +1426,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
         )}
 
         {/* AI 3-dot dropdown (End Chat / Exit Chat) */}
-        {aiMode && showAiMenu && (
+        {aiActive && showAiMenu && (
           <>
             <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowAiMenu(false)} />
             <View style={s.menu}>
@@ -1267,16 +1484,86 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
           </View>
         )}
       </View>
+      )}
 
-      {/* Project banner */}
+      {/* Headerless mode: the AI action row. My Post · Matching live here — their
+          original placement on the chat itself — rather than in the hub's
+          navigation sub-row, which should only switch panes. The 3-dot
+          (Disappearing / End / Exit) appears alongside them once AI Assist is
+          active, replacing the former floating button so there is only ever one. */}
+      {headerless && aiAllowed && (
+        <>
+          <View style={s.aiActionBar}>
+            <Pressable onPress={aiPost} style={[s.headerAiBtn, { backgroundColor: '#F0FDF4', borderColor: colors.greenBorder }]}>
+              <Building2 size={13} color={colors.greenText} />
+              <Text style={[s.headerAiBtnText, { color: colors.greenText }]}>My Post</Text>
+            </Pressable>
+            <Pressable onPress={aiMatching} style={[s.headerAiBtn, { backgroundColor: colors.brandTint, borderColor: `${colors.brand}55` }]}>
+              <Search size={13} color={colors.brand} />
+              <Text style={[s.headerAiBtnText, { color: colors.brand }]}>Matching</Text>
+            </Pressable>
+            {aiActive && (
+              <Pressable onPress={() => setShowAiMenu(v => !v)} style={s.headerAiDots}>
+                <MoreVertical size={18} color={colors.ink} />
+              </Pressable>
+            )}
+          </View>
+          {aiActive && showAiMenu && (
+            <>
+              <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowAiMenu(false)} />
+              <View style={s.menu}>
+                <Pressable style={s.menuItem} onPress={() => { setShowAiMenu(false); setShowDisappear(true); }}>
+                  <Clock size={15} color={colors.muted2} />
+                  <Text style={s.menuText}>Disappearing messages</Text>
+                  <Text style={{ fontSize: 10, fontWeight: '700', color: colors.brand }}>{disappearLabel(disappearMs)}</Text>
+                </Pressable>
+                <Pressable style={s.menuItem} onPress={() => { setShowAiMenu(false); aiEndChat(); }}>
+                  <X size={15} color={colors.muted2} /><Text style={s.menuText}>End Chat</Text>
+                </Pressable>
+                <Pressable style={s.menuItem} onPress={() => { setShowAiMenu(false); aiExitChat(); }}>
+                  <LogOut size={15} color={colors.muted2} /><Text style={s.menuText}>Exit Chat</Text>
+                </Pressable>
+              </View>
+            </>
+          )}
+        </>
+      )}
+
+      {/* Property banner — the group's linked project, straight from the DB.
+          Shows the cover image plus every detail that exists on the project, so
+          the group always reflects the latest property data. */}
       {proj && (
         <Pressable onPress={() => setShowMediaMenu(v => !v)} style={s.banner}>
-          <View style={s.bannerIcon}><Building2 size={16} color={colors.blueText} /></View>
+          {proj.media?.coverImage?.url ? (
+            <Image source={{ uri: proj.media.coverImage.url }} style={s.bannerThumb} />
+          ) : (
+            <View style={s.bannerIcon}><Building2 size={16} color={colors.blueText} /></View>
+          )}
           <View style={{ flex: 1 }}>
             <Text style={s.bannerName} numberOfLines={1}>{proj.projectName || activeRoom.name}</Text>
+
+            {!![proj.location, proj.city].filter(Boolean).length && (
+              <Text style={s.bannerMeta} numberOfLines={1}>
+                📍 {[proj.location, proj.city].filter(Boolean).join(', ')}
+              </Text>
+            )}
+
             <Text style={s.bannerMeta} numberOfLines={1}>
-              {proj.pricing?.startingPrice ? `💰 ${fmtPrice(proj.pricing.startingPrice)}+  ` : ''}
-              {proj.configuration?.bhkOptions?.length ? `🏠 ${proj.configuration.bhkOptions.join(', ')}` : ''}
+              {[
+                proj.pricing?.startingPrice ? `💰 ${fmtPrice(proj.pricing.startingPrice)}+` : '',
+                proj.configuration?.bhkOptions?.length ? `🏠 ${proj.configuration.bhkOptions.join('/')}` : '',
+                proj.configuration?.carpetAreaRange || proj.configuration?.plotSizeRange
+                  ? `📐 ${proj.configuration.carpetAreaRange || proj.configuration.plotSizeRange}` : '',
+              ].filter(Boolean).join('  ')}
+            </Text>
+
+            <Text style={s.bannerMeta} numberOfLines={1}>
+              {[
+                proj.propertyType || proj.category ? `🏷️ ${proj.propertyType || proj.category}` : '',
+                proj.projectStatus ? `🔄 ${proj.projectStatus}` : '',
+                proj.pricing?.bankLoanAvailable ? '🏦 Loan' : '',
+                proj.reraNumber || proj.reraApproved ? '📑 RERA' : '',
+              ].filter(Boolean).join('  ')}
             </Text>
           </View>
           <MoreVertical size={18} color={colors.blueText} />
@@ -1297,16 +1584,14 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
             keyExtractor={m => m.id}
             contentContainerStyle={{ paddingHorizontal: 14, paddingVertical: 14, gap: 10 }}
             onContentSizeChange={() => flatRef.current?.scrollToEnd({ animated: false })}
-            renderItem={({ item: msg }) => (
-              <MessageBubble msg={msg} meId={user?.id || ''} onInterested={handleInterested} />
-            )}
+            renderItem={renderMessage}
           />
 
           {/* ── AI Assist (inline, private) — overlays the message area while
               active. Runs the existing AI Lead Matching assistant via the user's
               own private thread (leadChatApi); other members see nothing. Only a
               shared match becomes public. Uses the SAME group composer below. ── */}
-          {aiMode && (
+          {aiActive && (
             <View style={s.aiOverlay}>
               {/* AI actions moved to the Universal Group header (Post / Matching / 3-dot). */}
               <View style={{ flex: 1 }}>
@@ -1314,25 +1599,9 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                   hideOwnChrome
                   disappearMs={disappearMs}
                   groupContext={{ roomId: activeRoom.id, roomName: roomDisplayName(activeRoom) }}
-                  onReady={(api) => {
-                    aiApiRef.current = api;
-                    // Apply an intent chosen from the quick-start picker.
-                    if (pendingAiIntentRef.current) {
-                      const intent = pendingAiIntentRef.current;
-                      pendingAiIntentRef.current = null;
-                      setTimeout(() => api.startWithIntent(intent), 300);
-                    }
-                    // Run a header action that was tapped before AI mode turned on.
-                    if (pendingAiActionRef.current) {
-                      const action = pendingAiActionRef.current;
-                      pendingAiActionRef.current = null;
-                      setTimeout(() => {
-                        if (action === 'post') doPost();
-                        else if (action === 'match') doMatching();
-                      }, 300);
-                    }
-                  }}
-                  onMatchShared={() => {}}
+                  onTemplateChange={handleAiTemplate}
+                  onReady={handleAiReady}
+                  onMatchShared={noop}
                 />
               </View>
             </View>
@@ -1347,7 +1616,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
           Sits right above the input on the AI Lead Matching landing page, so a
           new user immediately sees what this section does. Tapping one opens the
           assistant with that intent already answered, continuing the flow. ── */}
-      {activeRoom && !aiMode && (hideThreadBack || activeRoom.isUniversal) && (
+      {!aiActive && aiAllowed && (
         <View style={ip.stripWrap}>
           <Text style={ip.stripLabel}>Shuru karein — tap karein</Text>
           <ScrollView
@@ -1371,10 +1640,15 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
       )}
 
       {/* Composer — the SINGLE input box. Routes to the group when in normal
-          mode, and to the AI assistant when AI mode is active. */}
+          mode, and to the AI assistant when AI mode is active.
+          Hidden while the assistant question renders its OWN input (option
+          chips, the amount + unit picker, city/locality search) or is in a
+          locked state. Without this gate the rich control and this composer both
+          showed, giving two stacked input rows. */}
+      {!(aiActive && aiOwnsInput({ inputType: aiInputType })) && (
       <View style={s.composer}>
         {/* Attachment options: Camera / Gallery / Files (group mode only) */}
-        {!aiMode && showAttachMenu && (
+        {!aiActive && showAttachMenu && (
           <View style={s.attachRow}>
             <Pressable onPress={pickFromCamera} disabled={uploading} style={s.attachOpt}>
               <View style={[s.attachIcon, { backgroundColor: '#EFF6FF' }]}><Camera size={17} color="#2563EB" /></View>
@@ -1392,7 +1666,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
         )}
 
         <View style={s.textRow}>
-          {!aiMode ? (
+          {!aiActive ? (
             <Pressable
               onPress={() => setShowAttachMenu(v => !v)}
               disabled={uploading}
@@ -1410,7 +1684,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
           <TextInput
             value={text}
             onChangeText={setText}
-            placeholder={aiMode ? 'Answer the AI…' : 'Type a message…'}
+            placeholder={aiActive ? 'Answer the AI…' : 'Type a message…'}
             placeholderTextColor={colors.muted}
             style={s.textInput}
             multiline
@@ -1421,6 +1695,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
           </Pressable>
         </View>
       </View>
+      )}
 
       {/* Requirement composer sheet */}
       <RequirementSheet
@@ -1826,7 +2101,9 @@ function normalizeMsg(m: any, roomId: string): GroupMessage {
 }
 
 // ── Message bubble ──
-function MessageBubble({ msg, meId, onInterested }: {
+// Memoised: without this, every keystroke in the composer (whose state lives in
+// GroupChatEmbedded) re-rendered every visible bubble in the thread.
+const MessageBubble = React.memo(function MessageBubble({ msg, meId, onInterested }: {
   msg: GroupMessage; meId: string; onInterested: (projectId: string, messageId: string) => void;
 }) {
   const isMe = msg.sender.id === meId;
@@ -1960,7 +2237,7 @@ function MessageBubble({ msg, meId, onInterested }: {
       </View>
     </View>
   );
-}
+});
 
 function Tag({ text, brand }: { text: string; brand?: boolean }) {
   return (
@@ -2000,7 +2277,9 @@ function SelectRow({ label, options, value, onChange }: { label: string; options
 const s = StyleSheet.create({
   searchRow: { flexDirection: 'row', alignItems: 'center', gap: 8, margin: 12, marginBottom: 6, backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 9 },
   searchInput: { flex: 1, fontSize: 13, color: colors.ink },
-  listHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 14, paddingVertical: 8 },
+  // Inline (expanded) search that fills the header row when the magnifier is tapped.
+  searchInline: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 7 },
+  listHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 14, paddingVertical: 8, minHeight: 46 },
   listTitle: { fontSize: 12, fontWeight: '700', color: colors.muted2 },
   iconBtn: { padding: 8, borderRadius: 10, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.white },
   roomRow: { flexDirection: 'row', alignItems: 'center', padding: 12, gap: 12, backgroundColor: colors.white },
@@ -2016,8 +2295,16 @@ const s = StyleSheet.create({
   joinBtn: { paddingHorizontal: 16, paddingVertical: 9, backgroundColor: colors.brand, borderRadius: 12, marginTop: 4 },
   joinBtnText: { color: '#fff', fontWeight: '700', fontSize: 12 },
   discoverRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.white, borderRadius: 14, borderWidth: 1, borderColor: colors.line, padding: 12, gap: 12 },
-  smallJoin: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 10, backgroundColor: colors.brandTint, borderWidth: 1, borderColor: colors.brand },
+  smallJoin: { minWidth: 76, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, backgroundColor: colors.brandTint, borderWidth: 1, borderColor: colors.brand },
   smallJoinText: { fontSize: 11.5, fontWeight: '800', color: colors.brand },
+
+  // Inline "Discover Groups" section, rendered under the user's own groups.
+  discoverSection: { marginTop: 18, paddingTop: 4 },
+  discoverSectionHeader: { flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 14, paddingBottom: 8 },
+  discoverSectionTitle: { fontSize: 12, fontWeight: '800', color: colors.muted2, letterSpacing: 0.3 },
+  discoverCountPill: { backgroundColor: colors.brandTint, paddingHorizontal: 7, paddingVertical: 1, borderRadius: 8 },
+  discoverCountText: { fontSize: 9.5, fontWeight: '800', color: colors.brand },
+  discoverInlineRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 10, gap: 12, backgroundColor: colors.white, borderTopWidth: 1, borderTopColor: colors.line },
   modalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 16, backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.line },
   modalTitle: { fontSize: 16, fontWeight: '800', color: colors.ink },
   fieldLabel: { fontSize: 12, fontWeight: '700', color: colors.ink },
@@ -2034,11 +2321,22 @@ const s = StyleSheet.create({
   headerAiBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 9, paddingVertical: 6, borderRadius: 16, borderWidth: 1 },
   headerAiBtnText: { fontSize: 11, fontWeight: '800' },
   headerAiDots: { padding: 4 },
+  // Standalone AI action row used in headerless mode (the AI Leads hub supplies
+  // its own navigation above). Same button styling as the in-header row, so the
+  // two placements look identical.
+  aiActionBar: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 6,
+    paddingHorizontal: 14, paddingVertical: 8,
+    backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.line,
+    zIndex: 20,
+  },
+
   menu: { position: 'absolute', right: 8, top: 52, backgroundColor: colors.white, borderRadius: 12, borderWidth: 1, borderColor: colors.line, paddingVertical: 4, minWidth: 180, zIndex: 30, shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 8 },
   menuItem: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 11 },
   menuText: { fontSize: 12.5, fontWeight: '600', color: colors.muted2 },
   banner: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: colors.blueBg, borderBottomWidth: 1, borderBottomColor: colors.blueBorder, paddingHorizontal: 14, paddingVertical: 10 },
   bannerIcon: { width: 34, height: 34, borderRadius: 9, backgroundColor: colors.white, alignItems: 'center', justifyContent: 'center' },
+  bannerThumb: { width: 42, height: 42, borderRadius: 9, backgroundColor: colors.white },
   bannerName: { fontSize: 12.5, fontWeight: '800', color: colors.blueText },
   bannerMeta: { fontSize: 10, color: colors.blueText, marginTop: 1 },
 
@@ -2057,17 +2355,6 @@ const s = StyleSheet.create({
   aiMenuText: { fontSize: 12.5, fontWeight: '700', color: colors.ink },
   // AI Assist overlay (covers the message area while AI mode is active)
   aiOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: colors.cream },
-  // Floating AI Assist button over the group chat — compact brand pill, clearly
-  // visible but not oversized; brand orange with a subtle darker rim + shadow.
-  aiFab: {
-    position: 'absolute', right: 14, bottom: 14,
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: colors.blue,
-    paddingHorizontal: 14, paddingVertical: 10, borderRadius: 22,
-    borderWidth: 1, borderColor: colors.blueText,
-    shadowColor: colors.blueText, shadowOpacity: 0.3, shadowRadius: 8, shadowOffset: { width: 0, height: 4 }, elevation: 6,
-  },
-  aiFabText: { color: '#fff', fontSize: 12.5, fontWeight: '800', letterSpacing: 0.2 },
   quickChip: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 18, borderWidth: 1 },
   quickChipText: { fontSize: 11.5, fontWeight: '800' },
   modeRow: { flexDirection: 'row', gap: 6 },
