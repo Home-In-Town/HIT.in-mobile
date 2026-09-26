@@ -3,18 +3,49 @@ import {
   View, Text, TextInput, Pressable, ScrollView, Modal, Linking, ActivityIndicator, StyleSheet,
 } from 'react-native';
 import { Plus, Search, X, ChevronRight, AlertTriangle, Clock, Calendar } from 'lucide-react-native';
-import { projectsApi, ProjectLite, ProjectAsset, humanLeadsApi, HumanLead, LeadPerson } from '../../lib/api';
+import {
+  projectsApi, ProjectLite, ProjectAsset, humanLeadsApi,
+  HumanLead, LeadPerson, LeadStage, QUALIFIED_STAGE, LeadRequirementsInput,
+} from '../../lib/api';
 import { useToast } from '../Toast';
 import { useAuth } from '../../lib/authContext';
 import LeadDetailView from './LeadDetailView';
 import { colors } from '../../theme';
 
-export const PIPELINE_STAGES = [
+export const PIPELINE_STAGES: LeadStage[] = [
   'New Lead', 'Contacted', 'Qualified', 'Site Visit Scheduled',
   'Site Visit Done', 'Negotiation', 'Booking', 'Won', 'Lost',
 ];
 
 export type LeadType = 'inbound' | 'outbound';
+
+// ── Matching requirement options ──
+// These drive the structured fields the property matching engine reads. The
+// possession values are the exact keys the engine understands, so nothing has
+// to be translated between the form and the matcher.
+const TRANSACTION_TYPES: { v: 'buy' | 'rent'; l: string }[] = [
+  { v: 'buy', l: 'Buy' },
+  { v: 'rent', l: 'Rent' },
+];
+
+const POSSESSION_OPTIONS: { v: NonNullable<LeadRequirementsInput['possessionNeeded']>; l: string }[] = [
+  { v: 'ready', l: 'Ready to move' },
+  { v: 'immediate', l: 'Immediate' },
+  { v: '6months', l: '6 months' },
+  { v: '1year', l: '1 year' },
+  { v: '2year', l: '2+ years' },
+  { v: 'under_construction', l: 'Under construction' },
+];
+
+const AREA_UNITS: { v: 'sqft' | 'acres'; l: string }[] = [
+  { v: 'sqft', l: 'sq.ft' },
+  { v: 'acres', l: 'acres' },
+];
+
+// Home types that describe land rather than a built-up home. For these the
+// engine skips BHK scoring and uses AREA as the discriminator instead, so area
+// becomes the field that matters.
+const LAND_HOME_TYPES = ['Plot'];
 
 // Leads are real, team-scoped records from the backend (with ownership info)
 export type DemoLead = HumanLead;
@@ -68,8 +99,21 @@ export default function HumanLeadManager() {
   const [newLead, setNewLead] = useState({
     name: '', phone: '', altPhone: '', email: '', budget: '',
     homeType: '', buyingType: '', location: '', project: '',
-    source: 'Meta Ad', customSource: '', stage: 'New Lead',
+    source: 'Meta Ad', customSource: '', stage: 'New Lead' as LeadStage,
     leadType: 'inbound' as LeadType,
+
+    // ── Structured matching fields ──
+    // Budget is entered in LAKHS for a purchase and rupees/month for a rental;
+    // they are different quantities so they get different inputs.
+    transactionType: 'buy' as 'buy' | 'rent',
+    budgetMin: '',
+    budgetMax: '',
+    rentMonthly: '',
+    city: '',
+    area: '',
+    areaUnit: 'sqft' as 'sqft' | 'acres',
+    possessionNeeded: '' as '' | NonNullable<LeadRequirementsInput['possessionNeeded']>,
+    loanRequired: false,
   });
   const [projectsList, setProjectsList] = useState<ProjectLite[]>([]);
   const [teamAgents, setTeamAgents] = useState<{ id: string; name: string; role: string }[]>([]);
@@ -114,7 +158,7 @@ export default function HumanLeadManager() {
   const handleScheduleVisit = async () => {
     if (!schedulingLead || !visitDate || !visitTime) return;
     try {
-      const updated = await humanLeadsApi.update(schedulingLead.id, { siteVisitDate: visitDate, siteVisitTime: visitTime });
+      const { lead: updated } = await humanLeadsApi.update(schedulingLead.id, { siteVisitDate: visitDate, siteVisitTime: visitTime });
       setLeads((prev) => prev.map((l) => (l.id === updated.id ? updated : l)));
       toast.success('Site visit scheduled');
     } catch {
@@ -122,6 +166,75 @@ export default function HumanLeadManager() {
     }
     setSchedulingLead(null); setVisitDate(''); setVisitTime('');
   };
+
+  /**
+   * Build the structured requirements payload from the form.
+   *
+   * Derives bhkType/propertyType from the Home Type pill the agent already
+   * picked, so the same information is never asked for twice. Units are sent as
+   * entered and normalised server-side (budget → lakhs, area → sqft).
+   */
+  const buildRequirements = (): LeadRequirementsInput => {
+    const isRent = newLead.transactionType === 'rent';
+    const isLand = LAND_HOME_TYPES.includes(newLead.homeType);
+
+    const bhkMatch = newLead.homeType.match(/(\d+)\s*BHK/i);
+
+    const reqs: LeadRequirementsInput = {
+      transactionType: newLead.transactionType,
+      // Let the server's mapper canonicalise the label (e.g. "Row House" →
+      // row_house, "Shop" → retail) rather than duplicating that table here.
+      propertyType: newLead.homeType || null,
+      bhkType: bhkMatch ? `${bhkMatch[1]}BHK` : null,
+      locationRaw: newLead.location.trim() || null,
+      city: newLead.city.trim() || null,
+      loanRequired: newLead.loanRequired,
+      possessionNeeded: newLead.possessionNeeded || null,
+    };
+
+    if (isRent) {
+      reqs.rentBudgetMonthly = newLead.rentMonthly.trim() || null;
+    } else {
+      reqs.budget = newLead.budgetMin.trim() || null;
+      reqs.budgetMax = newLead.budgetMax.trim() || null;
+    }
+
+    if (newLead.area.trim()) {
+      reqs.area = newLead.area.trim();
+      reqs.areaUnit = newLead.areaUnit;
+    }
+
+    // Land leads are scored on area, not BHK.
+    if (isLand) reqs.bhkType = null;
+
+    return reqs;
+  };
+
+  /**
+   * Render the structured budget back into the legacy free-text `budget` field.
+   * That field is no longer typed by hand (it was replaced by the numeric
+   * inputs), but it is still part of the lead record and is what the server
+   * falls back to for older leads — so it must stay truthful rather than empty.
+   */
+  const legacyBudgetText = (): string => {
+    if (newLead.transactionType === 'rent') {
+      return newLead.rentMonthly.trim() ? `₹${newLead.rentMonthly.trim()}/mo` : '';
+    }
+    const min = newLead.budgetMin.trim();
+    const max = newLead.budgetMax.trim();
+    if (min && max) return `${min}L - ${max}L`;
+    if (min) return `${min}L`;
+    return '';
+  };
+
+  const resetNewLead = () => setNewLead({
+    name: '', phone: '', altPhone: '', email: '', budget: '',
+    homeType: '', buyingType: '', location: '', project: '',
+    source: 'Meta Ad', customSource: '', stage: 'New Lead',
+    leadType: 'inbound',
+    transactionType: 'buy', budgetMin: '', budgetMax: '', rentMonthly: '',
+    city: '', area: '', areaUnit: 'sqft', possessionNeeded: '', loanRequired: false,
+  });
 
   const handleAddLead = async () => {
     if (!newLead.name || !newLead.phone || saving) return;
@@ -132,21 +245,31 @@ export default function HumanLeadManager() {
         phone: newLead.phone,
         altPhone: newLead.altPhone,
         email: newLead.email,
-        budget: newLead.budget,
+        budget: legacyBudgetText(),
         homeType: newLead.homeType,
         buyingType: newLead.buyingType,
-        location: newLead.location,
+        // Keep the legacy combined form ("Locality, City") so existing views
+        // and search behave exactly as before.
+        location: [newLead.location.trim(), newLead.city.trim()].filter(Boolean).join(', '),
         projectName: newLead.project,
         source: newLead.source === 'Other' ? newLead.customSource || 'Other' : newLead.source,
         leadType: newLead.leadType,
         stage: newLead.stage,
+        requirements: buildRequirements(),
       });
       setLeads((prev) => [created, ...prev]);
-      setNewLead({ name: '', phone: '', altPhone: '', email: '', budget: '', homeType: '', buyingType: '', location: '', project: '', source: 'Meta Ad', customSource: '', stage: 'New Lead', leadType: 'inbound' });
+      resetNewLead();
       setShowAddLead(false);
       toast.success('Lead added');
-    } catch {
-      toast.error('Could not add lead');
+    } catch (e: any) {
+      // Creating directly as "Qualified" is rejected when the requirements are
+      // incomplete — surface exactly what is missing instead of a generic error.
+      const missing = e?.data?.missing || e?.missing;
+      if (Array.isArray(missing) && missing.length) {
+        toast.error(`Add ${missing.join(', ')} to qualify this lead`);
+      } else {
+        toast.error(e?.message || 'Could not add lead');
+      }
     } finally {
       setSaving(false);
     }
@@ -173,20 +296,67 @@ export default function HumanLeadManager() {
 
   // ── Lead detail view ──
   if (selectedLead) {
-    const handleStageChange = async (newStage: string) => {
-      setLeads((prev) => prev.map((l) => (l.id === selectedLead.id ? { ...l, stage: newStage } : l)));
-      setSelectedLead({ ...selectedLead, stage: newStage });
+    /**
+     * Move the open lead to a new stage.
+     *
+     * Owns ALL user feedback for the operation. Previously the detail view
+     * toasted "Moved to X" the instant the pill was tapped — before the request
+     * had even been sent — and a failure here reverted the UI silently, so the
+     * app could claim success and then quietly undo it.
+     *
+     * Moving to Qualified also runs real property matching server-side, so the
+     * outcome of that is reported too.
+     */
+    const handleStageChange = async (newStage: LeadStage) => {
+      const previous = selectedLead;
+
+      // Optimistic, so the pills feel instant.
+      setLeads((prev) => prev.map((l) => (l.id === previous.id ? { ...l, stage: newStage } : l)));
+      setSelectedLead({ ...previous, stage: newStage });
+
       try {
-        const updated = await humanLeadsApi.updateStage(selectedLead.id, newStage);
+        const { lead: updated, matching } = await humanLeadsApi.updateStage(previous.id, newStage);
         setLeads((prev) => prev.map((l) => (l.id === updated.id ? updated : l)));
         setSelectedLead(updated);
-      } catch {
+
+        if (newStage === QUALIFIED_STAGE && matching) {
+          if (matching.skippedReason === 'rent_not_supported') {
+            toast.show('Lead qualified. Rent matching is not available yet.', 'info');
+          } else if (matching.matches.length > 0) {
+            toast.success(
+              `Qualified — ${matching.matches.length} matching ${matching.matches.length === 1 ? 'property' : 'properties'} found`,
+            );
+          } else {
+            toast.show('Qualified. No matching property right now — we will match it when new inventory is added.', 'info');
+          }
+        } else {
+          toast.success(`Moved to ${newStage}`);
+        }
+      } catch (e: any) {
+        // Roll the optimistic change back to exactly what it was.
+        setLeads((prev) => prev.map((l) => (l.id === previous.id ? previous : l)));
+        setSelectedLead(previous);
+
+        const missing: string[] | undefined = e?.data?.missing;
+        if (e?.code === 'INCOMPLETE_REQUIREMENTS' && Array.isArray(missing) && missing.length) {
+          toast.error(`Cannot qualify yet — add: ${missing.join(', ')}`);
+        } else {
+          toast.error(e?.message || 'Could not update stage');
+        }
+        // Re-sync from the server in case the failure left us out of step.
         loadLeads();
       }
     };
+
     return (
       <View style={s.outerCard}>
-        <LeadDetailView lead={selectedLead} onBack={() => setSelectedLead(null)} stages={PIPELINE_STAGES} onStageChange={handleStageChange} projectAssets={assetsForLead(selectedLead)} />
+        <LeadDetailView
+          lead={selectedLead}
+          onBack={() => setSelectedLead(null)}
+          stages={PIPELINE_STAGES}
+          onStageChange={handleStageChange}
+          projectAssets={assetsForLead(selectedLead)}
+        />
       </View>
     );
   }
@@ -417,12 +587,104 @@ export default function HumanLeadManager() {
                 <View style={{ flex: 1 }}><LabeledInput label="Alt. Number" placeholder="+91 XXXXX" value={newLead.altPhone} onChange={(v) => setNewLead((p) => ({ ...p, altPhone: v }))} keyboardType="phone-pad" /></View>
               </View>
               <LabeledInput label="Email" placeholder="client@email.com" value={newLead.email} onChange={(v) => setNewLead((p) => ({ ...p, email: v }))} keyboardType="email-address" />
-              <LabeledInput label="Budget" placeholder="e.g. 50L - 80L" value={newLead.budget} onChange={(v) => setNewLead((p) => ({ ...p, budget: v }))} />
 
               <PillGroup label="Home Type" options={HOME_TYPES} selected={newLead.homeType} onSelect={(v) => setNewLead((p) => ({ ...p, homeType: v }))} />
               <PillGroup label="Buying Type" options={BUYING_TYPES} selected={newLead.buyingType} onSelect={(v) => setNewLead((p) => ({ ...p, buyingType: v }))} />
 
-              <LabeledInput label="Location" placeholder="Area / City" value={newLead.location} onChange={(v) => setNewLead((p) => ({ ...p, location: v }))} />
+              {/* ── Requirement details used for property matching ──
+                  These are what the matching engine actually reads. City and
+                  budget are required before a lead can be qualified. */}
+              <View style={s.matchBlock}>
+                <Text style={s.matchBlockTitle}>Requirement details</Text>
+                <Text style={s.matchBlockHint}>Used to match real properties once the lead is qualified.</Text>
+
+                <OptionPills
+                  label="Looking to"
+                  options={TRANSACTION_TYPES}
+                  selected={newLead.transactionType}
+                  onSelect={(v) => v && setNewLead((p) => ({ ...p, transactionType: v }))}
+                />
+
+                {newLead.transactionType === 'rent' ? (
+                  <LabeledInput
+                    label="Monthly Rent (₹)"
+                    placeholder="e.g. 25000"
+                    value={newLead.rentMonthly}
+                    onChange={(v) => setNewLead((p) => ({ ...p, rentMonthly: v }))}
+                    keyboardType="numeric"
+                  />
+                ) : (
+                  <View style={{ flexDirection: 'row', gap: 12 }}>
+                    <View style={{ flex: 1 }}>
+                      <LabeledInput
+                        label="Budget from (₹ Lakhs) *"
+                        placeholder="e.g. 50"
+                        value={newLead.budgetMin}
+                        onChange={(v) => setNewLead((p) => ({ ...p, budgetMin: v }))}
+                        keyboardType="numeric"
+                      />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <LabeledInput
+                        label="Budget to (₹ Lakhs)"
+                        placeholder="e.g. 65"
+                        value={newLead.budgetMax}
+                        onChange={(v) => setNewLead((p) => ({ ...p, budgetMax: v }))}
+                        keyboardType="numeric"
+                      />
+                    </View>
+                  </View>
+                )}
+
+                <View style={{ flexDirection: 'row', gap: 12 }}>
+                  <View style={{ flex: 1 }}>
+                    <LabeledInput label="Locality / Area" placeholder="e.g. Besa" value={newLead.location} onChange={(v) => setNewLead((p) => ({ ...p, location: v }))} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <LabeledInput label="City *" placeholder="e.g. Nagpur" value={newLead.city} onChange={(v) => setNewLead((p) => ({ ...p, city: v }))} />
+                  </View>
+                </View>
+
+                {/* Area matters most for plots and land, where the engine scores
+                    size instead of BHK — a land lead cannot be qualified without it. */}
+                <View style={{ flexDirection: 'row', gap: 12, alignItems: 'flex-end' }}>
+                  <View style={{ flex: 1 }}>
+                    <LabeledInput
+                      label={LAND_HOME_TYPES.includes(newLead.homeType) ? 'Area *' : 'Area'}
+                      placeholder="e.g. 1100"
+                      value={newLead.area}
+                      onChange={(v) => setNewLead((p) => ({ ...p, area: v }))}
+                      keyboardType="numeric"
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <OptionPills
+                      label="Unit"
+                      options={AREA_UNITS}
+                      selected={newLead.areaUnit}
+                      onSelect={(v) => v && setNewLead((p) => ({ ...p, areaUnit: v }))}
+                    />
+                  </View>
+                </View>
+
+                <OptionPills
+                  label="Possession"
+                  options={POSSESSION_OPTIONS}
+                  selected={newLead.possessionNeeded}
+                  onSelect={(v) => setNewLead((p) => ({ ...p, possessionNeeded: v }))}
+                  allowClear
+                />
+
+                <Pressable
+                  onPress={() => setNewLead((p) => ({ ...p, loanRequired: !p.loanRequired }))}
+                  style={s.checkRow}
+                >
+                  <View style={[s.checkBox, newLead.loanRequired && s.checkBoxOn]}>
+                    {newLead.loanRequired && <Text style={s.checkMark}>✓</Text>}
+                  </View>
+                  <Text style={s.checkLabel}>Home loan required</Text>
+                </Pressable>
+              </View>
 
               {/* Project Interest — from uploaded projects */}
               <View>
@@ -506,7 +768,14 @@ function LabeledInput({ label, placeholder, value, onChange, keyboardType }: { l
   );
 }
 
-function PillGroup({ label, options, selected, onSelect }: { label: string; options: string[]; selected: string; onSelect: (v: string) => void }) {
+// Generic over the option type so a group of typed values (e.g. LeadStage)
+// hands a correctly typed value back instead of a bare string.
+function PillGroup<T extends string>({ label, options, selected, onSelect }: {
+  label: string;
+  options: readonly T[];
+  selected: string;
+  onSelect: (v: T) => void;
+}) {
   return (
     <View>
       <Text style={s.fieldLabel}>{label}</Text>
@@ -516,6 +785,38 @@ function PillGroup({ label, options, selected, onSelect }: { label: string; opti
           return (
             <Pressable key={opt} onPress={() => onSelect(opt)} style={[s.pill, active ? s.pillActive : s.pillInactive]}>
               <Text style={[s.pillText, { color: active ? '#fff' : colors.muted2 }]}>{opt}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+/**
+ * A pill group over { value, label } options — used where the stored value is a
+ * machine key ('6months') but the agent should see a readable label ('6 months').
+ */
+function OptionPills<T extends string>({ label, options, selected, onSelect, allowClear = false }: {
+  label: string;
+  options: { v: T; l: string }[];
+  selected: string;
+  onSelect: (v: T | '') => void;
+  allowClear?: boolean;
+}) {
+  return (
+    <View>
+      <Text style={s.fieldLabel}>{label}</Text>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+        {options.map((opt) => {
+          const active = selected === opt.v;
+          return (
+            <Pressable
+              key={opt.v}
+              onPress={() => onSelect(active && allowClear ? '' : opt.v)}
+              style={[s.pill, active ? s.pillActive : s.pillInactive]}
+            >
+              <Text style={[s.pillText, { color: active ? '#fff' : colors.muted2 }]}>{opt.l}</Text>
             </Pressable>
           );
         })}
@@ -570,6 +871,28 @@ const s = StyleSheet.create({
   chipAvatar: { width: 36, height: 36, borderRadius: 999, backgroundColor: colors.brandTint, alignItems: 'center', justifyContent: 'center' },
   fieldLabel: { fontSize: 11, fontWeight: 'bold', color: colors.muted2, marginBottom: 4 },
   textInput: { borderWidth: 1, borderColor: colors.line, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, fontSize: 13, color: colors.ink },
+
+  // Requirement details block inside the Add Lead sheet
+  matchBlock: {
+    backgroundColor: colors.cream,
+    borderWidth: 1,
+    borderColor: colors.line,
+    borderRadius: 12,
+    padding: 12,
+    gap: 12,
+  },
+  matchBlockTitle: { fontSize: 12, fontWeight: 'bold', color: colors.ink },
+  matchBlockHint: { fontSize: 10, color: colors.muted, marginTop: -8 },
+  checkRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  checkBox: {
+    width: 20, height: 20, borderRadius: 5,
+    borderWidth: 1, borderColor: colors.line,
+    backgroundColor: '#fff',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  checkBoxOn: { backgroundColor: colors.brand, borderColor: colors.brand },
+  checkMark: { color: '#fff', fontSize: 12, fontWeight: 'bold' },
+  checkLabel: { fontSize: 12, fontWeight: '600', color: colors.muted2 },
   cancelBtn: { flex: 1, paddingVertical: 10, borderRadius: 12, borderWidth: 1, borderColor: colors.line, alignItems: 'center' },
   cancelBtnText: { fontSize: 13, fontWeight: 'bold', color: colors.muted2 },
   confirmBtn: { flex: 1, paddingVertical: 10, borderRadius: 12, backgroundColor: colors.brand, alignItems: 'center' },

@@ -578,7 +578,10 @@ export default function AiAssistant({
       messageType: 'inventory_card',
       inventoryCard: {
         aiMatch: true,
-        projectId: m.projectId,
+        // Store the real Project ObjectId in the schema-backed `project` field.
+        // The previous `projectId` key was not in GroupMessage.inventoryCard, so
+        // Mongoose discarded it and every card action received an empty id.
+        project: m.projectId,
         projectName: m.projectName,
         area: m.location || '',
         city: m.city || '',

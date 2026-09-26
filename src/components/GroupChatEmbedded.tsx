@@ -16,19 +16,20 @@ import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
+import * as Clipboard from 'expo-clipboard';
 import { Image, Linking } from 'react-native';
+import QRCode from 'react-native-qrcode-svg';
 import {
   Users, Plus, Globe, ChevronLeft, Send, X, MoreVertical, Building2,
   Link as LinkIcon, FileText, QrCode, Image as ImageIcon, LogOut, Trash2,
   Search, MapPin, Check, Camera, Paperclip, Sparkles, ChevronDown, ChevronUp, Clock,
 } from 'lucide-react-native';
-import { groupChatApi, shareApi, mediaApi, leadMatchingApi, projectsApiExtended, GroupRoom, GroupMessage } from '../lib/api';
+import { groupChatApi, shareApi, mediaApi, leadMatchingApi, projectsApiExtended, GroupRoom, GroupMessage, InventoryCard } from '../lib/api';
 import AiAssistant, { AiAssistantApi, AiPostDraft, aiOwnsInput } from './AiAssistant';
 import { postedListStorage, disappearStorage } from '../lib/storage';
 import { useAuth } from '../lib/authContext';
 import { useSocket } from '../hooks/useSocket';
 import { useToast } from './Toast';
-import { ShareModal } from './ShareActions';
 import { colors } from '../theme';
 
 const ROOM_ICON: Record<string, string> = { project: '🏗', area: '📍', universal: '🌐' };
@@ -42,6 +43,13 @@ function timeStr(iso: string) {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h`;
   return `${Math.floor(h / 24)}d`;
+}
+
+function messageClock(iso: string): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
 }
 
 function fmtPrice(v: number): string {
@@ -121,29 +129,40 @@ function leadToDisplay(lead: any) {
     if (value === null || value === undefined || value === '' ) return;
     fields.push({ label, value: String(value) });
   };
+  push('Listing For', lead?.direction === 'rent' || p.transactionType === 'rent' ? 'Rent' : 'Sale');
   push('Property Type', type);
   push('BHK', bhk);
   push('Area', areaTxt);
   push('Location', p.location || p.locationRaw);
   push('City', p.city);
+  push('Full Address', p.formattedAddress);
+  push('State', p.state);
+  push('Postal Code', p.postalCode);
   push('Category', p.category);
   push('Construction Status', p.projectStatus);
-  push('Expected Price', p.expectedPrice ? fmtLakhs(p.expectedPrice) : (p.budget ? fmtLakhs(p.budget) : ''));
+  const minPrice = p.expectedPrice ?? p.budget;
+  const maxPrice = p.budgetMax;
+  push('Expected Price', minPrice ? `${fmtLakhs(minPrice)}${maxPrice ? ` - ${fmtLakhs(maxPrice)}` : ''}` : '');
+  push('Possession Needed', p.possessionNeeded);
+  push('Loan Required', p.loanRequired === true ? 'Yes' : p.loanRequired === false ? 'No' : '');
   push('RERA Approved', p.reraApproved === true ? 'Yes' : p.reraApproved === false ? 'No' : '');
   push('RERA Number', p.reraNumber);
-  push('Bank Loan', p.bankLoanAvailable === true ? 'Yes' : p.bankLoanAvailable === false ? 'No' : '');
+  push('Bank Loan Available', p.bankLoanAvailable === true ? 'Yes' : p.bankLoanAvailable === false ? 'No' : '');
   push('Amenities', Array.isArray(p.amenities) && p.amenities.length ? p.amenities.join(', ') : '');
   push('Urgency', p.urgency);
+  if (p.latitude && p.longitude) push('Coordinates', `${p.latitude}, ${p.longitude}`);
 
   return {
     id: String(lead?._id || lead?.id || ''),
+    leadId: String(lead?._id || lead?.id || ''),
     title: [bhk, type].filter(Boolean).join(' ') || 'Property',
     subtitle: [p.location || p.locationRaw, p.city].filter(Boolean).join(', '),
     price: fmtLakhs(p.expectedPrice ?? p.budget),
-    tags: [bhk, areaTxt, type].filter(Boolean),
+    tags: [lead?.direction === 'rent' ? 'Rent' : 'Sale', bhk, areaTxt, type].filter(Boolean),
     fields,
     direction: lead?.direction || 'sell',
     createdAt: lead?.createdAt,
+    source: 'lead',
   };
 }
 
@@ -174,30 +193,72 @@ function fmtMoney(v: number): string {
 }
 
 // A backend project → the common display shape used by PostCard / View Property.
+// Every non-empty field comes from the real Project document. Raw AI prompts and
+// questionnaire text are never included.
 function projectToDisplay(p: any) {
+  const mediaUrl = (m: any): string => typeof m === 'string' ? m : (m?.url || '');
+  const fields: { label: string; value: string }[] = [];
+  const push = (label: string, value: any) => {
+    if (value === null || value === undefined || value === '') return;
+    fields.push({ label, value: String(value) });
+  };
+
+  push('Listing Status', p.isPublished ? 'Published' : 'Draft');
+  push('Property Type', p.propertyType || p.type);
+  push('Category', p.category);
+  push('BHK / Configuration', p.bhkOptions?.length ? p.bhkOptions.join(', ') : '');
+  push('Carpet Area', p.carpetAreaRange);
+  push('Plot Size', p.plotSizeRange);
+  push('Floor Range', p.floorRange);
+  push('Facing', p.facingOptions?.length ? p.facingOptions.join(', ') : '');
+  push('Location', p.location);
+  push('City', p.city);
+  push('Starting Price', fmtMoney(p.startingPrice));
+  push('Price per sq.ft', p.pricePerSqFt ? `₹${Number(p.pricePerSqFt).toLocaleString('en-IN')}` : '');
+  push('Total Price Range', p.totalPriceRange);
+  push('Payment Plan', p.paymentPlan);
+  push('Bank Loan', p.bankLoanAvailable ? 'Available' : 'Not available');
+  push('GST', p.gstPercentage != null ? `${p.gstPercentage}%` : '');
+  push('Stamp Duty', p.stampDutyPercentage != null ? `${p.stampDutyPercentage}%` : '');
+  push('Registration Charges', p.registrationCharges ? `₹${Number(p.registrationCharges).toLocaleString('en-IN')}` : '');
+  push('Maintenance Charges', p.maintenanceCharges);
+  push('Other Charges', p.otherCharges);
+  push('Construction Status', p.projectStatus);
+  push('RERA Approved', p.reraApproved ? 'Yes' : 'No');
+  push('RERA Number', p.reraNumber);
+  push('Gated Community', p.gatedCommunity ? 'Yes' : 'No');
+  push('Amenities', p.amenities?.length ? p.amenities.join(', ') : '');
+  push('Landmarks', p.landmarks?.length ? p.landmarks.map((l: any) => l.name || l.address).filter(Boolean).join(', ') : '');
+  push('Google Map', p.googleMapLink);
+  if (p.latitude && p.longitude) push('Coordinates', `${p.latitude}, ${p.longitude}`);
+  push('Call Number', p.cta?.callNumber);
+  push('WhatsApp Number', p.cta?.whatsappNumber);
+  push('Contact Button', p.cta?.buttonText);
+  push('Owner', p.owner?.companyName || p.owner?.name);
+  push('Gallery Photos', p.galleryImages?.length || '');
+  push('Videos', p.videos?.length || '');
+  push('Brochure PDF', mediaUrl(p.brochureUrl));
+  push('Created', p.createdAt ? new Date(p.createdAt).toLocaleDateString('en-IN') : '');
+
   return {
-    id: p.id,
-    projectId: p.id,
+    id: String(p.id || ''),
+    projectId: String(p.id || ''),
     title: p.name || 'Property',
     subtitle: [p.location, p.city].filter(Boolean).join(', '),
     price: fmtMoney(p.startingPrice),
+    image: mediaUrl(p.coverImage),
+    galleryImages: (p.galleryImages || []).map(mediaUrl).filter(Boolean),
+    videos: (p.videos || []).map(mediaUrl).filter(Boolean),
+    brochureUrl: mediaUrl(p.brochureUrl),
+    layoutImage: mediaUrl(p.layoutImage),
     tags: [
-      ...(Array.isArray(p.bhkOptions) ? [p.bhkOptions.join(', ')] : []),
-      p.carpetAreaRange || '',
-      p.propertyType || p.category || '',
+      ...(Array.isArray(p.bhkOptions) && p.bhkOptions.length ? [p.bhkOptions.join(', ')] : []),
+      p.carpetAreaRange || p.plotSizeRange || '',
+      p.propertyType || p.category || p.type || '',
     ].filter(Boolean),
-    fields: [
-      { label: 'Property Type', value: p.propertyType || p.category || '—' },
-      ...(p.bhkOptions?.length ? [{ label: 'BHK', value: p.bhkOptions.join(', ') }] : []),
-      { label: 'Location', value: p.location || '—' },
-      { label: 'City', value: p.city || '—' },
-      { label: 'Price', value: fmtMoney(p.startingPrice) || '—' },
-      ...(p.carpetAreaRange ? [{ label: 'Area', value: p.carpetAreaRange }] : []),
-      { label: 'Status', value: p.projectStatus || '—' },
-      { label: 'RERA', value: p.reraApproved ? 'Yes' : 'No' },
-      { label: 'Bank Loan', value: p.bankLoanAvailable ? 'Yes' : 'No' },
-      ...(p.amenities?.length ? [{ label: 'Amenities', value: p.amenities.join(', ') }] : []),
-    ],
+    fields,
+    direction: 'sell',
+    source: 'project',
     posted: true,
     postedAt: p.createdAt ? new Date(p.createdAt).getTime() : 0,
   };
@@ -264,11 +325,15 @@ function buildProjectFromDraft(draft: AiPostDraft): { payload: any; card: any } 
   };
 
   const card = {
+    projectName,
+    propertyType: propType,
+    carpetAreaRange: get(/area/i) || '',
     bhkOptions: bhk ? [bhk] : [],
     priceRange: { min: Math.round(priceRupees / 100000), max: 0 }, // card shows lakhs
     area: location,
     city,
     possessionStatus: /ready/i.test(statusRaw) ? 'ready' : (statusRaw || 'ready'),
+    urgency: 'normal' as const,
     bankLoanAvailable: loan,
     commissionPercent: 0,
     description: draft.fields.map(f => `${f.label}: ${f.value}`).join(' • '),
@@ -284,7 +349,7 @@ function buildProjectFromDraft(draft: AiPostDraft): { payload: any; card: any } 
 // - Posted: shows a "LISTED" badge; "Post to Group" is faded/disabled during the
 //   8h cooldown (shows remaining time), then re-enables.
 function PostCard({ item, posted, cooldownLeftMs, posting, onPost, onView }: {
-  item: { title?: string; subtitle?: string; price?: string; tags?: string[] };
+  item: { title?: string; subtitle?: string; price?: string; tags?: string[]; image?: string; fields?: Array<{ label: string; value: string }> };
   posted: boolean;
   cooldownLeftMs: number;
   posting: boolean;
@@ -296,7 +361,11 @@ function PostCard({ item, posted, cooldownLeftMs, posting, onPost, onView }: {
   return (
     <View style={pd.card}>
       <View style={pd.cardTop}>
-        <View style={pd.cardIcon}><Building2 size={22} color={colors.brand} /></View>
+        {item.image ? (
+          <Image source={{ uri: item.image }} style={pd.cardThumb} resizeMode="cover" />
+        ) : (
+          <View style={pd.cardIcon}><Building2 size={22} color={colors.brand} /></View>
+        )}
         <View style={{ flex: 1 }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
             <View style={[pd.badge, { backgroundColor: posted ? `${colors.greenText}18` : `${colors.brand}18` }]}>
@@ -384,7 +453,11 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const [text, setText] = useState('');
   const [showMediaMenu, setShowMediaMenu] = useState(false);
   const [showRoomMenu, setShowRoomMenu] = useState(false);
-  const [shareProject, setShareProject] = useState<any>(null);
+  // QR export is rendered off-screen just long enough for react-native-qrcode-svg
+  // to produce a PNG. This avoids opening the generic Share bottom sheet when
+  // the user explicitly chose "Download QR" from the project menu.
+  const [qrExport, setQrExport] = useState<{ url: string; fileName: string } | null>(null);
+  const qrRef = useRef<any>(null);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
   const [uploading, setUploading] = useState(false);
   // AI Assist mode — when on, the composer + a private inline panel drive the
@@ -526,6 +599,23 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     return unsub;
   }, [activeRoom?.id, socket.onGroupMessage, socket.ready, appendMessage]);
 
+  // Another member may delete the group while this screen is open. Close the
+  // thread immediately instead of leaving a dead composer that only fails on
+  // the next send.
+  useEffect(() => {
+    const unsub = socket.onGroupDeleted((data) => {
+      if (!activeRoom?.id || String(data.roomId) !== activeRoom.id) return;
+      socket.leaveGroup(activeRoom.id);
+      setMyRooms(prev => prev.filter(r => r.id !== activeRoom.id));
+      setActiveRoom(null);
+      setMessages([]);
+      setShowRoomMenu(false);
+      setShowMediaMenu(false);
+      toast.show(data.message || 'This group was deleted', 'info');
+    });
+    return unsub;
+  }, [activeRoom?.id, socket.onGroupDeleted, socket.ready, socket.leaveGroup, toast]);
+
   // Re-assert room membership once the socket becomes available, for the case
   // where openRoom ran before it existed.
   useEffect(() => {
@@ -644,9 +734,10 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     }
   };
 
-  // ── Attachments: Camera / Gallery / Files ──
-  // Uploads the picked media via the shared media proxy, then posts it into the
-  // group as an image/file message so everyone in the room can view/download it.
+  // ── Attachments: Camera / Gallery / PDF ──
+  // Uploads to a GROUP-scoped R2 key, then posts the returned URL + metadata.
+  // This works in universal/area rooms (no projectId required) and does not
+  // mutate the linked project's gallery or brochure.
   const uploadAndSendAttachment = async (
     file: { uri: string; name: string; mimeType: string },
     kind: 'image' | 'file',
@@ -655,22 +746,23 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     setUploading(true);
     setShowAttachMenu(false);
     try {
-      const projId = activeRoom.project?.id || '';
-      const { url } = await mediaApi.uploadAndSave({
+      const uploaded = await mediaApi.uploadGroupAttachment({
+        roomId: activeRoom.id,
         uri: file.uri,
         name: file.name,
         mimeType: file.mimeType,
-        projectId: projId,
-        type: kind === 'image' ? 'gallery' : 'brochure',
+        kind,
       });
-      if (!url) throw new Error('Upload failed');
-      // messageType image|file; content holds the URL (backend accepts free string type,
-      // and the bubble renderer shows an Image for image and a file chip for file).
-      await groupChatApi.postMessage(activeRoom.id, {
+      if (!uploaded.url) throw new Error('Upload failed');
+
+      const response = await groupChatApi.postMessage(activeRoom.id, {
         messageType: kind,
-        content: url,
+        content: uploaded.url,
+        attachment: uploaded.attachment,
       });
-      toast.show(kind === 'image' ? 'Photo sent 📷' : 'File sent 📎', 'success');
+      if (response?.message) appendMessage(normalizeMsg(response.message, activeRoom.id));
+
+      toast.show(kind === 'image' ? 'Photo sent 📷' : 'PDF sent 📎', 'success');
       setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 150);
     } catch (e: any) {
       toast.show(e?.message || 'Could not send attachment', 'error');
@@ -682,7 +774,10 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const pickFromCamera = async () => {
     const perm = await ImagePicker.requestCameraPermissionsAsync();
     if (!perm.granted) { toast.show('Camera permission needed', 'error'); return; }
-    const res = await ImagePicker.launchCameraAsync({ quality: 0.7 });
+    const res = await ImagePicker.launchCameraAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.7,
+    });
     if (res.canceled || !res.assets?.[0]) return;
     const a = res.assets[0];
     await uploadAndSendAttachment(
@@ -704,11 +799,16 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   };
 
   const pickFile = async () => {
-    const res = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true, type: '*/*' });
+    // Backend intentionally accepts PDF here. Advertising */* caused Word/ZIP
+    // files to be selectable and then fail after upload.
+    const res = await DocumentPicker.getDocumentAsync({
+      copyToCacheDirectory: true,
+      type: 'application/pdf',
+    });
     if (res.canceled || !res.assets?.[0]) return;
     const a = res.assets[0];
     await uploadAndSendAttachment(
-      { uri: a.uri, name: a.name || `file_${Date.now()}`, mimeType: a.mimeType || 'application/octet-stream' },
+      { uri: a.uri, name: a.name || `document_${Date.now()}.pdf`, mimeType: a.mimeType || 'application/pdf' },
       'file',
     );
   };
@@ -746,6 +846,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
       area: invForm.area.trim(),
       city: invForm.city.trim(),
       possessionStatus: invForm.possessionStatus,
+      urgency: 'normal' as const,
       bankLoanAvailable: invForm.bankLoanAvailable,
       commissionPercent: Number(invForm.commissionPercent) || 0,
       description: invForm.description.trim(),
@@ -783,7 +884,14 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
       }
 
       // 2) Post the inventory card into the group (visible to members).
-      const res = await groupChatApi.postMessage(activeRoom.id, { messageType: 'inventory_card', inventoryCard: built.card });
+      // Attach the stable project ObjectId created above. Without this, cards in
+      // the universal room had no way to open details, start a deal chat or call
+      // the project's contact — all three buttons acted on an empty id.
+      const inventoryCard: InventoryCard = {
+        ...built.card,
+        project: projectId || undefined,
+      };
+      const res = await groupChatApi.postMessage(activeRoom.id, { messageType: 'inventory_card', inventoryCard });
       if (res?.message) appendMessage(normalizeMsg(res.message, activeRoom.id));
 
       // 3) Save to the local posted list with a cooldown timestamp (per-property).
@@ -810,14 +918,20 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const repostProject = async (project: any, disp: any) => {
     if (!activeRoom) return;
     try {
-      const card = {
+      const card: InventoryCard = {
+        project: project.id,
+        projectName: project.name || project.projectName || disp.title,
+        propertyType: project.propertyType || project.type || '',
+        carpetAreaRange: project.carpetAreaRange || '',
         bhkOptions: Array.isArray(project.bhkOptions) ? project.bhkOptions : [],
         priceRange: { min: Math.round((project.startingPrice || 0) / 100000), max: 0 },
         area: project.location || '',
         city: project.city || '',
         possessionStatus: /ready/i.test(project.projectStatus || '') ? 'ready' : (project.projectStatus || 'ready'),
+        urgency: 'normal',
         bankLoanAvailable: !!project.bankLoanAvailable,
         commissionPercent: 0,
+        callNumber: project.cta?.callNumber || project.cta?.whatsappNumber || '',
         description: disp.fields.map((f: any) => `${f.label}: ${f.value}`).join(' • '),
       };
       const res = await groupChatApi.postMessage(activeRoom.id, { messageType: 'inventory_card', inventoryCard: card });
@@ -842,7 +956,11 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     if (!activeRoom) return;
     try {
       const built = buildProjectFromDraft(entry);
-      const res = await groupChatApi.postMessage(activeRoom.id, { messageType: 'inventory_card', inventoryCard: built.card });
+      const inventoryCard: InventoryCard = {
+        ...built.card,
+        project: entry.projectId || undefined,
+      };
+      const res = await groupChatApi.postMessage(activeRoom.id, { messageType: 'inventory_card', inventoryCard });
       if (res?.message) appendMessage(normalizeMsg(res.message, activeRoom.id));
       const updated = await postedListStorage.add({ ...entry, postedAt: Date.now() } as any);
       setPostedList(updated);
@@ -873,7 +991,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   // the Project section.
   const loadPostedLeads = useCallback(async () => {
     try {
-      const res = await leadMatchingApi.getLeads({ limit: 50 });
+      const res = await leadMatchingApi.getLeads({ limit: 50, mineOnly: true });
       const leads = Array.isArray(res?.leads) ? res.leads : [];
       // Only sellable inventory (sell / rent) — buyer requirements aren't "posts".
       const sellable = leads.filter((l: any) => {
@@ -950,29 +1068,53 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     }, 0);
   }, [activeRoom]);
 
-  // The Post list: backend AI-posted properties (durable) merged with any local
-  // entries that aren't on the server yet (e.g. posted while offline), deduped
-  // so the same property never shows twice.
+  // My Posts = every real Project owned by the current user + their own
+  // backend inventory leads + any local draft/cooldown entry not yet represented
+  // on the server. De-duplicate by stable ids first, then title/location only as
+  // a compatibility fallback for old records that have no relationship id.
   const postedCards = React.useMemo(() => {
-    const cards = postedLeads.map(leadToDisplay);
-    const seen = new Set(cards.map((c) => `${c.title}|${c.subtitle}`));
+    const cards: any[] = [];
+    const seenIds = new Set<string>();
+    const seenFallback = new Set<string>();
+
+    const add = (card: any) => {
+      const ids = [card.projectId, card.leadId, card.id].filter(Boolean).map(String);
+      if (ids.some(id => seenIds.has(id))) return;
+      const fallback = `${card.title || ''}|${card.subtitle || ''}`.toLowerCase();
+      if (fallback !== '|' && seenFallback.has(fallback)) return;
+      ids.forEach(id => seenIds.add(id));
+      if (fallback !== '|') seenFallback.add(fallback);
+      cards.push(card);
+    };
+
+    // `/projects` is broader for admins/co-captains. "My" means primary owner,
+    // so never show another user's property in this modal.
+    myProjects
+      .filter((p: any) => String(p.owner?.id || '') === String(user?.id || ''))
+      .map(projectToDisplay)
+      .forEach(add);
+
+    postedLeads.map(leadToDisplay).forEach(add);
+
     for (const entry of postedList) {
-      const key = `${entry.title}|${entry.subtitle}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      cards.push({
+      add({
         id: entry.id || entry.projectId || String(entry.postedAt || Date.now()),
+        projectId: entry.projectId,
+        leadId: entry.leadId,
         title: entry.title,
         subtitle: entry.subtitle,
         price: entry.price,
+        image: entry.image,
         tags: (entry.fields || []).filter((f: any) => /bhk|area|type/i.test(f.label)).map((f: any) => f.value),
         fields: entry.fields || [],
         direction: entry.intent || 'sell',
+        source: 'local',
         createdAt: entry.postedAt ? new Date(entry.postedAt).toISOString() : undefined,
-      } as any);
+      });
     }
+
     return cards;
-  }, [postedLeads, postedList]);
+  }, [postedLeads, postedList, myProjects, user?.id]);
 
   // When Post/Matching is tapped while AI mode is OFF, we turn AI on and defer
   // the action until the assistant API is ready (fired from onReady below).
@@ -1078,6 +1220,10 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   }, [onActionsReady, aiPost, aiMatching, aiResetToLanding]);
 
   const handleInterested = useCallback(async (projectId: string, messageId: string) => {
+    if (!projectId) {
+      toast.show('This older card is not linked to a project', 'error');
+      return;
+    }
     try {
       const res = await groupChatApi.showInterest({ projectId, messageId, roomId: activeRoom?.id });
       toast.show(res?.message || 'Builder notified! Deal room created.', 'success');
@@ -1087,17 +1233,59 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeRoom?.id, toast]);
 
-  const handlePropertyViewDetails = useCallback((projectId: string) => {
-    if (projectId) {
-      // In a real implementation, navigate to project details screen
-      toast.show('Opening project details...', 'info');
-    } else {
-      toast.show('No project details available', 'error');
+  const handlePropertyViewDetails = useCallback(async (projectId: string, fallback?: InventoryCard) => {
+    if (!projectId) {
+      toast.show('This older card is not linked to a project', 'error');
+      return;
+    }
+
+    try {
+      const p = await projectsApiExtended.getById(projectId);
+      const area = p.carpetAreaRange || '';
+      const cover = typeof p.coverImage === 'string' ? p.coverImage : p.coverImage?.url;
+      setViewProperty({
+        title: p.name || fallback?.projectName || 'Property',
+        subtitle: [p.location, p.city].filter(Boolean).join(', '),
+        price: fmtPrice(p.startingPrice),
+        image: cover || '',
+        fields: [
+          { label: 'Property Type', value: p.propertyType || p.type || '—' },
+          ...(p.bhkOptions?.length ? [{ label: 'Configuration', value: p.bhkOptions.join(' / ') }] : []),
+          ...(area ? [{ label: 'Area', value: area }] : []),
+          { label: 'Status', value: p.projectStatus || '—' },
+          ...(p.reraNumber ? [{ label: 'RERA', value: p.reraNumber }] : []),
+          { label: 'Bank Loan', value: p.bankLoanAvailable ? 'Available' : 'Not specified' },
+        ],
+      });
+    } catch (e: any) {
+      toast.show(e?.message || 'Could not load project details', 'error');
     }
   }, [toast]);
 
-  const handlePropertyCall = useCallback(() => {
-    toast.show('Contact builder via deal room', 'info');
+  const handlePropertyCall = useCallback(async (projectId: string, fallbackNumber?: string) => {
+    let number = String(fallbackNumber || '').replace(/[^0-9+]/g, '');
+
+    if (!number && projectId) {
+      try {
+        const p = await projectsApiExtended.getById(projectId);
+        number = String(p.cta?.callNumber || p.cta?.whatsappNumber || '').replace(/[^0-9+]/g, '');
+      } catch {
+        // The user-facing message below is clearer than exposing a fetch error.
+      }
+    }
+
+    if (!number) {
+      toast.show('No contact number is available for this property', 'error');
+      return;
+    }
+
+    const telUrl = `tel:${number}`;
+    const canOpen = await Linking.canOpenURL(telUrl).catch(() => false);
+    if (!canOpen) {
+      toast.show('Calling is not available on this device', 'error');
+      return;
+    }
+    Linking.openURL(telUrl).catch(() => toast.show('Could not start the call', 'error'));
   }, [toast]);
 
   // Stable renderItem so the memoised MessageBubble can actually bail out.
@@ -1118,36 +1306,131 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   );
 
   // ── Project media menu ──
-  const projectForShare = () => {
-    const p = (activeRoom?.project as any) || {};
-    return {
-      id: String(p.id || p._id || ''),
-      name: p.projectName || activeRoom?.name || 'Project',
-      slug: p.slug,
-      type: 'flat', city: p.city || '', location: '',
-      startingPrice: p.pricing?.startingPrice ?? 0,
-      bhkOptions: p.configuration?.bhkOptions ?? [],
-      reraApproved: false, projectStatus: 'pre-launch',
-      bankLoanAvailable: false, gatedCommunity: false, isPublished: true,
-      coverImage: p.media?.coverImage ?? null, amenities: [],
-    };
+  const activeProject = () => (activeRoom?.project as any) || {};
+  const activeProjectId = () => String(activeProject().id || activeProject()._id || '');
+  const safeProjectFileName = (suffix: string) => {
+    const base = String(activeProject().projectName || activeRoom?.name || 'project')
+      .replace(/[^a-zA-Z0-9_-]/g, '_');
+    return `${base}_${suffix}`;
+  };
+  const plainProjectUrl = () => {
+    const slug = activeProject().slug;
+    return slug ? `https://homeintown.in/visit/${slug}` : 'https://homeintown.in';
   };
 
+  /** Resolve a tracked share URL, with a stable public project URL fallback. */
+  const resolveShareUrl = async (type: 'link' | 'pdf' | 'qr') => {
+    const pid = activeProjectId();
+    if (!pid) throw new Error('No project linked to this group');
+    try {
+      const result = await shareApi.generateToken(pid, type);
+      return result.shareUrl || plainProjectUrl();
+    } catch {
+      if (type === 'link' || type === 'qr') return plainProjectUrl();
+      throw new Error('No PDF brochure available for this project');
+    }
+  };
+
+  /** Copy means copy — do not open the generic Share sheet. */
   const handleCopyLink = async () => {
     setShowMediaMenu(false);
-    // ShareModal builds the link itself (Copy / QR / brochure), so nothing to
-    // compute here. Two unused locals (and the only hardcoded domain in this
-    // file) were removed.
-    setShareProject(projectForShare());
+    try {
+      const url = await resolveShareUrl('link');
+      await Clipboard.setStringAsync(url);
+      toast.show('Project link copied', 'success');
+    } catch (e: any) {
+      toast.show(e?.message || 'Could not copy project link', 'error');
+    }
   };
 
-  const handlePdfOrQr = () => {
+  /** Download the real brochure/token PDF and hand the file to the OS. */
+  const handleDownloadPdf = async () => {
     setShowMediaMenu(false);
-    if (!(activeRoom?.project as any)?.id && !(activeRoom?.project as any)?._id) {
-      toast.show('No project linked to this group', 'error'); return;
+    const pid = activeProjectId();
+    if (!pid) { toast.show('No project linked to this group', 'error'); return; }
+
+    toast.show('Downloading PDF…', 'info');
+    try {
+      const p = activeProject();
+      const rawBrochure = p.media?.brochurePdf;
+      const brochureUrl = typeof rawBrochure === 'string' ? rawBrochure : rawBrochure?.url;
+      const url = brochureUrl || await resolveShareUrl('pdf');
+      const target = `${FileSystem.cacheDirectory}${safeProjectFileName('Brochure.pdf')}`;
+      const result = await FileSystem.downloadAsync(url, target);
+      if (result.status !== 200) throw new Error('PDF download failed');
+
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(result.uri, {
+          mimeType: 'application/pdf',
+          dialogTitle: 'Project Brochure',
+          UTI: 'com.adobe.pdf',
+        });
+      } else {
+        await Linking.openURL(result.uri);
+      }
+    } catch (e: any) {
+      toast.show(e?.message || 'Failed to download PDF', 'error');
     }
-    setShareProject(projectForShare());
   };
+
+  /** Generate a QR token and render it off-screen for PNG export. */
+  const handleDownloadQr = async () => {
+    setShowMediaMenu(false);
+    if (!activeProjectId()) { toast.show('No project linked to this group', 'error'); return; }
+    toast.show('Generating QR…', 'info');
+    try {
+      const url = await resolveShareUrl('qr');
+      qrRef.current = null;
+      setQrExport({ url, fileName: safeProjectFileName('QR.png') });
+    } catch (e: any) {
+      toast.show(e?.message || 'Failed to generate QR', 'error');
+    }
+  };
+
+  // QRCode's toDataURL API is ref-based. The off-screen component mounts after
+  // qrExport is set; wait one frame, convert it, write a real PNG, then clear it.
+  useEffect(() => {
+    if (!qrExport) return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      const node = qrRef.current;
+      if (!node?.toDataURL) {
+        if (!cancelled) {
+          toast.show('Could not render QR code', 'error');
+          setQrExport(null);
+        }
+        return;
+      }
+
+      node.toDataURL(async (base64: string) => {
+        if (cancelled) return;
+        try {
+          const target = `${FileSystem.cacheDirectory}${qrExport.fileName}`;
+          await FileSystem.writeAsStringAsync(target, base64, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          if (await Sharing.isAvailableAsync()) {
+            await Sharing.shareAsync(target, {
+              mimeType: 'image/png',
+              dialogTitle: 'Project QR Code',
+              UTI: 'public.png',
+            });
+          } else {
+            toast.show('QR generated', 'success');
+          }
+        } catch (e: any) {
+          toast.show(e?.message || 'Failed to save QR', 'error');
+        } finally {
+          setQrExport(null);
+        }
+      });
+    }, 100);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [qrExport, toast]);
 
   const handleDownloadGallery = async () => {
     setShowMediaMenu(false);
@@ -1173,23 +1456,25 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   };
 
   // ── Room options ──
-  const canDelete = !!activeRoom && !activeRoom.isUniversal && (
-    role === 'admin' ||
-    activeRoom.members.some(m => m.user.id === user?.id && m.role === 'admin')
-  );
-  const canLeave = !!activeRoom && !activeRoom.isUniversal && activeRoom.canLeave !== false;
+  // Project groups are canonically created by the property owner. Prefer the
+  // explicit project.owner id and fall back to room.createdBy for older/area
+  // groups. Role or room-admin status must not be treated as property ownership.
+  const groupOwnerId = activeRoom?.project?.owner?.id || activeRoom?.createdBy?.id || '';
+  const isGroupOwner = !!activeRoom && !!user?.id && groupOwnerId === user.id;
+  const canDelete = !!activeRoom && !activeRoom.isUniversal && isGroupOwner;
+  const canLeave = !!activeRoom && !activeRoom.isUniversal && !isGroupOwner && activeRoom.canLeave !== false;
 
   const handleLeave = () => {
     setShowRoomMenu(false);
     if (!activeRoom) return;
-    Alert.alert('Leave group?', `Leave "${roomDisplayName(activeRoom)}"?`, [
+    Alert.alert('Exit group?', `Exit "${roomDisplayName(activeRoom)}"?`, [
       { text: 'Cancel', style: 'cancel' },
       {
-        text: 'Leave', style: 'destructive', onPress: async () => {
+        text: 'Exit', style: 'destructive', onPress: async () => {
           try {
             await groupChatApi.leaveRoom(activeRoom.id);
             setMyRooms(prev => prev.filter(r => r.id !== activeRoom.id));
-            toast.show('Left group', 'success');
+            toast.show('Exited group', 'success');
             closeRoom();
           } catch (e: any) { toast.show(e?.message || 'Failed to leave', 'error'); }
         },
@@ -1451,7 +1736,13 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
             {activeRoom.members.length} members
           </Text>
           <Text style={s.threadSub} numberOfLines={1}>
-            {newJoinCount > 0 ? `+${newJoinCount} new this week` : 'Universal group'}
+            {newJoinCount > 0
+              ? `+${newJoinCount} new this week`
+              : activeRoom.isUniversal
+                ? 'Universal group'
+                : activeRoom.roomType === 'project'
+                  ? ([proj?.location, proj?.city].filter(Boolean).join(', ') || 'Project group')
+                  : (activeRoom.area?.location || activeRoom.area?.city || 'Group')}
           </Text>
         </View>
 
@@ -1462,6 +1753,20 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
               <MoreVertical size={18} color={colors.ink} />
             </Pressable>
           </View>
+        )}
+
+        {/* Area groups have no project banner, so their lifecycle menu lives in
+            the thread header. Project groups use the dots on the blue banner. */}
+        {!activeRoom.isUniversal && !proj && (
+          <Pressable
+            onPress={() => setShowRoomMenu(v => !v)}
+            style={s.headerAiDots}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Group options"
+          >
+            <MoreVertical size={18} color={colors.ink} />
+          </Pressable>
         )}
 
         {/* AI 3-dot dropdown (End Chat / Exit Chat) */}
@@ -1494,12 +1799,12 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
             )}
             {canLeave && (
               <Pressable style={s.menuItem} onPress={handleLeave}>
-                <LogOut size={15} color={colors.muted2} /><Text style={s.menuText}>Leave group</Text>
+                <LogOut size={15} color={colors.muted2} /><Text style={s.menuText}>Exit Group</Text>
               </Pressable>
             )}
             {canDelete && (
               <Pressable style={s.menuItem} onPress={handleDelete}>
-                <Trash2 size={15} color={colors.red} /><Text style={[s.menuText, { color: colors.red }]}>Delete group</Text>
+                <Trash2 size={15} color={colors.red} /><Text style={[s.menuText, { color: colors.red }]}>Delete Group</Text>
               </Pressable>
             )}
           </View>
@@ -1511,10 +1816,10 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
             <Pressable style={s.menuItem} onPress={handleCopyLink}>
               <LinkIcon size={15} color={colors.muted2} /><Text style={s.menuText}>Copy link</Text>
             </Pressable>
-            <Pressable style={s.menuItem} onPress={handlePdfOrQr}>
+            <Pressable style={s.menuItem} onPress={handleDownloadPdf}>
               <FileText size={15} color={colors.muted2} /><Text style={s.menuText}>Download PDF</Text>
             </Pressable>
-            <Pressable style={s.menuItem} onPress={handlePdfOrQr}>
+            <Pressable style={s.menuItem} onPress={handleDownloadQr}>
               <QrCode size={15} color={colors.muted2} /><Text style={s.menuText}>Download QR</Text>
             </Pressable>
             <Pressable style={s.menuItem} onPress={handleDownloadGallery}>
@@ -1568,7 +1873,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
           Shows the cover image plus every detail that exists on the project, so
           the group always reflects the latest property data. */}
       {proj && (
-        <Pressable onPress={() => setShowMediaMenu(v => !v)} style={s.banner}>
+        <View style={s.banner}>
           {proj.media?.coverImage?.url ? (
             <Image source={{ uri: proj.media.coverImage.url }} style={s.bannerThumb} />
           ) : (
@@ -1601,8 +1906,19 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
               ].filter(Boolean).join('  ')}
             </Text>
           </View>
-          <MoreVertical size={18} color={colors.blueText} />
-        </Pressable>
+          <Pressable
+            onPress={() => {
+              setShowMediaMenu(false);
+              setShowRoomMenu(v => !v);
+            }}
+            style={s.bannerMenuBtn}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Project media options"
+          >
+            <MoreVertical size={18} color={colors.blueText} />
+          </Pressable>
+        </View>
       )}
 
       {/* Tap-catcher to close menus */}
@@ -1695,7 +2011,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
             </Pressable>
             <Pressable onPress={pickFile} disabled={uploading} style={s.attachOpt}>
               <View style={[s.attachIcon, { backgroundColor: '#FFF8F0' }]}><FileText size={17} color={colors.brand} /></View>
-              <Text style={s.attachLabel}>Files</Text>
+              <Text style={s.attachLabel}>PDF</Text>
             </Pressable>
           </View>
         )}
@@ -1784,20 +2100,24 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                 />
               )}
 
-              {/* Already-posted properties. Post stays SEPARATE from Projects.
-                  Source = backend ExtractedLeads (sell/rent) so the list survives
-                  an app reinstall; the local postedList is only consulted for the
-                  8h cooldown timestamp. Normal add-project projects never appear. */}
+              {/* Already-posted properties. Source = owned real Projects plus
+                  this user's backend ExtractedLead inventory, so My Posts is
+                  complete and survives reinstall. Local storage is consulted
+                  only for the per-property 8h re-post cooldown. */}
               {postedCards.map((disp: any) => {
                 // Cooldown comes from whichever local record matches this lead —
                 // by leadId first, else by the property's title+location.
                 const local = postedList.find((x: any) =>
+                  (x.projectId && disp.projectId && String(x.projectId) === String(disp.projectId)) ||
                   (x.leadId && x.leadId === disp.id) ||
                   (x.title && disp.title && x.title === disp.title && x.subtitle === disp.subtitle)
                 );
                 const postedAt = local?.postedAt || 0;
                 const leftMs = postedAt ? Math.max(0, POST_COOLDOWN_MS - (Date.now() - postedAt)) : 0;
-                const backend = local?.projectId ? myProjects.find((p) => p.id === local.projectId) : null;
+                const backendProjectId = disp.projectId || local?.projectId;
+                const backend = backendProjectId
+                  ? myProjects.find((p) => String(p.id) === String(backendProjectId))
+                  : null;
                 return (
                   <PostCard
                     key={disp.id}
@@ -1837,7 +2157,11 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
               <Pressable onPress={() => setViewProperty(null)} hitSlop={8}><X size={20} color={colors.ink} /></Pressable>
             </View>
 
-            <ScrollView style={{ maxHeight: 420 }} contentContainerStyle={{ paddingBottom: 6 }} showsVerticalScrollIndicator={false}>
+            <ScrollView style={{ maxHeight: 520 }} contentContainerStyle={{ paddingBottom: 6, gap: 12 }} showsVerticalScrollIndicator={false}>
+              {!!viewProperty?.image && (
+                <Image source={{ uri: viewProperty.image }} style={pd.detailHero} resizeMode="cover" />
+              )}
+
               <View style={pd.detailList}>
                 {(viewProperty?.fields || []).map((f: any, i: number) => (
                   <View key={i} style={pd.detailRow}>
@@ -1847,12 +2171,39 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                 ))}
               </View>
 
-              {/* Future feature note */}
-              <View style={pd.futureNote}>
-                <Text style={pd.futureNoteText}>
-                  📸 Yaha par gallery, photos aur aur bhi details add kar sakte ho — ye feature abhi development mein hai.
-                </Text>
-              </View>
+              {(viewProperty?.galleryImages?.length > 0 || viewProperty?.videos?.length > 0 || viewProperty?.brochureUrl || viewProperty?.layoutImage) && (
+                <View style={pd.mediaSection}>
+                  <Text style={pd.mediaTitle}>Media</Text>
+
+                  {viewProperty?.galleryImages?.length > 0 && (
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+                      {viewProperty.galleryImages.map((url: string, i: number) => (
+                        <Pressable key={`${url}-${i}`} onPress={() => Linking.openURL(url)}>
+                          <Image source={{ uri: url }} style={pd.mediaThumb} resizeMode="cover" />
+                        </Pressable>
+                      ))}
+                    </ScrollView>
+                  )}
+
+                  <View style={pd.mediaActions}>
+                    {viewProperty?.layoutImage && (
+                      <Pressable style={pd.mediaBtn} onPress={() => Linking.openURL(viewProperty.layoutImage)}>
+                        <ImageIcon size={13} color={colors.brand} /><Text style={pd.mediaBtnText}>Layout</Text>
+                      </Pressable>
+                    )}
+                    {(viewProperty?.videos || []).map((url: string, i: number) => (
+                      <Pressable key={`${url}-${i}`} style={pd.mediaBtn} onPress={() => Linking.openURL(url)}>
+                        <FileText size={13} color={colors.brand} /><Text style={pd.mediaBtnText}>Video {i + 1}</Text>
+                      </Pressable>
+                    ))}
+                    {viewProperty?.brochureUrl && (
+                      <Pressable style={pd.mediaBtn} onPress={() => Linking.openURL(viewProperty.brochureUrl)}>
+                        <FileText size={13} color={colors.brand} /><Text style={pd.mediaBtnText}>Brochure</Text>
+                      </Pressable>
+                    )}
+                  </View>
+                </View>
+              )}
             </ScrollView>
           </Pressable>
         </Pressable>
@@ -1891,8 +2242,21 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
         </Pressable>
       </Modal>
 
-      {/* Share sheet (Copy link / QR / brochure) */}
-      {shareProject && <ShareModal project={shareProject} onClose={() => setShareProject(null)} />}
+      {/* Off-screen QR renderer used only by Download QR. It is deliberately
+          not a modal, so choosing a specific menu action never opens the generic
+          Share bottom sheet shown in the bug screenshot. */}
+      {qrExport && (
+        <View pointerEvents="none" style={s.qrExporter}>
+          <QRCode
+            value={qrExport.url}
+            size={320}
+            color={colors.night}
+            backgroundColor={colors.white}
+            quietZone={16}
+            getRef={(node: any) => { qrRef.current = node; }}
+          />
+        </View>
+      )}
 
       {/* ── Lead detected from a free-text message (like the website) ──
           Shows the parsed requirement; confirming runs matching + saves the lead. */}
@@ -2223,9 +2587,17 @@ function normalizeMsg(m: any, roomId: string): GroupMessage {
   return {
     id: String(m._id || m.id || `tmp_${Date.now()}_${_msgSeq++}`),
     room: String(m.room || roomId),
-    sender: { id: String(m.sender?._id || m.sender?.id || ''), name: m.sender?.name || '', role: m.sender?.role || '', companyName: m.sender?.companyName },
+    sender: {
+      id: String(m.sender?._id || m.sender?.id || ''),
+      name: m.sender?.name || '',
+      role: m.sender?.role || '',
+      companyName: m.sender?.companyName,
+      isVerified: m.sender?.isVerified === true,
+      verificationStatus: m.sender?.verificationStatus,
+    },
     messageType: m.messageType || 'text',
     content: m.content || '',
+    attachment: m.attachment,
     requirementCard: m.requirementCard,
     inventoryCard: m.inventoryCard,
     matchResults: m.matchResults,
@@ -2242,8 +2614,8 @@ const MessageBubble = React.memo(function MessageBubble({
   msg: GroupMessage; 
   meId: string; 
   onInterested: (projectId: string, messageId: string) => void;
-  onPropertyViewDetails: (projectId: string) => void;
-  onPropertyCall: () => void;
+  onPropertyViewDetails: (projectId: string, fallback?: InventoryCard) => void;
+  onPropertyCall: (projectId: string, fallbackNumber?: string) => void;
   projectId: string;
 }) {
   const isMe = msg.sender.id === meId;
@@ -2271,51 +2643,71 @@ const MessageBubble = React.memo(function MessageBubble({
       );
     }
     
-    // Compact property card design - clean and attractive
+    // Compact universal-group inventory card. All values below come from the
+    // stored card/project — no raw AI questionnaire and no role-based guesses.
     const senderName = msg.sender.name || 'Unknown';
-    const isVerified = msg.sender.role === 'builder' || msg.sender.role === 'captain' || msg.sender.role === 'admin';
-    const price = inv.priceRange?.min ? fmtPrice(inv.priceRange.min * 100000) : '—';
-    const location = [inv.area, inv.city].filter(Boolean).join(', ');
-    
-    // Build property details line: Price | Area | Type
-    const propertyType = inv.propertyType || (inv.bhkOptions?.length ? inv.bhkOptions[0] : 'Flat');
-    const areaText = inv.carpetAreaRange || (inv.builtupArea ? `${inv.builtupArea} sqft` : null);
-    const detailsParts = [
-      `💰 ${price}`,
-      areaText ? `${areaText}` : null,
-      propertyType
-    ].filter(Boolean);
-    
-    // Status tags
-    const possessionLabel = inv.possessionStatus === 'ready' ? 'Ready' : 
-                           inv.possessionStatus === '6months' ? '6 Months' :
-                           inv.possessionStatus === '1year' ? '1 Year' : 
-                           inv.possessionStatus === '2year+' ? '2+ Years' : null;
-    
-    const urgencyLabel = inv.urgency === 'urgent' ? 'Urgent' : 
-                        inv.urgency === 'very_urgent' ? 'Very Urgent' : 
-                        'Normal Urgency';
-    
+    const isVerified = msg.sender.isVerified === true ||
+      msg.sender.verificationStatus?.builder === 'verified';
+
+    // Actions must use the card's stable project id. Falling back to the active
+    // room project made every universal-room card use an empty id, and made every
+    // project-room card act on the room project even when it represented
+    // something else.
+    const projectRef = inv.project;
+    const cardProjectId = typeof projectRef === 'string'
+      ? projectRef
+      : String(projectRef?._id || projectRef?.id || projectId || '');
+
+    const price = inv.priceRange?.min ? fmtPrice(inv.priceRange.min * 100000) : '';
+
+    // Older cards sometimes stored "1000 sqft" in `area` even though the schema
+    // called that field a locality. Detect it so the UI puts it on the details
+    // line instead of rendering "📍 1000 sqft, Nagpur".
+    const areaLooksLikeSize = !!inv.area && /\d[\d,.]*\s*(?:sq\.?\s*ft|sqft|acre)/i.test(inv.area);
+    const locality = areaLooksLikeSize ? '' : (inv.area || '');
+    const location = [locality, inv.city].filter(Boolean).join(', ');
+    const areaText = inv.carpetAreaRange || (areaLooksLikeSize ? inv.area : '');
+    const bhk = inv.bhkOptions?.filter(Boolean).join(' / ') || '';
+    const propertyType = inv.propertyType || '';
+
+    // Requested compact format: price | floor area | property type. Old cards
+    // that pre-date propertyType/area snapshots fall back to their real BHK data
+    // instead of fabricating "Flat".
+    const detailsParts = [price, areaText, propertyType || bhk].filter(Boolean);
+
+    const possessionLabel = inv.possessionStatus === 'ready' ? 'Ready' :
+      inv.possessionStatus === '6months' ? '6 Months' :
+      inv.possessionStatus === '1year' ? '1 Year' :
+      inv.possessionStatus === '2year+' ? '2+ Years' :
+      inv.possessionStatus ? String(inv.possessionStatus).replace(/[-_]/g, ' ') : '';
+
+    const urgencyLabel = inv.urgency === 'urgent' ? 'Urgent' :
+      inv.urgency === 'very_urgent' ? 'Very Urgent' : 'Normal Urgency';
+
     return (
       <View style={[mbs.cardWrap, { alignSelf: 'flex-start' }]}>
         <View style={mbs.propertyCard}>
-          {/* Header: 🏠 Inventory | Builder Name - VERIFIED */}
+          {/* [🏠 Inventory] [Sender - VERIFIED] */}
           <View style={mbs.propertyHeaderRow}>
-            <Text style={mbs.propertyLabel}>🏠 Inventory</Text>
-            <Text style={mbs.propertySender}>
-              {senderName}{isVerified && <Text style={mbs.verifiedText}> - VERIFIED</Text>}
+            <View style={mbs.propertyLabelPill}>
+              <Text style={mbs.propertyLabel}>🏠 Inventory</Text>
+            </View>
+            <Text style={mbs.propertySender} numberOfLines={1}>
+              {senderName}{isVerified && <Text style={mbs.verifiedText}> · VERIFIED</Text>}
             </Text>
           </View>
-          
-          {/* Location */}
-          <Text style={mbs.propertyLocation}>📍 {location}</Text>
-          
-          {/* Price | Area | Type */}
-          <Text style={mbs.propertyDetails}>{detailsParts.join(' | ')}</Text>
-          
-          {/* Status Tags Row */}
+
+          {!!location && (
+            <Text style={mbs.propertyLocation} numberOfLines={1}>📍 {location}</Text>
+          )}
+
+          {detailsParts.length > 0 && (
+            <Text style={mbs.propertyDetails} numberOfLines={1}>💰 {detailsParts.join(' | ')}</Text>
+          )}
+
+          {/* [Ready] [Normal Urgency] */}
           <View style={mbs.propertyTagsRow}>
-            {possessionLabel && (
+            {!!possessionLabel && (
               <View style={[mbs.propertyTag, mbs.propertyTagPossession]}>
                 <Text style={[mbs.propertyTagText, { color: '#fff' }]}>{possessionLabel}</Text>
               </View>
@@ -2324,19 +2716,24 @@ const MessageBubble = React.memo(function MessageBubble({
               <Text style={[mbs.propertyTagText, { color: '#92400E' }]}>{urgencyLabel}</Text>
             </View>
           </View>
-          
-          {/* Action Buttons */}
+
+          {/* Small actions aligned in one row. minWidth:0 in styles is what lets
+              all three shrink inside a narrow mobile card without overflowing. */}
           <View style={mbs.propertyActions}>
-            <Pressable style={mbs.propertyBtn} onPress={() => onPropertyViewDetails(projectId)}>
-              <Text style={mbs.propertyBtnText} numberOfLines={1}>View Details</Text>
+            <Pressable style={mbs.propertyBtn} onPress={() => onPropertyViewDetails(cardProjectId, inv)}>
+              <Text style={mbs.propertyBtnText} numberOfLines={1} adjustsFontSizeToFit>View Details</Text>
             </Pressable>
-            <Pressable style={mbs.propertyBtn} onPress={() => onInterested(projectId, msg.id)}>
-              <Text style={mbs.propertyBtnText} numberOfLines={1}>Chat Now</Text>
+            <Pressable style={mbs.propertyBtn} onPress={() => onInterested(cardProjectId, msg.id)}>
+              <Text style={mbs.propertyBtnText} numberOfLines={1} adjustsFontSizeToFit>Chat Now</Text>
             </Pressable>
-            <Pressable style={mbs.propertyBtn} onPress={onPropertyCall}>
+            <Pressable style={mbs.propertyBtn} onPress={() => onPropertyCall(cardProjectId, inv.callNumber)}>
               <Text style={mbs.propertyBtnText} numberOfLines={1}>Call</Text>
             </Pressable>
           </View>
+
+          {!!messageClock(msg.createdAt) && (
+            <Text style={mbs.propertyTime}>📌 {messageClock(msg.createdAt)}</Text>
+          )}
         </View>
       </View>
     );
@@ -2408,7 +2805,8 @@ const MessageBubble = React.memo(function MessageBubble({
 
   // file attachment
   if (msg.messageType === 'file' && msg.content) {
-    const fileName = decodeURIComponent(String(msg.content).split('/').pop() || 'File').split('?')[0];
+    const urlName = decodeURIComponent(String(msg.content).split('/').pop() || 'File').split('?')[0];
+    const fileName = msg.attachment?.name || urlName;
     return (
       <View style={[{ flexDirection: 'row' }, isMe ? { justifyContent: 'flex-end' } : { justifyContent: 'flex-start' }]}>
         <View style={[mbs.textBubble, isMe ? mbs.textMe : mbs.textThem]}>
@@ -2569,6 +2967,14 @@ const s = StyleSheet.create({
   bannerThumb: { width: 42, height: 42, borderRadius: 9, backgroundColor: colors.white },
   bannerName: { fontSize: 12.5, fontWeight: '800', color: colors.blueText },
   bannerMeta: { fontSize: 10, color: colors.blueText, marginTop: 1 },
+  bannerMenuBtn: {
+    width: 34, height: 34, borderRadius: 17,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  // Kept mounted but visually outside the viewport only while exporting a QR.
+  // opacity:0 is not used because some native SVG renderers skip rasterisation
+  // for fully transparent trees.
+  qrExporter: { position: 'absolute', left: -1000, top: -1000, width: 352, height: 352, padding: 16, backgroundColor: '#fff' },
 
   composer: { backgroundColor: colors.white, borderTopWidth: 1, borderTopColor: colors.line, paddingHorizontal: 12, paddingTop: 10, paddingBottom: 12, gap: 10 },
   quickRow: { flexDirection: 'row', gap: 8 },
@@ -2651,6 +3057,7 @@ const pd = StyleSheet.create({
   card: { backgroundColor: colors.cream, borderRadius: 16, borderWidth: 1, borderColor: colors.line, padding: 12, gap: 10 },
   cardTop: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   cardIcon: { width: 46, height: 46, borderRadius: 12, backgroundColor: colors.brandTint, alignItems: 'center', justifyContent: 'center' },
+  cardThumb: { width: 46, height: 46, borderRadius: 12, backgroundColor: colors.line },
   cardTitle: { fontSize: 14, fontWeight: '800', color: colors.ink },
   cardLoc: { fontSize: 11, color: colors.muted2, marginTop: 2 },
   cardPrice: { fontSize: 14, fontWeight: '800', color: colors.brand },
@@ -2658,6 +3065,13 @@ const pd = StyleSheet.create({
   detailRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
   detailLabel: { fontSize: 11, fontWeight: '700', color: colors.muted2 },
   detailValue: { fontSize: 12, fontWeight: '700', color: colors.ink, flexShrink: 1, textAlign: 'right' },
+  detailHero: { width: '100%', height: 170, borderRadius: 14, backgroundColor: colors.line },
+  mediaSection: { gap: 8, borderTopWidth: 1, borderTopColor: colors.line, paddingTop: 10 },
+  mediaTitle: { fontSize: 12, fontWeight: '800', color: colors.ink },
+  mediaThumb: { width: 100, height: 72, borderRadius: 10, backgroundColor: colors.line },
+  mediaActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 },
+  mediaBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 9, paddingVertical: 7, borderRadius: 9, backgroundColor: colors.brandTint, borderWidth: 1, borderColor: `${colors.brand}33` },
+  mediaBtnText: { fontSize: 10.5, fontWeight: '700', color: colors.brand },
   // tags row (BHK / area / type)
   tagsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   tag: { backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4 },
@@ -2672,8 +3086,6 @@ const pd = StyleSheet.create({
   badge: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 8 },
   badgeText: { fontSize: 8.5, fontWeight: '800', letterSpacing: 0.3 },
   empty: { fontSize: 12, color: colors.muted2, textAlign: 'center', paddingVertical: 28, paddingHorizontal: 10, lineHeight: 18 },
-  futureNote: { marginTop: 12, backgroundColor: colors.brandTint, borderRadius: 12, borderWidth: 1, borderColor: `${colors.brand}33`, padding: 12 },
-  futureNoteText: { fontSize: 11.5, color: colors.brand, fontWeight: '600', lineHeight: 17 },
 });
 
 const cs = StyleSheet.create({
@@ -2686,7 +3098,7 @@ const cs = StyleSheet.create({
 
 const mbs = StyleSheet.create({
   system: { textAlign: 'center', fontSize: 10, color: colors.muted2, backgroundColor: colors.slateBg, alignSelf: 'center', paddingHorizontal: 12, paddingVertical: 5, borderRadius: 12, overflow: 'hidden' },
-  cardWrap: { maxWidth: '90%' },
+  cardWrap: { width: '92%', maxWidth: 380, minWidth: 0 },
   card: { borderWidth: 1, borderRadius: 16, padding: 12, gap: 4 },
   cardTag: { fontSize: 10, fontWeight: '800' },
   cardMain: { fontSize: 13, fontWeight: '800', color: colors.ink },
@@ -2695,57 +3107,70 @@ const mbs = StyleSheet.create({
   tagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 3 },
   tag: { backgroundColor: colors.slateBg, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 10 },
   tagText: { fontSize: 8.5, fontWeight: '700', color: colors.slateText },
-  // New compact property card styles
+  // Compact universal-group inventory card styles
   propertyCard: {
+    width: '100%',
+    minWidth: 0,
     backgroundColor: '#F0FDF4',
     borderWidth: 1,
     borderColor: colors.greenBorder,
     borderRadius: 12,
-    padding: 12,
-    gap: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    gap: 6,
   },
   propertyHeaderRow: {
+    minWidth: 0,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 2,
+    gap: 8,
+  },
+  propertyLabelPill: {
+    flexShrink: 0,
+    backgroundColor: '#DCFCE7',
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
   },
   propertyLabel: {
-    fontSize: 12,
+    fontSize: 10.5,
     fontWeight: '800',
     color: colors.greenText,
   },
   propertySender: {
-    fontSize: 11,
+    flex: 1,
+    minWidth: 0,
+    textAlign: 'right',
+    fontSize: 10.5,
     fontWeight: '700',
     color: colors.ink,
   },
   verifiedText: {
-    fontSize: 10,
+    fontSize: 9.5,
     fontWeight: '800',
     color: colors.greenText,
   },
   propertyLocation: {
-    fontSize: 13,
+    fontSize: 11.5,
     fontWeight: '600',
     color: colors.ink,
-    lineHeight: 18,
+    lineHeight: 16,
   },
   propertyDetails: {
-    fontSize: 13,
-    fontWeight: '700',
+    fontSize: 11.5,
+    fontWeight: '800',
     color: colors.ink,
-    lineHeight: 18,
+    lineHeight: 16,
   },
   propertyTagsRow: {
     flexDirection: 'row',
-    gap: 6,
-    marginTop: 2,
+    flexWrap: 'wrap',
+    gap: 5,
   },
   propertyTag: {
     alignSelf: 'flex-start',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
     borderRadius: 6,
   },
   propertyTagPossession: {
@@ -2755,30 +3180,39 @@ const mbs = StyleSheet.create({
     backgroundColor: '#FEF3C7',
   },
   propertyTagText: {
-    fontSize: 10,
+    fontSize: 8.5,
     fontWeight: '800',
     color: colors.white,
   },
   propertyActions: {
+    width: '100%',
+    minWidth: 0,
     flexDirection: 'row',
-    gap: 8,
-    marginTop: 4,
+    gap: 5,
+    marginTop: 1,
   },
   propertyBtn: {
     flex: 1,
-    minWidth: 75,
+    flexBasis: 0,
+    minWidth: 0,
     backgroundColor: colors.greenText,
-    paddingVertical: 10,
-    paddingHorizontal: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 2,
     borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
   },
   propertyBtnText: {
-    fontSize: 11,
+    fontSize: 9.5,
     fontWeight: '800',
     color: '#fff',
     textAlign: 'center',
+  },
+  propertyTime: {
+    alignSelf: 'flex-end',
+    fontSize: 8.5,
+    color: colors.muted,
+    marginTop: -1,
   },
   matchBox: { backgroundColor: colors.white, borderWidth: 1, borderColor: `${colors.brand}33`, borderRadius: 16, padding: 10, gap: 8 },
   matchTitle: { fontSize: 11, fontWeight: '800', color: colors.brand },

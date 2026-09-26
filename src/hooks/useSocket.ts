@@ -96,13 +96,19 @@ export function useSocket() {
     return () => { s?.off('match_results', handler); };
   }, []);
 
+  const onGroupDeleted = useCallback((handler: (data: { roomId: string; message?: string }) => void) => {
+    const s = socketRef.current;
+    s?.on('group_deleted', handler);
+    return () => { s?.off('group_deleted', handler); };
+  }, []);
+
   return {
     // 1:1
     joinChat, leaveChat, sendMessage, sendTyping, markRead,
     onMessage, onTyping, onNotification,
     // Group
     joinGroup, leaveGroup, sendGroupMessage, sendGroupTyping,
-    onGroupMessage, onGroupTyping, onMatchResults,
+    onGroupMessage, onGroupTyping, onMatchResults, onGroupDeleted,
     // Increments once the underlying socket is available. Include it in the deps
     // of any effect that subscribes, so the subscription is (re)attached rather
     // than silently no-op'ing when the socket wasn't ready on first run.

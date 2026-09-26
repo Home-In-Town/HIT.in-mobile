@@ -1,13 +1,43 @@
-import React, { useState } from 'react';
-import { View, Text, TextInput, Pressable, ScrollView, Linking, Image, Modal, StyleSheet } from 'react-native';
+import React, { useState, useEffect, useCallback } from 'react';
+import { View, Text, TextInput, Pressable, ScrollView, Linking, Image, Modal, StyleSheet, ActivityIndicator } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
-import { ChevronLeft, ChevronDown, Trash2, Plus, X, Image as ImageIcon, Video as VideoIcon, FileText, Download, Share2, FolderOpen } from 'lucide-react-native';
+import { ChevronLeft, ChevronDown, Trash2, Plus, X, Image as ImageIcon, Video as VideoIcon, FileText, Download, Share2, FolderOpen, RefreshCw, BadgeCheck, Building2 } from 'lucide-react-native';
 import { useAuth } from '../../lib/authContext';
 import { useToast } from '../Toast';
 import { DemoLead, stageColor, leadTypeColor } from './HumanLeadManager';
-import { ProjectAsset } from '../../lib/api';
+import {
+  ProjectAsset, humanLeadsApi, MatchedProperty, LeadMatchesResponse, LeadStage,
+} from '../../lib/api';
 import { colors } from '../../theme';
+
+/** Compact rupee formatting for property prices. */
+function fmtPrice(v: number): string {
+  if (!v) return '—';
+  if (v >= 10000000) return `₹${(v / 10000000).toFixed(2).replace(/\.00$/, '')}Cr`;
+  if (v >= 100000) return `₹${(v / 100000).toFixed(0)}L`;
+  return `₹${v.toLocaleString('en-IN')}`;
+}
+
+/** Turn engine match reasons into short, readable chips. */
+const MATCH_REASON_LABELS: Record<string, string> = {
+  budget: 'Budget',
+  bhk: 'BHK',
+  bhk_adjacent: 'BHK ±1',
+  area: 'Area',
+  loan: 'Loan',
+  possession: 'Possession',
+  city: 'City',
+  verified_builder: 'Verified',
+  rera: 'RERA',
+};
+
+function matchReasonLabel(raw: string): string {
+  if (MATCH_REASON_LABELS[raw]) return MATCH_REASON_LABELS[raw];
+  if (raw.startsWith('location')) return 'Location';
+  if (raw.startsWith('type_')) return 'Type';
+  return raw.replace(/_/g, ' ');
+}
 
 // An attachment on a journey step (photo, video or PDF)
 interface StepAsset {
@@ -31,8 +61,13 @@ interface JourneyStage {
 interface Props {
   lead: DemoLead;
   onBack: () => void;
-  stages: string[];
-  onStageChange?: (newStage: string) => void;
+  stages: LeadStage[];
+  /**
+   * Owns the stage change AND all of its user feedback (success/error toasts).
+   * This view deliberately does not toast on tap — doing so used to announce
+   * success before the request had even been sent.
+   */
+  onStageChange?: (newStage: LeadStage) => void;
   projectAssets?: ProjectAsset[];
 }
 
@@ -93,6 +128,121 @@ export default function LeadDetailView({ lead, onBack, stages, onStageChange, pr
   const [reminderText, setReminderText] = useState('');
   const [reminderDate, setReminderDate] = useState('');
   const [reminders, setReminders] = useState<Record<string, { text: string; date: string }[]>>({});
+
+  // ── Matched properties (real inventory from the matching engine) ──
+  const [matchInfo, setMatchInfo] = useState<LeadMatchesResponse | null>(null);
+  const [matchesLoading, setMatchesLoading] = useState(false);
+  const [matchesError, setMatchesError] = useState<string | null>(null);
+  const [rematching, setRematching] = useState(false);
+  const [dismissingId, setDismissingId] = useState<string | null>(null);
+
+  const loadMatches = useCallback(async () => {
+    setMatchesLoading(true);
+    setMatchesError(null);
+    try {
+      setMatchInfo(await humanLeadsApi.getMatches(lead.id));
+    } catch (e: any) {
+      setMatchesError(e?.message || 'Could not load matched properties.');
+    } finally {
+      setMatchesLoading(false);
+    }
+  }, [lead.id]);
+
+  // Refetch when the lead changes, and when the parent reports a new match count
+  // (which is how a fresh qualification propagates down).
+  useEffect(() => { loadMatches(); }, [loadMatches, lead.matchCount, lead.matchingEnabled]);
+
+  const handleRematch = async () => {
+    if (rematching) return;
+    setRematching(true);
+    try {
+      const { matching } = await humanLeadsApi.rematch(lead.id);
+      if (matching?.skippedReason === 'rent_not_supported') {
+        toast.show('Rent matching is not available yet.', 'info');
+      } else if (matching && matching.matches.length > 0) {
+        toast.success(`${matching.matches.length} matching ${matching.matches.length === 1 ? 'property' : 'properties'} found`);
+      } else {
+        toast.show('No matching property right now.', 'info');
+      }
+      await loadMatches();
+    } catch (e: any) {
+      const missing: string[] | undefined = e?.data?.missing;
+      if (Array.isArray(missing) && missing.length) {
+        toast.error(`Add ${missing.join(', ')} to match properties`);
+      } else {
+        toast.error(e?.message || 'Could not refresh matches');
+      }
+    } finally {
+      setRematching(false);
+    }
+  };
+
+  const handleDismissMatch = async (match: MatchedProperty) => {
+    if (!match.matchId || dismissingId) return;
+    setDismissingId(match.matchId);
+    // Optimistic removal — the row stays on the server (not deleted), it is just
+    // flagged, so this cannot lose data.
+    setMatchInfo((prev) => prev && {
+      ...prev,
+      matches: prev.matches.filter((m) => m.matchId !== match.matchId),
+      total: Math.max(0, prev.total - 1),
+    });
+    try {
+      await humanLeadsApi.dismissMatch(lead.id, match.matchId);
+    } catch (e: any) {
+      toast.error(e?.message || 'Could not dismiss match');
+      await loadMatches();   // put it back
+    } finally {
+      setDismissingId(null);
+    }
+  };
+
+  /** Send a matched property's real details to the client on WhatsApp. */
+  const shareMatchToWhatsApp = async (match: MatchedProperty) => {
+    const phone = lead.phone.replace(/[^0-9]/g, '');
+    const lines = [
+      match.projectName,
+      [match.location, match.city].filter(Boolean).join(', '),
+      match.startingPrice ? `Price: ${fmtPrice(match.startingPrice)} onwards` : '',
+      match.bhkOptions?.length ? `Config: ${match.bhkOptions.join(' / ')}` : '',
+      match.projectStatus ? `Status: ${match.projectStatus}` : '',
+      match.reraNumber ? `RERA: ${match.reraNumber}` : '',
+      match.builderCompany || match.builderName ? `By ${match.builderCompany || match.builderName}` : '',
+    ].filter(Boolean);
+    const message = lines.join('\n');
+
+    const appUrl = phone
+      ? `whatsapp://send?phone=${phone}&text=${encodeURIComponent(message)}`
+      : `whatsapp://send?text=${encodeURIComponent(message)}`;
+    const canOpen = await Linking.canOpenURL(appUrl).catch(() => false);
+    if (canOpen) {
+      Linking.openURL(appUrl).catch(() => toast.error('Could not open WhatsApp'));
+    } else {
+      const web = phone
+        ? `https://wa.me/${phone}?text=${encodeURIComponent(message)}`
+        : `https://wa.me/?text=${encodeURIComponent(message)}`;
+      Linking.openURL(web).catch(() => toast.error('WhatsApp not available'));
+    }
+  };
+
+  /**
+   * Why is the match list empty? Distinguishing these is the whole point —
+   * "not qualified yet" and "nothing available yet" need very different actions
+   * from the agent.
+   */
+  const emptyMatchMessage = (): string => {
+    if (!matchInfo) return '';
+    if (!matchInfo.qualified && !matchInfo.matchingEnabled) {
+      return `Move this lead to "Qualified" to find matching properties.`;
+    }
+    if (matchInfo.matchingSkippedReason === 'rent_not_supported') {
+      return 'Rent matching is not available yet. The requirement is saved.';
+    }
+    if (!matchInfo.requirementsComplete) {
+      return `Add ${matchInfo.requirementsMissing.join(', ')} to match properties.`;
+    }
+    return 'No matching property right now. This lead stays active — we will match it automatically when new inventory is added.';
+  };
 
   const currentStages = journeys[journeyType];
   const currentStep = Math.max(1, stages.indexOf(lead.stage) + 1);
@@ -231,7 +381,7 @@ export default function LeadDetailView({ lead, onBack, stages, onStageChange, pr
               {stages.map((st) => {
                 const active = lead.stage === st;
                 return (
-                  <Pressable key={st} onPress={() => { onStageChange(st); toast.success(`Moved to ${st}`); }} style={[s.pill, active ? s.pillActive : s.pillInactive]}>
+                  <Pressable key={st} onPress={() => onStageChange(st)} style={[s.pill, active ? s.pillActive : s.pillInactive]}>
                     <Text style={[s.pillText, { color: active ? '#fff' : colors.muted2 }]}>{st}</Text>
                   </Pressable>
                 );
@@ -252,6 +402,114 @@ export default function LeadDetailView({ lead, onBack, stages, onStageChange, pr
             <View key={i} style={{ flex: 1, borderRadius: 999, height: 6, backgroundColor: i < currentStep ? colors.brand : colors.line }} />
           ))}
         </View>
+      </View>
+
+      {/* Matched Properties — real inventory from the matching engine */}
+      <View>
+        <View style={[s.rowBetween, { marginBottom: 8 }]}>
+          <Text style={{ fontSize: 13, fontWeight: 'bold', color: colors.ink }}>
+            Matched Properties{matchInfo && matchInfo.matches.length > 0 ? ` (${matchInfo.matches.length})` : ''}
+          </Text>
+          {matchInfo?.matchingEnabled && (
+            <Pressable onPress={handleRematch} disabled={rematching} style={s.rematchBtn}>
+              <RefreshCw size={12} color={colors.brand} />
+              <Text style={s.rematchText}>{rematching ? 'Matching…' : 'Refresh'}</Text>
+            </Pressable>
+          )}
+        </View>
+
+        {matchesLoading && !matchInfo ? (
+          <View style={s.matchEmpty}><ActivityIndicator color={colors.brand} /></View>
+        ) : matchesError ? (
+          <View style={s.matchEmpty}>
+            <Text style={s.matchEmptyText}>{matchesError}</Text>
+            <Pressable onPress={loadMatches} style={{ marginTop: 8 }}>
+              <Text style={{ fontSize: 11, fontWeight: 'bold', color: colors.brand }}>Try again</Text>
+            </Pressable>
+          </View>
+        ) : matchInfo && matchInfo.matches.length > 0 ? (
+          <View style={{ gap: 10 }}>
+            {matchInfo.matches.map((m) => (
+              <View key={m.matchId || m.projectId} style={s.matchCard}>
+                {/* Header: name + match score */}
+                <View style={s.rowBetween}>
+                  <View style={{ flex: 1, paddingRight: 8 }}>
+                    <Text style={s.matchName} numberOfLines={1}>{m.projectName}</Text>
+                    <Text style={s.matchLoc} numberOfLines={1}>
+                      📍 {[m.location, m.city].filter(Boolean).join(', ') || '—'}
+                    </Text>
+                  </View>
+                  <View style={[s.scoreBadge, m.matchQuality === 'exact' ? s.scoreBadgeExact : s.scoreBadgeClose]}>
+                    <Text style={s.scoreBadgeText}>{Math.round(m.score)}%</Text>
+                  </View>
+                </View>
+
+                {/* Real property facts */}
+                <View style={s.matchFactsRow}>
+                  <Text style={s.matchPrice}>{fmtPrice(m.startingPrice)}{m.startingPrice ? '+' : ''}</Text>
+                  {m.bhkOptions.length > 0 && <Text style={s.matchFact}>{m.bhkOptions.join(' / ')}</Text>}
+                  {!!(m.carpetAreaRange || m.plotSizeRange) && (
+                    <Text style={s.matchFact}>{m.carpetAreaRange || m.plotSizeRange} sq.ft</Text>
+                  )}
+                  {!!m.projectStatus && <Text style={s.matchFact}>{m.projectStatus}</Text>}
+                </View>
+
+                {/* Builder identity — verified badge only when actually verified */}
+                <View style={s.matchBuilderRow}>
+                  <Building2 size={11} color={colors.muted} />
+                  <Text style={s.matchBuilder} numberOfLines={1}>
+                    {m.builderCompany || m.builderName || 'Builder'}
+                  </Text>
+                  {m.isVerifiedBuilder && (
+                    <View style={s.verifiedChip}>
+                      <BadgeCheck size={9} color="#15803D" />
+                      <Text style={s.verifiedChipText}>Verified</Text>
+                    </View>
+                  )}
+                  {m.reraApproved && (
+                    <View style={s.reraChip}><Text style={s.reraChipText}>RERA</Text></View>
+                  )}
+                </View>
+
+                {/* Why it matched — straight from the engine, not invented */}
+                {m.matchedOn.length > 0 && (
+                  <View style={s.reasonRow}>
+                    {m.matchedOn.slice(0, 5).map((r) => (
+                      <View key={r} style={s.reasonChip}>
+                        <Text style={s.reasonChipText}>{matchReasonLabel(r)}</Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
+
+                <View style={s.matchActions}>
+                  <Pressable onPress={() => shareMatchToWhatsApp(m)} style={s.matchSendBtn}>
+                    <Share2 size={13} color="#fff" />
+                    <Text style={s.matchSendText}>Send to client</Text>
+                  </Pressable>
+                  {m.matchId && (
+                    <Pressable
+                      onPress={() => handleDismissMatch(m)}
+                      disabled={dismissingId === m.matchId}
+                      style={s.matchDismissBtn}
+                    >
+                      <Text style={s.matchDismissText}>Not relevant</Text>
+                    </Pressable>
+                  )}
+                </View>
+              </View>
+            ))}
+          </View>
+        ) : (
+          <View style={s.matchEmpty}>
+            <Text style={s.matchEmptyText}>{emptyMatchMessage()}</Text>
+            {matchInfo?.lastMatchRunAt && (
+              <Text style={s.matchEmptyMeta}>
+                Last checked {new Date(matchInfo.lastMatchRunAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
+              </Text>
+            )}
+          </View>
+        )}
       </View>
 
       {/* Sales Journey */}
@@ -539,6 +797,68 @@ const s = StyleSheet.create({
   pillActive: { backgroundColor: colors.brand },
   pillInactive: { backgroundColor: colors.cream, borderWidth: 1, borderColor: colors.line },
   pillText: { fontSize: 10, fontWeight: 'bold' },
+
+  // ── Matched Properties ──
+  rematchBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    paddingHorizontal: 10, paddingVertical: 5,
+    borderRadius: 8, borderWidth: 1, borderColor: colors.brand + '55',
+  },
+  rematchText: { fontSize: 10, fontWeight: 'bold', color: colors.brand },
+
+  matchCard: {
+    backgroundColor: '#fff',
+    borderWidth: 1, borderColor: colors.line,
+    borderRadius: 12, padding: 12, gap: 8,
+  },
+  matchName: { fontSize: 13, fontWeight: 'bold', color: colors.ink },
+  matchLoc: { fontSize: 10.5, color: colors.muted2, marginTop: 2 },
+
+  scoreBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 },
+  scoreBadgeExact: { backgroundColor: '#DCFCE7' },
+  scoreBadgeClose: { backgroundColor: '#FEF3C7' },
+  scoreBadgeText: { fontSize: 10, fontWeight: 'bold', color: colors.ink },
+
+  matchFactsRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 10 },
+  matchPrice: { fontSize: 12.5, fontWeight: 'bold', color: colors.brand },
+  matchFact: { fontSize: 10.5, color: colors.muted2, fontWeight: '600' },
+
+  matchBuilderRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  matchBuilder: { fontSize: 10.5, color: colors.muted2, flexShrink: 1 },
+  verifiedChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 3,
+    backgroundColor: '#F0FDF4', borderWidth: 1, borderColor: '#BBF7D0',
+    paddingHorizontal: 6, paddingVertical: 1, borderRadius: 6,
+  },
+  verifiedChipText: { fontSize: 8.5, fontWeight: 'bold', color: '#15803D' },
+  reraChip: {
+    backgroundColor: colors.cream, borderWidth: 1, borderColor: colors.line,
+    paddingHorizontal: 6, paddingVertical: 1, borderRadius: 6,
+  },
+  reraChipText: { fontSize: 8.5, fontWeight: 'bold', color: colors.muted2 },
+
+  reasonRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 5 },
+  reasonChip: { backgroundColor: colors.brandTint, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6 },
+  reasonChipText: { fontSize: 8.5, fontWeight: 'bold', color: colors.brand },
+
+  matchActions: { flexDirection: 'row', gap: 8, marginTop: 2 },
+  matchSendBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    backgroundColor: '#15803D', paddingVertical: 9, borderRadius: 9,
+  },
+  matchSendText: { fontSize: 11, fontWeight: 'bold', color: '#fff' },
+  matchDismissBtn: {
+    paddingHorizontal: 12, paddingVertical: 9, borderRadius: 9,
+    borderWidth: 1, borderColor: colors.line, alignItems: 'center', justifyContent: 'center',
+  },
+  matchDismissText: { fontSize: 11, fontWeight: 'bold', color: colors.muted2 },
+
+  matchEmpty: {
+    backgroundColor: colors.cream, borderWidth: 1, borderColor: colors.line,
+    borderRadius: 12, padding: 16, alignItems: 'center',
+  },
+  matchEmptyText: { fontSize: 11.5, color: colors.muted2, textAlign: 'center', lineHeight: 17 },
+  matchEmptyMeta: { fontSize: 9.5, color: colors.muted, marginTop: 6 },
   journeyTab: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 12 },
   stageCard: { borderRadius: 12, borderWidth: 1 },
   stageHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14 },

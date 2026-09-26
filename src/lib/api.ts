@@ -12,9 +12,23 @@ const API_URL =
 
 export class ApiError extends Error {
   status: number;
-  constructor(message: string | null | undefined, status: number) {
+  /**
+   * Machine-readable error code from the response body, when the server sent
+   * one (e.g. 'INCOMPLETE_REQUIREMENTS', 'NOT_QUALIFIED').
+   */
+  code?: string;
+  /**
+   * The full parsed response body. Needed for errors that carry structured
+   * detail the UI must act on — e.g. the `missing` field list returned when a
+   * lead cannot be qualified yet.
+   */
+  data?: any;
+
+  constructor(message: string | null | undefined, status: number, body?: any) {
     super(message ?? 'Unknown error');
     this.status = status;
+    this.data = body ?? undefined;
+    if (body && typeof body.error === 'string') this.code = body.error;
   }
 }
 
@@ -43,7 +57,7 @@ async function handleResponse<T>(response: Response): Promise<T> {
         : typeof body?.error === 'string'
           ? body.error
           : `Request failed (${response.status})`;
-    throw new ApiError(String(message), response.status);
+    throw new ApiError(String(message), response.status, body);
   }
   return body as T;
 }
@@ -377,12 +391,138 @@ export interface LeadPerson {
   role: string;
 }
 
+/**
+ * The CRM pipeline stages, mirroring HumanLead.STAGES on the backend.
+ * Typed as a union rather than `string` so a stage typo is a compile error
+ * instead of a silently failing request.
+ */
+export type LeadStage =
+  | 'New Lead'
+  | 'Contacted'
+  | 'Qualified'
+  | 'Site Visit Scheduled'
+  | 'Site Visit Done'
+  | 'Negotiation'
+  | 'Booking'
+  | 'Won'
+  | 'Lost';
+
+/** The stage at which a lead becomes eligible for property matching. */
+export const QUALIFIED_STAGE: LeadStage = 'Qualified';
+
+/**
+ * Structured requirements used for real property matching.
+ *
+ * UNITS MATTER — these mirror the backend exactly:
+ *   budget / budgetMax : LAKHS            (₹50,00,000 → 50)
+ *   rentBudgetMonthly  : RUPEES PER MONTH (rent leads only)
+ *   area               : SQFT (always, normalised server-side)
+ *   areaInput          : the number the agent actually typed, in `areaUnit`
+ *
+ * The client may send a loose value (e.g. budget as "50-60L"); the server
+ * normalises and is the source of truth for what gets stored.
+ */
+export interface LeadRequirements {
+  transactionType?: 'buy' | 'rent';
+  bhkType?: string | null;
+  propertyType?: string | null;
+  budget?: number | null;
+  budgetMax?: number | null;
+  rentBudgetMonthly?: number | null;
+  area?: number | null;
+  areaUnit?: 'sqft' | 'acres' | null;
+  areaInput?: number | null;
+  locationRaw?: string | null;
+  city?: string | null;
+  locationCanonical?: string | null;
+  possessionNeeded?: 'immediate' | '6months' | '1year' | '2year' | 'ready' | 'under_construction' | null;
+  loanRequired?: boolean;
+}
+
+/** What the client may send when writing requirements (accepts loose input). */
+export interface LeadRequirementsInput
+  extends Omit<LeadRequirements, 'budget' | 'budgetMax' | 'rentBudgetMonthly' | 'area'> {
+  budget?: number | string | null;
+  budgetMax?: number | string | null;
+  rentBudgetMonthly?: number | string | null;
+  area?: number | string | null;
+}
+
+/** Why matching did not run for a lead. */
+export type MatchingSkippedReason = 'rent_not_supported' | 'incomplete_requirements';
+
+/**
+ * A real property matched to a lead. Every field comes from the Projects
+ * collection — there is no mock data on this path.
+ */
+export interface MatchedProperty {
+  /** LeadPropertyMatch row id — needed to dismiss this specific match. */
+  matchId?: string;
+  /** Stable Project id — the Lead → Property relationship. */
+  projectId: string;
+  projectName: string;
+  slug: string;
+  city: string;
+  location: string;
+  propertyType: string;
+  projectStatus: string;
+
+  startingPrice: number;
+  bankLoanAvailable: boolean;
+  bhkOptions: string[];
+  carpetAreaRange: string;
+  plotSizeRange: string;
+
+  coverImageUrl: string;
+
+  reraApproved: boolean;
+  reraNumber: string;
+
+  builderName: string;
+  builderCompany: string;
+  isVerifiedBuilder: boolean;
+  builderRating: number;
+
+  score: number;
+  confidence?: number;
+  matchedOn: string[];
+  matchQuality?: 'exact' | 'close' | 'nearest';
+  matchSource?: 'qualification' | 'project_published' | 'manual_rematch';
+  firstMatchedAt?: string;
+  lastScoredAt?: string;
+  dismissed?: boolean;
+}
+
+/** Outcome of a match run, returned alongside a qualification or rematch. */
+export interface MatchingRunResult {
+  ran: boolean;
+  skippedReason: MatchingSkippedReason | null;
+  missing: string[];
+  matches: MatchedProperty[];
+  newCount: number;
+  total: number;
+  error: string | null;
+}
+
+/** Response of GET /human-leads/:id/matches */
+export interface LeadMatchesResponse {
+  matches: MatchedProperty[];
+  total: number;
+  qualified: boolean;
+  matchingEnabled: boolean;
+  matchingSkippedReason: MatchingSkippedReason | null;
+  lastMatchRunAt: string | null;
+  requirementsComplete: boolean;
+  requirementsMissing: string[];
+}
+
 export interface HumanLead {
   id: string;
   name: string;
   phone: string;
   altPhone?: string;
   email?: string;
+  /** Legacy free-text fields — display only. `requirements` is authoritative. */
   budget?: string;
   homeType?: string;
   buyingType?: string;
@@ -390,13 +530,28 @@ export interface HumanLead {
   project: string;
   source: string;
   leadType: 'inbound' | 'outbound';
-  stage: string;
+  stage: LeadStage;
   siteVisitDate?: string;
   siteVisitTime?: string;
   date: string;
   createdBy: LeadPerson | null;
   owningCaptain: LeadPerson | null;
   assignedAgent: LeadPerson | null;
+
+  // ── Property matching ──
+  requirements: LeadRequirements;
+  /** False when the lead cannot be qualified yet. */
+  requirementsComplete: boolean;
+  /** Which requirement fields still need filling in. */
+  requirementsMissing: string[];
+  /** Requirement values inferred from the legacy free-text fields. */
+  requirementsDerivedFrom: string[];
+  qualifiedAt: string | null;
+  matchingEnabled: boolean;
+  matchingSkippedReason: MatchingSkippedReason | null;
+  lastMatchRunAt: string | null;
+  matchCount: number;
+  bestMatchScore: number;
 }
 
 export interface CreateHumanLeadInput {
@@ -411,8 +566,9 @@ export interface CreateHumanLeadInput {
   projectName?: string;
   source?: string;
   leadType?: 'inbound' | 'outbound';
-  stage?: string;
+  stage?: LeadStage;
   assignedAgent?: string | null;
+  requirements?: LeadRequirementsInput;
 }
 
 export const humanLeadsApi = {
@@ -436,24 +592,37 @@ export const humanLeadsApi = {
     return data.lead;
   },
 
-  async updateStage(id: string, stage: string): Promise<HumanLead> {
+  /**
+   * Move a lead to a new stage.
+   *
+   * Moving to 'Qualified' runs real property matching server-side, so the
+   * response carries a `matching` block with the matched properties. It returns
+   * the full response (not just the lead) because those matches are currently
+   * the only way an agent learns a match was found.
+   *
+   * Throws with `INCOMPLETE_REQUIREMENTS` if the lead cannot be qualified yet.
+   */
+  async updateStage(id: string, stage: LeadStage): Promise<{ lead: HumanLead; matching: MatchingRunResult | null }> {
     const response = await fetch(`${API_URL}/human-leads/${id}/stage`, {
       method: 'PUT',
       headers: { ...(await authHeaders()), 'Content-Type': 'application/json' },
       body: JSON.stringify({ stage }),
     });
-    const data = await handleResponse<{ lead: HumanLead }>(response);
-    return data.lead;
+    const data = await handleResponse<{ lead: HumanLead; matching: MatchingRunResult | null }>(response);
+    return { lead: data.lead, matching: data.matching ?? null };
   },
 
-  async update(id: string, patch: Partial<CreateHumanLeadInput & { siteVisitDate: string; siteVisitTime: string }>): Promise<HumanLead> {
+  async update(
+    id: string,
+    patch: Partial<CreateHumanLeadInput & { siteVisitDate: string; siteVisitTime: string }>,
+  ): Promise<{ lead: HumanLead; rematchRecommended: boolean }> {
     const response = await fetch(`${API_URL}/human-leads/${id}`, {
       method: 'PUT',
       headers: { ...(await authHeaders()), 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),
     });
-    const data = await handleResponse<{ lead: HumanLead }>(response);
-    return data.lead;
+    const data = await handleResponse<{ lead: HumanLead; rematchRecommended?: boolean }>(response);
+    return { lead: data.lead, rematchRecommended: !!data.rematchRecommended };
   },
 
   async assign(id: string, agentId: string | null): Promise<HumanLead> {
@@ -466,10 +635,47 @@ export const humanLeadsApi = {
     return data.lead;
   },
 
-  async teamAgents(): Promise<{ id: string; name: string; role: string }[]> {
+  async teamAgents(): Promise<LeadPerson[]> {
     const response = await fetch(`${API_URL}/human-leads/team-agents`, { headers: await authHeaders() });
-    const data = await handleResponse<{ agents: { id: string; name: string; role: string }[] }>(response);
+    const data = await handleResponse<{ agents: LeadPerson[] }>(response);
     return data.agents;
+  },
+
+  // ── Property matching ──────────────────────────────────────────────────────
+
+  /**
+   * Real matched properties for a lead, strongest first.
+   * Also returns the context needed to explain an empty list (not qualified /
+   * rent / missing requirement fields / genuinely nothing available yet).
+   */
+  async getMatches(id: string, opts?: { includeDismissed?: boolean }): Promise<LeadMatchesResponse> {
+    const qs = opts?.includeDismissed ? '?includeDismissed=true' : '';
+    const response = await fetch(`${API_URL}/human-leads/${id}/matches${qs}`, {
+      headers: await authHeaders(),
+    });
+    return handleResponse<LeadMatchesResponse>(response);
+  },
+
+  /**
+   * Re-run matching for an already-qualified lead, e.g. after editing its
+   * requirements. Safe to call repeatedly — the server de-duplicates matches.
+   */
+  async rematch(id: string): Promise<{ lead: HumanLead; matching: MatchingRunResult | null }> {
+    const response = await fetch(`${API_URL}/human-leads/${id}/rematch`, {
+      method: 'POST',
+      headers: await authHeaders(),
+    });
+    const data = await handleResponse<{ lead: HumanLead; matching: MatchingRunResult | null }>(response);
+    return { lead: data.lead, matching: data.matching ?? null };
+  },
+
+  /** Hide a match the agent judged irrelevant. */
+  async dismissMatch(id: string, matchId: string): Promise<{ matchCount: number; bestMatchScore: number }> {
+    const response = await fetch(`${API_URL}/human-leads/${id}/matches/${matchId}/dismiss`, {
+      method: 'PUT',
+      headers: await authHeaders(),
+    });
+    return handleResponse<{ matchCount: number; bestMatchScore: number }>(response);
   },
 };
 
@@ -619,8 +825,22 @@ export interface Project {
   location: string;
   startingPrice: number;
   pricePerSqFt?: number;
+  totalPriceRange?: string;
+  paymentPlan?: string;
+  gstPercentage?: number;
+  stampDutyPercentage?: number;
+  registrationCharges?: number;
+  maintenanceCharges?: string;
+  otherCharges?: string;
   bhkOptions: string[];
   carpetAreaRange?: string;
+  floorRange?: string;
+  plotSizeRange?: string;
+  facingOptions?: string[];
+  latitude?: number;
+  longitude?: number;
+  googleMapLink?: string;
+  landmarks?: Array<{ name?: string; type?: string; address?: string }>;
   reraApproved: boolean;
   reraNumber?: string;
   projectStatus: string;
@@ -633,8 +853,10 @@ export interface Project {
   coverImage?: { url: string } | string | null;
   galleryImages?: any[];
   videos?: any[];
+  layoutImage?: { url: string } | string | null;
   brochureUrl?: any;
   amenities?: string[];
+  cta?: { buttonText?: string; whatsappNumber?: string; callNumber?: string };
   owner?: { id: string; name: string; role: string; companyName?: string };
   assignedAgent?: { id: string; name: string; role: string } | null;
   createdAt?: string;
@@ -649,8 +871,22 @@ function transformProject(p: any): Project {
     location: p?.location || '',
     startingPrice: p?.pricing?.startingPrice ?? p?.startingPrice ?? 0,
     pricePerSqFt: p?.pricing?.pricePerSqFt ?? p?.pricePerSqFt,
+    totalPriceRange: p?.pricing?.totalPriceRange ?? p?.totalPriceRange,
+    paymentPlan: p?.pricing?.paymentPlan ?? p?.paymentPlan,
+    gstPercentage: p?.pricing?.gstPercentage ?? p?.gstPercentage,
+    stampDutyPercentage: p?.pricing?.stampDutyPercentage ?? p?.stampDutyPercentage,
+    registrationCharges: p?.pricing?.registrationCharges ?? p?.registrationCharges,
+    maintenanceCharges: p?.pricing?.maintenanceCharges ?? p?.maintenanceCharges,
+    otherCharges: p?.pricing?.otherCharges ?? p?.otherCharges,
     bhkOptions: p?.configuration?.bhkOptions ?? p?.bhkOptions ?? [],
     carpetAreaRange: p?.configuration?.carpetAreaRange ?? p?.carpetAreaRange,
+    floorRange: p?.configuration?.floorRange ?? p?.floorRange,
+    plotSizeRange: p?.configuration?.plotSizeRange ?? p?.plotSizeRange,
+    facingOptions: p?.configuration?.facingOptions ?? p?.facingOptions ?? [],
+    latitude: p?.latitude,
+    longitude: p?.longitude,
+    googleMapLink: p?.googleMapLink,
+    landmarks: p?.landmarks ?? [],
     reraApproved: p?.reraApproved ?? false,
     reraNumber: p?.reraNumber,
     projectStatus: p?.projectStatus || 'pre-launch',
@@ -663,8 +899,14 @@ function transformProject(p: any): Project {
     coverImage: p?.media?.coverImage ?? p?.coverImage ?? null,
     galleryImages: p?.media?.galleryImages ?? p?.galleryImages ?? [],
     videos: p?.media?.videos ?? p?.videos ?? [],
+    layoutImage: p?.media?.layoutImage ?? p?.layoutImage ?? null,
     brochureUrl: p?.media?.brochurePdf ?? p?.brochureUrl ?? null,
     amenities: p?.amenities ?? [],
+    cta: p?.cta ? {
+      buttonText: p.cta.buttonText,
+      whatsappNumber: p.cta.whatsappNumber,
+      callNumber: p.cta.callNumber,
+    } : undefined,
     owner: p?.owner ? { ...p.owner, id: String(p.owner.id || p.owner._id || '') } : undefined,
     assignedAgent: p?.assignedAgent ? { ...p.assignedAgent, id: String(p.assignedAgent.id || p.assignedAgent._id || '') } : null,
     createdAt: p?.createdAt,
@@ -736,6 +978,46 @@ export const projectsApiExtended = {
 // which streams it to R2 and saves the record. Returns { url, key }.
 // NOTE: never set Content-Type manually for multipart — RN sets the boundary.
 export const mediaApi = {
+  /**
+   * Upload a chat attachment to a group-scoped R2 key. Unlike uploadAndSave,
+   * this does not require or mutate a Project, so it works in universal and
+   * area groups too.
+   */
+  async uploadGroupAttachment(opts: {
+    roomId: string;
+    uri: string;
+    name: string;
+    mimeType: string;
+    kind: 'image' | 'file';
+  }): Promise<{
+    url: string;
+    key: string;
+    attachment: { name: string; mimeType: string; size: number; key: string };
+  }> {
+    const token = await tokenStorage.get();
+    const form = new FormData();
+    form.append('file', {
+      uri: opts.uri,
+      name: opts.name,
+      type: opts.mimeType,
+    } as any);
+    form.append('kind', opts.kind);
+
+    const headers: Record<string, string> = {};
+    if (token) headers.Authorization = `Bearer ${token}`;
+
+    const response = await fetch(
+      `${API_URL}/group-chat/rooms/${encodeURIComponent(opts.roomId)}/attachments`,
+      { method: 'POST', headers, body: form },
+    );
+    const data = await handleResponse<{
+      fileUrl: string;
+      fileKey: string;
+      attachment: { name: string; mimeType: string; size: number; key: string };
+    }>(response);
+    return { url: data.fileUrl, key: data.fileKey, attachment: data.attachment };
+  },
+
   async uploadAndSave(opts: {
     uri: string;
     name: string;
@@ -978,9 +1260,10 @@ export interface GroupRoom {
       brochurePdf?: { url: string };
       layoutImage?: { url: string };
     };
-    owner?: { name?: string; companyName?: string };
+    owner?: { id: string; name?: string; companyName?: string };
   };
   area?: { city: string; location: string };
+  createdBy?: { id: string; name?: string };
   members: Array<{ user: { id: string; name: string; role: string; companyName?: string }; role: string; joinedAt?: string }>;
   description: string;
   isUniversal?: boolean;
@@ -989,14 +1272,52 @@ export interface GroupRoom {
   lastActivity: string;
 }
 
+export interface InventoryCard {
+  /** Populated project object on reads, ObjectId string on freshly posted cards. */
+  project?: string | {
+    _id?: string;
+    id?: string;
+    projectName?: string;
+    slug?: string;
+    media?: { coverImage?: { url?: string } };
+  };
+  projectName?: string;
+  propertyType?: string;
+  carpetAreaRange?: string;
+  bhkOptions?: string[];
+  /** Price is stored in lakhs, matching the existing inventory form. */
+  priceRange?: { min?: number; max?: number };
+  /** Locality / area name, not floor area. */
+  area?: string;
+  city?: string;
+  possessionStatus?: string;
+  urgency?: 'normal' | 'urgent' | 'very_urgent';
+  bankLoanAvailable?: boolean;
+  commissionPercent?: number;
+  callNumber?: string;
+  description?: string;
+
+  // AI-shared match variant
+  aiMatch?: boolean;
+  score?: number;
+}
+
 export interface GroupMessage {
   id: string;
   room: string;
-  sender: { id: string; name: string; role: string; companyName?: string };
+  sender: {
+    id: string;
+    name: string;
+    role: string;
+    companyName?: string;
+    isVerified?: boolean;
+    verificationStatus?: { builder?: string };
+  };
   messageType: 'text' | 'requirement_card' | 'inventory_card' | 'system' | 'image' | 'file';
   content: string;
+  attachment?: { name?: string; mimeType?: string; size?: number; key?: string };
   requirementCard?: any;
-  inventoryCard?: any;
+  inventoryCard?: InventoryCard;
   matchResults?: any[];
   createdAt: string;
 }
@@ -1009,9 +1330,22 @@ function transformGroupRoom(raw: any): GroupRoom {
     project: raw?.project ? {
       ...raw.project,
       id: String(raw.project._id || raw.project.id || ''),
-      owner: raw.project.owner ? { name: raw.project.owner.name, companyName: raw.project.owner.companyName } : undefined,
+      owner: raw.project.owner
+        ? (typeof raw.project.owner === 'object'
+          ? {
+            id: String(raw.project.owner._id || raw.project.owner.id || ''),
+            name: raw.project.owner.name,
+            companyName: raw.project.owner.companyName,
+          }
+          : { id: String(raw.project.owner) })
+        : undefined,
     } : undefined,
     area: raw?.area,
+    createdBy: raw?.createdBy
+      ? (typeof raw.createdBy === 'object'
+        ? { id: String(raw.createdBy._id || raw.createdBy.id || ''), name: raw.createdBy.name }
+        : { id: String(raw.createdBy) })
+      : undefined,
     members: (raw?.members || []).map((m: any) => ({
       user: { id: String(m?.user?._id || m?.user?.id || ''), name: m?.user?.name || '', role: m?.user?.role || '', companyName: m?.user?.companyName || '' },
       role: m?.role || 'member',
@@ -1052,16 +1386,30 @@ export const groupChatApi = {
     return (data.messages || []).map((m: any) => ({
       id: String(m._id || m.id || ''),
       room: String(m.room || roomId),
-      sender: { id: String(m.sender?._id || m.sender?.id || ''), name: m.sender?.name || '', role: m.sender?.role || '', companyName: m.sender?.companyName },
+      sender: {
+        id: String(m.sender?._id || m.sender?.id || ''),
+        name: m.sender?.name || '',
+        role: m.sender?.role || '',
+        companyName: m.sender?.companyName,
+        isVerified: m.sender?.isVerified === true,
+        verificationStatus: m.sender?.verificationStatus,
+      },
       messageType: m.messageType || 'text',
       content: m.content || '',
+      attachment: m.attachment,
       requirementCard: m.requirementCard,
       inventoryCard: m.inventoryCard,
       matchResults: m.matchResults,
       createdAt: m.createdAt || '',
     }));
   },
-  async postMessage(roomId: string, data: { messageType: string; content?: string; requirementCard?: any; inventoryCard?: any }): Promise<any> {
+  async postMessage(roomId: string, data: {
+    messageType: string;
+    content?: string;
+    attachment?: { name?: string; mimeType?: string; size?: number; key?: string };
+    requirementCard?: any;
+    inventoryCard?: any;
+  }): Promise<any> {
     const r = await fetch(`${API_URL}/group-chat/rooms/${encodeURIComponent(roomId)}/messages`, { method: 'POST', headers: await authHeaders(), body: JSON.stringify(data) });
     return handleResponse<any>(r);
   },
@@ -1078,12 +1426,13 @@ export const groupChatApi = {
 
 // ── Lead Matching (NLP) ─────────────────────────────────────
 export const leadMatchingApi = {
-  async getLeads(params?: { page?: number; limit?: number; status?: string; source?: string }): Promise<{ leads: any[]; pagination: any }> {
+  async getLeads(params?: { page?: number; limit?: number; status?: string; source?: string; mineOnly?: boolean }): Promise<{ leads: any[]; pagination: any }> {
     const q = new URLSearchParams();
     if (params?.page) q.set('page', String(params.page));
     if (params?.limit) q.set('limit', String(params.limit));
     if (params?.status) q.set('status', params.status);
     if (params?.source) q.set('source', params.source);
+    if (params?.mineOnly) q.set('mineOnly', 'true');
     const r = await fetch(`${API_URL}/lead-matching/leads${q.toString() ? '?' + q.toString() : ''}`, { headers: await authHeaders() });
     return handleResponse<any>(r);
   },
