@@ -222,20 +222,10 @@ export default function LeadDetailView({ lead, onBack, stages, onStageChange, pr
         </View>
       </View>
 
-      {/* Stage change */}
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-        <View style={{ flex: 1 }}>
-          <Text style={s.sectionLabel}>Current Stage</Text>
-          <View style={{ alignSelf: 'flex-start', backgroundColor: sc.bg, borderColor: sc.border, borderWidth: 1, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 }}>
-            <Text style={{ color: sc.text, fontSize: 11, fontWeight: '700' }}>{lead.stage}</Text>
-          </View>
-        </View>
-      </View>
-
-      {/* Move to — stage buttons */}
+      {/* Move to Stage selector */}
       {onStageChange && (
         <View>
-          <Text style={[s.sectionLabel, { marginBottom: 6 }]}>Move to Stage</Text>
+          <Text style={[s.sectionLabel, { marginBottom: 8 }]}>Move to Stage</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false}>
             <View style={{ flexDirection: 'row', gap: 6 }}>
               {stages.map((st) => {
@@ -268,7 +258,7 @@ export default function LeadDetailView({ lead, onBack, stages, onStageChange, pr
       <View>
         <View style={[s.rowBetween, { marginBottom: 12 }]}>
           <Text style={{ fontSize: 13, fontWeight: 'bold', color: colors.ink }}>Sales Journey</Text>
-          <Text style={{ fontSize: 11, fontWeight: 'bold', color: colors.brand }}>Step {currentStep} / {currentStages.length}</Text>
+          <Text style={{ fontSize: 11, fontWeight: 'bold', color: colors.brand }}>{lead.stage}</Text>
         </View>
 
         {/* Journey type toggle */}
@@ -289,179 +279,167 @@ export default function LeadDetailView({ lead, onBack, stages, onStageChange, pr
           {journeyType === 'ai' && 'AI-assisted — fastest close ~15 din.'}
         </Text>
 
-        {/* Stages */}
+        {/* Stages - Show only current stage */}
         <View style={{ gap: 8 }}>
-          {currentStages.map((stage, idx) => {
-            const isOpen = expanded === stage.id;
-            const done = idx < currentStep;
+          {currentStages.filter(stage => stage.name === lead.stage).map((stage, idx) => {
+            const isOpen = true; // Always open since we show only current stage
+            const done = stages.indexOf(lead.stage) >= 0;
+            const actualIdx = currentStages.findIndex(s => s.id === stage.id);
             return (
-              <View key={stage.id} style={[s.stageCard, { borderColor: isOpen ? colors.brand + '4D' : colors.line, backgroundColor: done ? '#fff' : colors.cream }]}>
-                <Pressable onPress={() => setExpanded(isOpen ? null : stage.id)} style={s.stageHeader}>
+              <View key={stage.id} style={[s.stageCard, { borderColor: colors.brand + '4D', backgroundColor: done ? '#fff' : colors.cream }]}>
+                <View style={s.stageHeader}>
                   <View style={[s.stageNum, { backgroundColor: done ? colors.brand : colors.line }]}>
-                    <Text style={{ color: done ? '#fff' : colors.muted, fontWeight: '700', fontSize: 11 }}>{idx + 1}</Text>
+                    <Text style={{ color: done ? '#fff' : colors.muted, fontWeight: '700', fontSize: 11 }}>{actualIdx + 1}</Text>
                   </View>
                   <Text style={{ flex: 1, fontSize: 13, fontWeight: 'bold', color: colors.ink }}>{stage.name}</Text>
                   <Text style={{ fontSize: 9, fontWeight: 'bold', color: colors.brand }}>{stage.duration}</Text>
-                  {isEditing && (
-                    <Pressable onPress={() => deleteStage(stage.id)} style={{ padding: 4 }}><Trash2 size={16} color="#F87171" /></Pressable>
+                </View>
+
+                <View style={s.stageBody}>
+                  {/* Description */}
+                  {isEditing ? (
+                    <TextInput multiline value={stage.description} onChangeText={(v) => editField(stage.id, 'description', v)} style={s.editArea} />
+                  ) : (
+                    <Text style={{ fontSize: 13, color: colors.muted2, lineHeight: 20 }}>{stage.description}</Text>
                   )}
-                  <ChevronDown size={16} color={colors.muted} style={{ transform: [{ rotate: isOpen ? '180deg' : '0deg' }] }} />
-                </Pressable>
 
-                {isOpen && (
-                  <View style={s.stageBody}>
-                    {/* Description */}
-                    {isEditing ? (
-                      <TextInput multiline value={stage.description} onChangeText={(v) => editField(stage.id, 'description', v)} style={s.editArea} />
-                    ) : (
-                      <Text style={{ fontSize: 13, color: colors.muted2, lineHeight: 20 }}>{stage.description}</Text>
+                  {/* View project assets */}
+                  <Pressable onPress={() => setAssetsModalStageId(stage.id)} style={s.viewAssetsBtn}>
+                    <FolderOpen size={15} color="#fff" />
+                    <Text style={{ fontSize: 11, fontWeight: 'bold', color: '#fff' }}>View Assets</Text>
+                    {projectAssets.length > 0 && (
+                      <View style={s.assetCountBadge}><Text style={{ fontSize: 8, fontWeight: 'bold', color: '#fff' }}>{projectAssets.length}</Text></View>
                     )}
+                  </Pressable>
 
-                    {/* View project assets */}
-                    <Pressable onPress={() => setAssetsModalStageId(stage.id)} style={s.viewAssetsBtn}>
-                      <FolderOpen size={15} color="#fff" />
-                      <Text style={{ fontSize: 11, fontWeight: 'bold', color: '#fff' }}>View Assets</Text>
-                      {projectAssets.length > 0 && (
-                        <View style={s.assetCountBadge}><Text style={{ fontSize: 8, fontWeight: 'bold', color: '#fff' }}>{projectAssets.length}</Text></View>
-                      )}
-                    </Pressable>
-
-                    {/* Step attachments */}
-                    {(stageAssets(stage).length > 0 || canEditJourney) && (
-                      <View style={s.attachBox}>
-                        <View style={[s.rowBetween, { marginBottom: 8 }]}>
-                          <Text style={s.sectionLabel}>Attachments</Text>
-                          {canEditJourney && (
-                            <View style={{ flexDirection: 'row', gap: 6 }}>
-                              <Pressable onPress={() => uploadMedia(stage.id, 'image')} style={s.attachChip}>
-                                <ImageIcon size={12} color={colors.muted2} /><Text style={s.attachChipText}>Photo</Text>
-                              </Pressable>
-                              <Pressable onPress={() => uploadMedia(stage.id, 'video')} style={s.attachChip}>
-                                <VideoIcon size={12} color={colors.muted2} /><Text style={s.attachChipText}>Video</Text>
-                              </Pressable>
-                              <Pressable onPress={() => uploadPdf(stage.id)} style={s.attachChip}>
-                                <FileText size={12} color={colors.muted2} /><Text style={s.attachChipText}>PDF</Text>
-                              </Pressable>
-                            </View>
-                          )}
-                        </View>
-                        {stageAssets(stage).length > 0 ? (
-                          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-                            {stageAssets(stage).map((asset, aIdx) => {
-                              const legacyCount = stage.photos.length;
-                              const typedIndex = aIdx - legacyCount;
-                              return (
-                                <Pressable key={aIdx} onPress={() => openAsset(asset)} style={{ borderRadius: 8, overflow: 'hidden', borderWidth: 1, borderColor: colors.line, position: 'relative', width: 90, height: 70 }}>
-                                  {asset.type === 'image' ? (
-                                    <Image source={{ uri: asset.url }} style={{ width: 90, height: 70 }} />
-                                  ) : (
-                                    <View style={{ width: 90, height: 70, backgroundColor: colors.night, alignItems: 'center', justifyContent: 'center', gap: 2 }}>
-                                      {asset.type === 'video' ? <VideoIcon size={22} color={colors.brand} /> : <FileText size={22} color={colors.brand} />}
-                                      <Text style={{ color: '#fff', fontSize: 8, fontWeight: '700', textTransform: 'uppercase' }}>{asset.type}</Text>
-                                    </View>
-                                  )}
-                                  {canEditJourney && typedIndex >= 0 && (
-                                    <Pressable onPress={() => deleteAsset(stage.id, typedIndex)} style={{ position: 'absolute', top: 3, right: 3, width: 18, height: 18, borderRadius: 9, backgroundColor: '#EF4444', alignItems: 'center', justifyContent: 'center' }}>
-                                      <X size={12} color="#fff" strokeWidth={2.5} />
-                                    </Pressable>
-                                  )}
-                                </Pressable>
-                              );
-                            })}
+                  {/* Step attachments */}
+                  {(stageAssets(stage).length > 0 || canEditJourney) && (
+                    <View style={s.attachBox}>
+                      <View style={[s.rowBetween, { marginBottom: 8 }]}>
+                        <Text style={s.sectionLabel}>Attachments</Text>
+                        {canEditJourney && (
+                          <View style={{ flexDirection: 'row', gap: 6 }}>
+                            <Pressable onPress={() => uploadMedia(stage.id, 'image')} style={s.attachChip}>
+                              <ImageIcon size={12} color={colors.muted2} /><Text style={s.attachChipText}>Photo</Text>
+                            </Pressable>
+                            <Pressable onPress={() => uploadMedia(stage.id, 'video')} style={s.attachChip}>
+                              <VideoIcon size={12} color={colors.muted2} /><Text style={s.attachChipText}>Video</Text>
+                            </Pressable>
+                            <Pressable onPress={() => uploadPdf(stage.id)} style={s.attachChip}>
+                              <FileText size={12} color={colors.muted2} /><Text style={s.attachChipText}>PDF</Text>
+                            </Pressable>
                           </View>
-                        ) : (
-                          <Text style={{ fontSize: 9, color: colors.muted, fontStyle: 'italic' }}>No attachments added yet</Text>
                         )}
                       </View>
-                    )}
-
-                    {/* Touch Plan */}
-                    <InfoBlock label="Touch Plan" value={stage.touchPlan} editing={isEditing} onChange={(v) => editField(stage.id, 'touchPlan', v)} mono />
-                    {/* Next Step */}
-                    <InfoBlock label="Aage Kab" value={stage.nextStep} editing={isEditing} onChange={(v) => editField(stage.id, 'nextStep', v)} />
-                    {/* Script */}
-                    <View style={s.scriptBox}>
-                      <Text style={[s.sectionLabel, { marginBottom: 6 }]}>Script / Message</Text>
-                      {isEditing ? (
-                        <TextInput multiline value={stage.scriptMessage} onChangeText={(v) => editField(stage.id, 'scriptMessage', v)} style={s.editAreaSm} />
+                      {stageAssets(stage).length > 0 ? (
+                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                          {stageAssets(stage).map((asset, aIdx) => {
+                            const legacyCount = stage.photos.length;
+                            const typedIndex = aIdx - legacyCount;
+                            return (
+                              <Pressable key={aIdx} onPress={() => openAsset(asset)} style={{ borderRadius: 8, overflow: 'hidden', borderWidth: 1, borderColor: colors.line, position: 'relative', width: 90, height: 70 }}>
+                                {asset.type === 'image' ? (
+                                  <Image source={{ uri: asset.url }} style={{ width: 90, height: 70 }} />
+                                ) : (
+                                  <View style={{ width: 90, height: 70, backgroundColor: colors.night, alignItems: 'center', justifyContent: 'center', gap: 2 }}>
+                                    {asset.type === 'video' ? <VideoIcon size={22} color={colors.brand} /> : <FileText size={22} color={colors.brand} />}
+                                    <Text style={{ color: '#fff', fontSize: 8, fontWeight: '700', textTransform: 'uppercase' }}>{asset.type}</Text>
+                                  </View>
+                                )}
+                                {canEditJourney && typedIndex >= 0 && (
+                                  <Pressable onPress={() => deleteAsset(stage.id, typedIndex)} style={{ position: 'absolute', top: 3, right: 3, width: 18, height: 18, borderRadius: 9, backgroundColor: '#EF4444', alignItems: 'center', justifyContent: 'center' }}>
+                                    <X size={12} color="#fff" strokeWidth={2.5} />
+                                  </Pressable>
+                                )}
+                              </Pressable>
+                            );
+                          })}
+                        </View>
                       ) : (
-                        <Text style={{ fontSize: 11, color: colors.ink }}>{fill(stage.scriptMessage, lead)}</Text>
+                        <Text style={{ fontSize: 9, color: colors.muted, fontStyle: 'italic' }}>No attachments added yet</Text>
                       )}
                     </View>
+                  )}
 
-                    {/* Actions */}
-                    <View style={{ flexDirection: 'row', gap: 8 }}>
-                      <Pressable onPress={() => Linking.openURL(`tel:${lead.phone.replace(/\s/g, '')}`)} style={s.callBtn}>
-                        <Text style={{ color: '#fff', fontSize: 11, fontWeight: 'bold' }}>Call karo</Text>
-                      </Pressable>
-                      <Pressable onPress={() => Linking.openURL(`https://wa.me/${lead.phone.replace(/[^0-9]/g, '')}?text=${encodeURIComponent(fill(stage.scriptMessage, lead))}`)} style={[s.waBtn]}>
-                        <Text style={{ color: '#fff', fontSize: 11, fontWeight: 'bold' }}>WhatsApp bhejo</Text>
-                      </Pressable>
-                    </View>
-
-                    {/* Note / Reminder toggles */}
-                    <View style={{ flexDirection: 'row', gap: 8 }}>
-                      <Pressable onPress={() => { setShowNote(showNote === stage.id ? null : stage.id); setShowReminder(null); }} style={[s.toggleChip, showNote === stage.id ? { borderColor: colors.brand, backgroundColor: colors.brandTint } : { borderColor: colors.line }]}>
-                        <Text style={{ fontSize: 11, fontWeight: 'bold', color: showNote === stage.id ? colors.brand : colors.muted2 }}>Note</Text>
-                      </Pressable>
-                      <Pressable onPress={() => { setShowReminder(showReminder === stage.id ? null : stage.id); setShowNote(null); }} style={[s.toggleChip, showReminder === stage.id ? { borderColor: colors.brand, backgroundColor: colors.brandTint } : { borderColor: colors.line }]}>
-                        <Text style={{ fontSize: 11, fontWeight: 'bold', color: showReminder === stage.id ? colors.brand : colors.muted2 }}>Reminder</Text>
-                      </Pressable>
-                    </View>
-
-                    {/* Note input */}
-                    {showNote === stage.id && (
-                      <View style={s.inputCard}>
-                        <TextInput multiline placeholder="Add a note..." placeholderTextColor={colors.muted} value={noteText} onChangeText={setNoteText} style={s.editAreaSm} />
-                        <View style={{ flexDirection: 'row', gap: 8 }}>
-                          <Pressable onPress={() => { if (noteText.trim()) { setNotes((p) => ({ ...p, [stage.id]: [...(p[stage.id] || []), { text: noteText, date: new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }) }] })); setNoteText(''); setShowNote(null); toast.success('Note saved'); } }} style={s.saveChip}><Text style={{ color: '#fff', fontSize: 9, fontWeight: 'bold' }}>Save Note</Text></Pressable>
-                          <Pressable onPress={() => { setShowNote(null); setNoteText(''); }} style={s.cancelChip}><Text style={{ color: colors.muted2, fontSize: 9, fontWeight: 'bold' }}>Cancel</Text></Pressable>
-                        </View>
-                      </View>
+                  {/* Touch Plan */}
+                  <InfoBlock label="Touch Plan" value={stage.touchPlan} editing={isEditing} onChange={(v) => editField(stage.id, 'touchPlan', v)} mono />
+                  {/* Next Step */}
+                  <InfoBlock label="Aage Kab" value={stage.nextStep} editing={isEditing} onChange={(v) => editField(stage.id, 'nextStep', v)} />
+                  {/* Script */}
+                  <View style={s.scriptBox}>
+                    <Text style={[s.sectionLabel, { marginBottom: 6 }]}>Script / Message</Text>
+                    {isEditing ? (
+                      <TextInput multiline value={stage.scriptMessage} onChangeText={(v) => editField(stage.id, 'scriptMessage', v)} style={s.editAreaSm} />
+                    ) : (
+                      <Text style={{ fontSize: 11, color: colors.ink }}>{fill(stage.scriptMessage, lead)}</Text>
                     )}
-
-                    {/* Reminder input */}
-                    {showReminder === stage.id && (
-                      <View style={s.inputCard}>
-                        <TextInput placeholder="Reminder message..." placeholderTextColor={colors.muted} value={reminderText} onChangeText={setReminderText} style={s.editAreaSm} />
-                        <TextInput placeholder="When (e.g. 25 Aug 3PM)" placeholderTextColor={colors.muted} value={reminderDate} onChangeText={setReminderDate} style={s.editAreaSm} />
-                        <View style={{ flexDirection: 'row', gap: 8 }}>
-                          <Pressable onPress={() => { if (reminderText.trim() && reminderDate) { setReminders((p) => ({ ...p, [stage.id]: [...(p[stage.id] || []), { text: reminderText, date: reminderDate }] })); setReminderText(''); setReminderDate(''); setShowReminder(null); toast.success('Reminder set'); } }} style={s.saveChip}><Text style={{ color: '#fff', fontSize: 9, fontWeight: 'bold' }}>Set Reminder</Text></Pressable>
-                          <Pressable onPress={() => { setShowReminder(null); setReminderText(''); setReminderDate(''); }} style={s.cancelChip}><Text style={{ color: colors.muted2, fontSize: 9, fontWeight: 'bold' }}>Cancel</Text></Pressable>
-                        </View>
-                      </View>
-                    )}
-
-                    {/* Saved notes */}
-                    {notes[stage.id]?.map((n, i) => (
-                      <View key={i} style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8, padding: 8, borderRadius: 8, backgroundColor: '#FEFCE8', borderColor: '#FEF08A', borderWidth: 1 }}>
-                        <View style={{ flex: 1 }}>
-                          <Text style={{ fontSize: 9, color: colors.ink }}>{n.text}</Text>
-                          <Text style={{ fontSize: 8, color: colors.muted, marginTop: 2 }}>{n.date}</Text>
-                        </View>
-                      </View>
-                    ))}
-                    {/* Saved reminders */}
-                    {reminders[stage.id]?.map((r, i) => (
-                      <View key={i} style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8, padding: 8, borderRadius: 8, backgroundColor: '#EFF6FF', borderColor: '#BFDBFE', borderWidth: 1 }}>
-                        <View style={{ flex: 1 }}>
-                          <Text style={{ fontSize: 9, color: colors.ink }}>{r.text}</Text>
-                          <Text style={{ fontSize: 8, marginTop: 2, color: '#2563EB' }}>{r.date}</Text>
-                        </View>
-                      </View>
-                    ))}
                   </View>
-                )}
+
+                  {/* Actions */}
+                  <View style={{ flexDirection: 'row', gap: 8 }}>
+                    <Pressable onPress={() => Linking.openURL(`tel:${lead.phone.replace(/\s/g, '')}`)} style={s.callBtn}>
+                      <Text style={{ color: '#fff', fontSize: 11, fontWeight: 'bold' }}>Call karo</Text>
+                    </Pressable>
+                    <Pressable onPress={() => Linking.openURL(`https://wa.me/${lead.phone.replace(/[^0-9]/g, '')}?text=${encodeURIComponent(fill(stage.scriptMessage, lead))}`)} style={[s.waBtn]}>
+                      <Text style={{ color: '#fff', fontSize: 11, fontWeight: 'bold' }}>WhatsApp bhejo</Text>
+                    </Pressable>
+                  </View>
+
+                  {/* Note / Reminder toggles */}
+                  <View style={{ flexDirection: 'row', gap: 8 }}>
+                    <Pressable onPress={() => { setShowNote(showNote === stage.id ? null : stage.id); setShowReminder(null); }} style={[s.toggleChip, showNote === stage.id ? { borderColor: colors.brand, backgroundColor: colors.brandTint } : { borderColor: colors.line }]}>
+                      <Text style={{ fontSize: 11, fontWeight: 'bold', color: showNote === stage.id ? colors.brand : colors.muted2 }}>Note</Text>
+                    </Pressable>
+                    <Pressable onPress={() => { setShowReminder(showReminder === stage.id ? null : stage.id); setShowNote(null); }} style={[s.toggleChip, showReminder === stage.id ? { borderColor: colors.brand, backgroundColor: colors.brandTint } : { borderColor: colors.line }]}>
+                      <Text style={{ fontSize: 11, fontWeight: 'bold', color: showReminder === stage.id ? colors.brand : colors.muted2 }}>Reminder</Text>
+                    </Pressable>
+                  </View>
+
+                  {/* Note input */}
+                  {showNote === stage.id && (
+                    <View style={s.inputCard}>
+                      <TextInput multiline placeholder="Add a note..." placeholderTextColor={colors.muted} value={noteText} onChangeText={setNoteText} style={s.editAreaSm} />
+                      <View style={{ flexDirection: 'row', gap: 8 }}>
+                        <Pressable onPress={() => { if (noteText.trim()) { setNotes((p) => ({ ...p, [stage.id]: [...(p[stage.id] || []), { text: noteText, date: new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }) }] })); setNoteText(''); setShowNote(null); toast.success('Note saved'); } }} style={s.saveChip}><Text style={{ color: '#fff', fontSize: 9, fontWeight: 'bold' }}>Save Note</Text></Pressable>
+                        <Pressable onPress={() => { setShowNote(null); setNoteText(''); }} style={s.cancelChip}><Text style={{ color: colors.muted2, fontSize: 9, fontWeight: 'bold' }}>Cancel</Text></Pressable>
+                      </View>
+                    </View>
+                  )}
+
+                  {/* Reminder input */}
+                  {showReminder === stage.id && (
+                    <View style={s.inputCard}>
+                      <TextInput placeholder="Reminder message..." placeholderTextColor={colors.muted} value={reminderText} onChangeText={setReminderText} style={s.editAreaSm} />
+                      <TextInput placeholder="When (e.g. 25 Aug 3PM)" placeholderTextColor={colors.muted} value={reminderDate} onChangeText={setReminderDate} style={s.editAreaSm} />
+                      <View style={{ flexDirection: 'row', gap: 8 }}>
+                        <Pressable onPress={() => { if (reminderText.trim() && reminderDate) { setReminders((p) => ({ ...p, [stage.id]: [...(p[stage.id] || []), { text: reminderText, date: reminderDate }] })); setReminderText(''); setReminderDate(''); setShowReminder(null); toast.success('Reminder set'); } }} style={s.saveChip}><Text style={{ color: '#fff', fontSize: 9, fontWeight: 'bold' }}>Set Reminder</Text></Pressable>
+                        <Pressable onPress={() => { setShowReminder(null); setReminderText(''); setReminderDate(''); }} style={s.cancelChip}><Text style={{ color: colors.muted2, fontSize: 9, fontWeight: 'bold' }}>Cancel</Text></Pressable>
+                      </View>
+                    </View>
+                  )}
+
+                  {/* Saved notes */}
+                  {notes[stage.id]?.map((n, i) => (
+                    <View key={i} style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8, padding: 8, borderRadius: 8, backgroundColor: '#FEFCE8', borderColor: '#FEF08A', borderWidth: 1 }}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ fontSize: 9, color: colors.ink }}>{n.text}</Text>
+                        <Text style={{ fontSize: 8, color: colors.muted, marginTop: 2 }}>{n.date}</Text>
+                      </View>
+                    </View>
+                  ))}
+                  {/* Saved reminders */}
+                  {reminders[stage.id]?.map((r, i) => (
+                    <View key={i} style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8, padding: 8, borderRadius: 8, backgroundColor: '#EFF6FF', borderColor: '#BFDBFE', borderWidth: 1 }}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ fontSize: 9, color: colors.ink }}>{r.text}</Text>
+                        <Text style={{ fontSize: 8, marginTop: 2, color: '#2563EB' }}>{r.date}</Text>
+                      </View>
+                    </View>
+                  ))}
+                </View>
               </View>
             );
           })}
-
-          {isEditing && (
-            <Pressable onPress={addStage} style={s.addStageBtn}>
-              <Plus size={16} color={colors.brand} strokeWidth={2.5} />
-              <Text style={{ color: colors.brand, fontSize: 11, fontWeight: 'bold' }}>Add Journey Stage</Text>
-            </Pressable>
-          )}
         </View>
       </View>
 

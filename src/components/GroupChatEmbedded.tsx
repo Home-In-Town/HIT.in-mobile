@@ -1087,14 +1087,34 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeRoom?.id, toast]);
 
+  const handlePropertyViewDetails = useCallback((projectId: string) => {
+    if (projectId) {
+      // In a real implementation, navigate to project details screen
+      toast.show('Opening project details...', 'info');
+    } else {
+      toast.show('No project details available', 'error');
+    }
+  }, [toast]);
+
+  const handlePropertyCall = useCallback(() => {
+    toast.show('Contact builder via deal room', 'info');
+  }, [toast]);
+
   // Stable renderItem so the memoised MessageBubble can actually bail out.
   // Previously this was an inline arrow with a fresh onInterested on every
   // render, which defeated memoisation entirely.
   const renderMessage = useCallback(
     ({ item: msg }: { item: GroupMessage }) => (
-      <MessageBubble msg={msg} meId={user?.id || ''} onInterested={handleInterested} />
+      <MessageBubble 
+        msg={msg} 
+        meId={user?.id || ''} 
+        onInterested={handleInterested}
+        onPropertyViewDetails={handlePropertyViewDetails}
+        onPropertyCall={handlePropertyCall}
+        projectId={(activeRoom?.project as any)?.id || (activeRoom?.project as any)?._id || ''}
+      />
     ),
-    [user?.id, handleInterested]
+    [user?.id, handleInterested, handlePropertyViewDetails, handlePropertyCall, activeRoom?.project]
   );
 
   // ── Project media menu ──
@@ -2216,8 +2236,15 @@ function normalizeMsg(m: any, roomId: string): GroupMessage {
 // ── Message bubble ──
 // Memoised: without this, every keystroke in the composer (whose state lives in
 // GroupChatEmbedded) re-rendered every visible bubble in the thread.
-const MessageBubble = React.memo(function MessageBubble({ msg, meId, onInterested }: {
-  msg: GroupMessage; meId: string; onInterested: (projectId: string, messageId: string) => void;
+const MessageBubble = React.memo(function MessageBubble({ 
+  msg, meId, onInterested, onPropertyViewDetails, onPropertyCall, projectId 
+}: {
+  msg: GroupMessage; 
+  meId: string; 
+  onInterested: (projectId: string, messageId: string) => void;
+  onPropertyViewDetails: (projectId: string) => void;
+  onPropertyCall: () => void;
+  projectId: string;
 }) {
   const isMe = msg.sender.id === meId;
 
@@ -2243,19 +2270,73 @@ const MessageBubble = React.memo(function MessageBubble({ msg, meId, onIntereste
         </View>
       );
     }
+    
+    // Compact property card design - clean and attractive
+    const senderName = msg.sender.name || 'Unknown';
+    const isVerified = msg.sender.role === 'builder' || msg.sender.role === 'captain' || msg.sender.role === 'admin';
+    const price = inv.priceRange?.min ? fmtPrice(inv.priceRange.min * 100000) : '—';
+    const location = [inv.area, inv.city].filter(Boolean).join(', ');
+    
+    // Build property details line: Price | Area | Type
+    const propertyType = inv.propertyType || (inv.bhkOptions?.length ? inv.bhkOptions[0] : 'Flat');
+    const areaText = inv.carpetAreaRange || (inv.builtupArea ? `${inv.builtupArea} sqft` : null);
+    const detailsParts = [
+      `💰 ${price}`,
+      areaText ? `${areaText}` : null,
+      propertyType
+    ].filter(Boolean);
+    
+    // Status tags
+    const possessionLabel = inv.possessionStatus === 'ready' ? 'Ready' : 
+                           inv.possessionStatus === '6months' ? '6 Months' :
+                           inv.possessionStatus === '1year' ? '1 Year' : 
+                           inv.possessionStatus === '2year+' ? '2+ Years' : null;
+    
+    const urgencyLabel = inv.urgency === 'urgent' ? 'Urgent' : 
+                        inv.urgency === 'very_urgent' ? 'Very Urgent' : 
+                        'Normal Urgency';
+    
     return (
       <View style={[mbs.cardWrap, { alignSelf: 'flex-start' }]}>
-        <View style={[mbs.card, { backgroundColor: '#F0FDF4', borderColor: colors.greenBorder }]}>
-          <Text style={[mbs.cardTag, { color: colors.greenText }]}>🏠 Inventory · {msg.sender.name}</Text>
-          {inv.bhkOptions?.length ? <Text style={mbs.cardMain}>{inv.bhkOptions.join(', ')}</Text> : null}
-          <Text style={mbs.cardSub}>📍 {inv.area}{inv.city ? `, ${inv.city}` : ''}</Text>
-          <Text style={mbs.cardSub}>💰 {fmtPrice((inv.priceRange?.min || 0) * 100000)}{inv.priceRange?.max ? ` — ${fmtPrice(inv.priceRange.max * 100000)}` : ''}</Text>
-          <View style={mbs.tagRow}>
-            {inv.bankLoanAvailable && <Tag text="🏦 Loan" />}
-            {inv.possessionStatus ? <Tag text={inv.possessionStatus} /> : null}
-            {inv.commissionPercent > 0 && <Tag text={`💵 ${inv.commissionPercent}%`} />}
+        <View style={mbs.propertyCard}>
+          {/* Header: 🏠 Inventory | Builder Name - VERIFIED */}
+          <View style={mbs.propertyHeaderRow}>
+            <Text style={mbs.propertyLabel}>🏠 Inventory</Text>
+            <Text style={mbs.propertySender}>
+              {senderName}{isVerified && <Text style={mbs.verifiedText}> - VERIFIED</Text>}
+            </Text>
           </View>
-          {inv.description ? <Text style={mbs.cardNote}>{inv.description}</Text> : null}
+          
+          {/* Location */}
+          <Text style={mbs.propertyLocation}>📍 {location}</Text>
+          
+          {/* Price | Area | Type */}
+          <Text style={mbs.propertyDetails}>{detailsParts.join(' | ')}</Text>
+          
+          {/* Status Tags Row */}
+          <View style={mbs.propertyTagsRow}>
+            {possessionLabel && (
+              <View style={[mbs.propertyTag, mbs.propertyTagPossession]}>
+                <Text style={[mbs.propertyTagText, { color: '#fff' }]}>{possessionLabel}</Text>
+              </View>
+            )}
+            <View style={[mbs.propertyTag, mbs.propertyTagUrgency]}>
+              <Text style={[mbs.propertyTagText, { color: '#92400E' }]}>{urgencyLabel}</Text>
+            </View>
+          </View>
+          
+          {/* Action Buttons */}
+          <View style={mbs.propertyActions}>
+            <Pressable style={mbs.propertyBtn} onPress={() => onPropertyViewDetails(projectId)}>
+              <Text style={mbs.propertyBtnText} numberOfLines={1}>View Details</Text>
+            </Pressable>
+            <Pressable style={mbs.propertyBtn} onPress={() => onInterested(projectId, msg.id)}>
+              <Text style={mbs.propertyBtnText} numberOfLines={1}>Chat Now</Text>
+            </Pressable>
+            <Pressable style={mbs.propertyBtn} onPress={onPropertyCall}>
+              <Text style={mbs.propertyBtnText} numberOfLines={1}>Call</Text>
+            </Pressable>
+          </View>
         </View>
       </View>
     );
@@ -2614,6 +2695,91 @@ const mbs = StyleSheet.create({
   tagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 3 },
   tag: { backgroundColor: colors.slateBg, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 10 },
   tagText: { fontSize: 8.5, fontWeight: '700', color: colors.slateText },
+  // New compact property card styles
+  propertyCard: {
+    backgroundColor: '#F0FDF4',
+    borderWidth: 1,
+    borderColor: colors.greenBorder,
+    borderRadius: 12,
+    padding: 12,
+    gap: 8,
+  },
+  propertyHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 2,
+  },
+  propertyLabel: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: colors.greenText,
+  },
+  propertySender: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.ink,
+  },
+  verifiedText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: colors.greenText,
+  },
+  propertyLocation: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.ink,
+    lineHeight: 18,
+  },
+  propertyDetails: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.ink,
+    lineHeight: 18,
+  },
+  propertyTagsRow: {
+    flexDirection: 'row',
+    gap: 6,
+    marginTop: 2,
+  },
+  propertyTag: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  propertyTagPossession: {
+    backgroundColor: colors.greenText,
+  },
+  propertyTagUrgency: {
+    backgroundColor: '#FEF3C7',
+  },
+  propertyTagText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: colors.white,
+  },
+  propertyActions: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 4,
+  },
+  propertyBtn: {
+    flex: 1,
+    minWidth: 75,
+    backgroundColor: colors.greenText,
+    paddingVertical: 10,
+    paddingHorizontal: 6,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  propertyBtnText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#fff',
+    textAlign: 'center',
+  },
   matchBox: { backgroundColor: colors.white, borderWidth: 1, borderColor: `${colors.brand}33`, borderRadius: 16, padding: 10, gap: 8 },
   matchTitle: { fontSize: 11, fontWeight: '800', color: colors.brand },
   matchRow: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: colors.cream, borderRadius: 12, borderWidth: 1, borderColor: colors.line, padding: 9 },
