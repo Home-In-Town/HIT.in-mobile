@@ -1,7 +1,7 @@
 // AI Lead Matching — Group Chat (full port of the website group-chat).
 // Room list → open a room → full-screen thread with:
-//   • project banner + 3-dot menu (Copy link, Download PDF, Download QR, Download Gallery)
-//   • room options (Leave for anyone; Delete for owner/room-admin/platform admin)
+//   • one 3-dot menu: Share link, Download PDF, Download QR, Download Gallery,
+//     and Exit Group (Delete Group instead, for the owner)
 //   • bottom composer: Text / Requirement / Inventory (role-gated)
 //   • requirement cards render their auto-match results + "Interested" button
 //
@@ -10,7 +10,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, FlatList, Pressable, StyleSheet, ActivityIndicator,
-  TextInput, KeyboardAvoidingView, Platform, Modal, ScrollView, Switch, Alert,
+  TextInput, KeyboardAvoidingView, Platform, Modal, ScrollView, Switch, Alert, Share,
 } from 'react-native';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
@@ -23,9 +23,10 @@ import {
   Users, Plus, Globe, ChevronLeft, Send, X, MoreVertical, Building2,
   Link as LinkIcon, FileText, QrCode, Image as ImageIcon, LogOut, Trash2,
   Search, MapPin, Check, Camera, Paperclip, Sparkles, ChevronDown, ChevronUp, Clock,
+  Phone, Eye, UserPlus, BadgeCheck,
 } from 'lucide-react-native';
 import { groupChatApi, shareApi, mediaApi, leadMatchingApi, projectsApiExtended, GroupRoom, GroupMessage, InventoryCard } from '../lib/api';
-import AiAssistant, { AiAssistantApi, AiPostDraft, aiOwnsInput } from './AiAssistant';
+import AiAssistant, { AiAssistantApi, AiPostDraft, InventoryMatchCard, aiOwnsInput } from './AiAssistant';
 import { postedListStorage, disappearStorage } from '../lib/storage';
 import { useAuth } from '../lib/authContext';
 import { useSocket } from '../hooks/useSocket';
@@ -451,7 +452,6 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   // Thread UI state
   const [postMode, setPostMode] = useState<PostMode>('text');
   const [text, setText] = useState('');
-  const [showMediaMenu, setShowMediaMenu] = useState(false);
   const [showRoomMenu, setShowRoomMenu] = useState(false);
   // QR export is rendered off-screen just long enough for react-native-qrcode-svg
   // to produce a PNG. This avoids opening the generic Share bottom sheet when
@@ -541,6 +541,10 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const role = user?.role ?? '';
   const canRequirement = ['agent', 'admin', 'captain'].includes(role);
   const canInventory = ['builder', 'admin', 'captain', 'agent'].includes(role);
+  // Photos / PDFs in a group are published by admins and captains only. The
+  // backend enforces the same rule on both /attachments and the message route;
+  // hiding the paperclip just stops other members from hitting a 403.
+  const canUploadMedia = ['admin', 'captain'].includes(role);
 
   // Requirement / inventory composer state
   const [reqForm, setReqForm] = useState({ bhkType: '2BHK', budget: '', area: '', city: '', possessionNeeded: 'immediate', loanRequired: false, urgency: 'normal', clientNotes: '' });
@@ -610,7 +614,6 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
       setActiveRoom(null);
       setMessages([]);
       setShowRoomMenu(false);
-      setShowMediaMenu(false);
       toast.show(data.message || 'This group was deleted', 'info');
     });
     return unsub;
@@ -640,7 +643,6 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const closeRoom = () => {
     if (activeRoom) socket.leaveGroup(activeRoom.id);
     setActiveRoom(null);
-    setShowMediaMenu(false);
     setShowRoomMenu(false);
   };
 
@@ -1233,11 +1235,44 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeRoom?.id, toast]);
 
+  /**
+   * View Details must ALWAYS open something. Cards posted from the manual
+   * inventory form carry no project id, and older cards can point at a deleted
+   * project — both used to only raise "not linked to a project", which read as a
+   * dead button. The card's own data is a valid fallback detail view.
+   */
   const handlePropertyViewDetails = useCallback(async (projectId: string, fallback?: InventoryCard) => {
+    const sheetFromCard = (inv?: InventoryCard) => {
+      const price = inv?.priceRange?.min ? fmtPrice(inv.priceRange.min * 100000) : '';
+      const bhk = inv?.bhkOptions?.filter(Boolean).join(' / ') || '';
+      return {
+        title: inv?.projectName || 'Property',
+        subtitle: [inv?.area, inv?.city].filter(Boolean).join(', '),
+        price,
+        image: '',
+        fields: [
+          ...(inv?.propertyType ? [{ label: 'Property Type', value: inv.propertyType }] : []),
+          ...(bhk ? [{ label: 'Configuration', value: bhk }] : []),
+          ...(inv?.carpetAreaRange ? [{ label: 'Area', value: inv.carpetAreaRange }] : []),
+          ...(inv?.possessionStatus ? [{ label: 'Possession', value: String(inv.possessionStatus).replace(/[-_]/g, ' ') }] : []),
+          { label: 'Bank Loan', value: inv?.bankLoanAvailable ? 'Available' : 'Not specified' },
+          ...(inv?.commissionPercent ? [{ label: 'Commission', value: `${inv.commissionPercent}%` }] : []),
+          ...(inv?.description ? [{ label: 'Details', value: inv.description }] : []),
+        ],
+      };
+    };
+
     if (!projectId) {
-      toast.show('This older card is not linked to a project', 'error');
+      if (!fallback) { toast.show('No details available for this card', 'error'); return; }
+      setViewProperty(sheetFromCard(fallback));
       return;
     }
+
+    // Media is included so the detail sheet shows gallery / layout / brochure
+    // instead of just a list of text fields.
+    const mediaUrls = (arr: any): string[] =>
+      (Array.isArray(arr) ? arr : []).map((x: any) => (typeof x === 'string' ? x : x?.url)).filter(Boolean);
+    const oneUrl = (v: any): string => (typeof v === 'string' ? v : v?.url || '');
 
     try {
       const p = await projectsApiExtended.getById(projectId);
@@ -1256,19 +1291,85 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
           ...(p.reraNumber ? [{ label: 'RERA', value: p.reraNumber }] : []),
           { label: 'Bank Loan', value: p.bankLoanAvailable ? 'Available' : 'Not specified' },
         ],
+        galleryImages: mediaUrls((p as any).galleryImages),
+        videos: mediaUrls((p as any).videos),
+        layoutImage: oneUrl((p as any).layoutImage),
+        brochureUrl: oneUrl((p as any).brochureUrl),
       });
-    } catch (e: any) {
-      toast.show(e?.message || 'Could not load project details', 'error');
+    } catch {
+      // Project fetch failed (deleted / not visible) — still show the card data
+      // rather than leaving the button looking broken.
+      if (fallback) setViewProperty(sheetFromCard(fallback));
+      else toast.show('Could not load property details', 'error');
     }
   }, [toast]);
 
-  const handlePropertyCall = useCallback(async (projectId: string, fallbackNumber?: string) => {
-    let number = String(fallbackNumber || '').replace(/[^0-9+]/g, '');
+  /** "View Details" on an AI match card — reuses the property detail sheet. */
+  const handleViewMatchedProject = useCallback((projectId: string, projectName?: string) => {
+    handlePropertyViewDetails(projectId, projectName ? ({ projectName } as InventoryCard) : undefined);
+  }, [handlePropertyViewDetails]);
+
+  /**
+   * "View Details" on an "Also posted by members" card. These are leads, not
+   * published projects, so there is no project page to open — the card's own
+   * fields are the detail view.
+   */
+  const handleViewInventoryMatch = useCallback((card: InventoryMatchCard) => {
+    setViewProperty({
+      title: card.projectName || 'Property',
+      subtitle: [card.location, card.city].filter(Boolean).join(', '),
+      price: card.startingPrice ? fmtPrice(card.startingPrice) : '',
+      image: '',
+      fields: [
+        ...(card.bhkOptions?.length ? [{ label: 'Configuration', value: card.bhkOptions.join(' / ') }] : []),
+        ...(card.area ? [{ label: 'Area', value: `${card.area} ${card.areaUnit || 'sqft'}` }] : []),
+        ...(card.builderName ? [{ label: 'Posted by', value: card.builderName }] : []),
+        ...(card.postedByRole ? [{ label: 'Role', value: card.postedByRole }] : []),
+        { label: 'Match Score', value: `${Math.round(card.score)}%` },
+        { label: 'Listing Type', value: 'Posted by a member' },
+      ],
+    });
+  }, []);
+
+  /**
+   * "Join Group" on an inventory card. The card only knows its projectId, so the
+   * backend resolves (or creates) that property's canonical group, adds the user
+   * and returns the room, which we then open.
+   */
+  const handleJoinPropertyGroup = useCallback(async (projectId: string) => {
+    if (!projectId) {
+      toast.show('This card is not linked to a property group', 'error');
+      return;
+    }
+    if (joiningId) return;
+    setJoiningId(projectId);
+    try {
+      const { room, joined } = await groupChatApi.joinProjectRoom(projectId);
+      setMyRooms(prev => [room, ...prev.filter(x => x.id !== room.id)]);
+      setDiscoverRooms(prev => prev.filter(x => x.id !== room.id));
+      toast.show(joined ? `Joined ${roomDisplayName(room)}` : `Opening ${roomDisplayName(room)}`, 'success');
+      openRoom(room);
+    } catch (e: any) {
+      toast.show(e?.message || 'Could not join the property group', 'error');
+    } finally {
+      setJoiningId(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [joiningId, toast]);
+
+  /**
+   * Call dials the person who POSTED the property first (sender phone, sent by
+   * the backend for inventory cards only), then the card's own callNumber, and
+   * finally the project's CTA numbers.
+   */
+  const handlePropertyCall = useCallback(async (projectId: string, fallbackNumber?: string, posterPhone?: string) => {
+    const clean = (v?: string) => String(v || '').replace(/[^0-9+]/g, '');
+    let number = clean(posterPhone) || clean(fallbackNumber);
 
     if (!number && projectId) {
       try {
         const p = await projectsApiExtended.getById(projectId);
-        number = String(p.cta?.callNumber || p.cta?.whatsappNumber || '').replace(/[^0-9+]/g, '');
+        number = clean(p.cta?.callNumber || p.cta?.whatsappNumber);
       } catch {
         // The user-facing message below is clearer than exposing a fetch error.
       }
@@ -1279,13 +1380,15 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
       return;
     }
 
+    // Android dialer links are not always reported as openable by canOpenURL,
+    // and refusing on that basis is what made Call look dead. Try the dial
+    // intent directly and only report a failure if the OS actually rejects it.
     const telUrl = `tel:${number}`;
-    const canOpen = await Linking.canOpenURL(telUrl).catch(() => false);
-    if (!canOpen) {
-      toast.show('Calling is not available on this device', 'error');
-      return;
+    try {
+      await Linking.openURL(telUrl);
+    } catch {
+      toast.show('Could not open the dialer on this device', 'error');
     }
-    Linking.openURL(telUrl).catch(() => toast.show('Could not start the call', 'error'));
   }, [toast]);
 
   // Stable renderItem so the memoised MessageBubble can actually bail out.
@@ -1299,10 +1402,11 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
         onInterested={handleInterested}
         onPropertyViewDetails={handlePropertyViewDetails}
         onPropertyCall={handlePropertyCall}
+        onJoinPropertyGroup={handleJoinPropertyGroup}
         projectId={(activeRoom?.project as any)?.id || (activeRoom?.project as any)?._id || ''}
       />
     ),
-    [user?.id, handleInterested, handlePropertyViewDetails, handlePropertyCall, activeRoom?.project]
+    [user?.id, handleInterested, handlePropertyViewDetails, handlePropertyCall, handleJoinPropertyGroup, activeRoom?.project]
   );
 
   // ── Project media menu ──
@@ -1331,21 +1435,30 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     }
   };
 
-  /** Copy means copy — do not open the generic Share sheet. */
-  const handleCopyLink = async () => {
-    setShowMediaMenu(false);
+  /**
+   * Share link opens the OS share sheet with the tracked project URL, and falls
+   * back to copying it if the sheet cannot be shown. (Download QR deliberately
+   * does NOT use the share sheet — that was a separate bug.)
+   */
+  const handleShareLink = async () => {
+    setShowRoomMenu(false);
     try {
       const url = await resolveShareUrl('link');
-      await Clipboard.setStringAsync(url);
-      toast.show('Project link copied', 'success');
+      const name = activeProject().projectName || activeRoom?.name || 'this property';
+      try {
+        await Share.share({ message: `${name}\n${url}`, url });
+      } catch {
+        await Clipboard.setStringAsync(url);
+        toast.show('Project link copied', 'success');
+      }
     } catch (e: any) {
-      toast.show(e?.message || 'Could not copy project link', 'error');
+      toast.show(e?.message || 'Could not share the project link', 'error');
     }
   };
 
   /** Download the real brochure/token PDF and hand the file to the OS. */
   const handleDownloadPdf = async () => {
-    setShowMediaMenu(false);
+    setShowRoomMenu(false);
     const pid = activeProjectId();
     if (!pid) { toast.show('No project linked to this group', 'error'); return; }
 
@@ -1375,7 +1488,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
 
   /** Generate a QR token and render it off-screen for PNG export. */
   const handleDownloadQr = async () => {
-    setShowMediaMenu(false);
+    setShowRoomMenu(false);
     if (!activeProjectId()) { toast.show('No project linked to this group', 'error'); return; }
     toast.show('Generating QR…', 'info');
     try {
@@ -1433,7 +1546,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   }, [qrExport, toast]);
 
   const handleDownloadGallery = async () => {
-    setShowMediaMenu(false);
+    setShowRoomMenu(false);
     const pid = (activeRoom?.project as any)?.id || (activeRoom?.project as any)?._id;
     if (!pid) { toast.show('No project linked to this group', 'error'); return; }
     toast.show('Downloading gallery…', 'info');
@@ -1712,6 +1825,9 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
 
   // ═══════════ THREAD (full-screen) ═══════════
   const proj = (activeRoom.project as any) || null;
+  // Share link / PDF / QR / Gallery all act on the linked project, so they are
+  // only offered when the group actually has one (area groups do not).
+  const hasProjectMedia = !!(proj?.slug || proj?.id || proj?._id);
   return (
     <KeyboardAvoidingView style={{ flex: 1, paddingTop: topInset }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       {/* Thread header — hidden entirely in headerless mode (the AI Leads hub
@@ -1789,13 +1905,26 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
           </>
         )}
 
-        {/* Room options menu */}
+        {/* Single group menu. The media actions used to sit behind a nested
+            "Project media" item, so the first tap showed only two options and
+            the download actions needed a second hop. */}
         {showRoomMenu && (
           <View style={s.menu}>
-            {(proj?.slug || proj?.id || proj?._id) && (
-              <Pressable style={s.menuItem} onPress={() => { setShowRoomMenu(false); setShowMediaMenu(true); }}>
-                <Building2 size={15} color={colors.muted2} /><Text style={s.menuText}>Project media</Text>
-              </Pressable>
+            {hasProjectMedia && (
+              <>
+                <Pressable style={s.menuItem} onPress={handleShareLink}>
+                  <LinkIcon size={15} color={colors.muted2} /><Text style={s.menuText}>Share link</Text>
+                </Pressable>
+                <Pressable style={s.menuItem} onPress={handleDownloadPdf}>
+                  <FileText size={15} color={colors.muted2} /><Text style={s.menuText}>Download PDF</Text>
+                </Pressable>
+                <Pressable style={s.menuItem} onPress={handleDownloadQr}>
+                  <QrCode size={15} color={colors.muted2} /><Text style={s.menuText}>Download QR</Text>
+                </Pressable>
+                <Pressable style={s.menuItem} onPress={handleDownloadGallery}>
+                  <ImageIcon size={15} color={colors.muted2} /><Text style={s.menuText}>Download Gallery</Text>
+                </Pressable>
+              </>
             )}
             {canLeave && (
               <Pressable style={s.menuItem} onPress={handleLeave}>
@@ -1807,24 +1936,6 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                 <Trash2 size={15} color={colors.red} /><Text style={[s.menuText, { color: colors.red }]}>Delete Group</Text>
               </Pressable>
             )}
-          </View>
-        )}
-
-        {/* Project media menu (3-dot: PDF/QR/Gallery/Copy link) */}
-        {showMediaMenu && (
-          <View style={s.menu}>
-            <Pressable style={s.menuItem} onPress={handleCopyLink}>
-              <LinkIcon size={15} color={colors.muted2} /><Text style={s.menuText}>Copy link</Text>
-            </Pressable>
-            <Pressable style={s.menuItem} onPress={handleDownloadPdf}>
-              <FileText size={15} color={colors.muted2} /><Text style={s.menuText}>Download PDF</Text>
-            </Pressable>
-            <Pressable style={s.menuItem} onPress={handleDownloadQr}>
-              <QrCode size={15} color={colors.muted2} /><Text style={s.menuText}>Download QR</Text>
-            </Pressable>
-            <Pressable style={s.menuItem} onPress={handleDownloadGallery}>
-              <ImageIcon size={15} color={colors.muted2} /><Text style={s.menuText}>Download Gallery</Text>
-            </Pressable>
           </View>
         )}
       </View>
@@ -1907,23 +2018,20 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
             </Text>
           </View>
           <Pressable
-            onPress={() => {
-              setShowMediaMenu(false);
-              setShowRoomMenu(v => !v);
-            }}
+            onPress={() => setShowRoomMenu(v => !v)}
             style={s.bannerMenuBtn}
             hitSlop={8}
             accessibilityRole="button"
-            accessibilityLabel="Project media options"
+            accessibilityLabel="Group options"
           >
             <MoreVertical size={18} color={colors.blueText} />
           </Pressable>
         </View>
       )}
 
-      {/* Tap-catcher to close menus */}
-      {(showRoomMenu || showMediaMenu) && (
-        <Pressable style={StyleSheet.absoluteFill} onPress={() => { setShowRoomMenu(false); setShowMediaMenu(false); }} />
+      {/* Tap-catcher to close the menu */}
+      {showRoomMenu && (
+        <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowRoomMenu(false)} />
       )}
 
       {/* Messages — the group chat is ALWAYS the base view. */}
@@ -1953,6 +2061,9 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                   onTemplateChange={handleAiTemplate}
                   onReady={handleAiReady}
                   onMatchShared={noop}
+                  onViewProject={handleViewMatchedProject}
+                  onViewInventoryMatch={handleViewInventoryMatch}
+                  onJoinProjectGroup={handleJoinPropertyGroup}
                 />
               </View>
             </View>
@@ -1999,7 +2110,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
       {!(aiActive && aiOwnsInput({ inputType: aiInputType })) && (
       <View style={s.composer}>
         {/* Attachment options: Camera / Gallery / Files (group mode only) */}
-        {!aiActive && showAttachMenu && (
+        {!aiActive && showAttachMenu && canUploadMedia && (
           <View style={s.attachRow}>
             <Pressable onPress={pickFromCamera} disabled={uploading} style={s.attachOpt}>
               <View style={[s.attachIcon, { backgroundColor: '#EFF6FF' }]}><Camera size={17} color="#2563EB" /></View>
@@ -2018,15 +2129,17 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
 
         <View style={s.textRow}>
           {!aiActive ? (
-            <Pressable
-              onPress={() => setShowAttachMenu(v => !v)}
-              disabled={uploading}
-              style={[s.attachBtn, showAttachMenu && { backgroundColor: colors.brandTint }]}
-            >
-              {uploading
-                ? <ActivityIndicator size="small" color={colors.brand} />
-                : <Paperclip size={18} color={showAttachMenu ? colors.brand : colors.muted2} />}
-            </Pressable>
+            canUploadMedia ? (
+              <Pressable
+                onPress={() => setShowAttachMenu(v => !v)}
+                disabled={uploading}
+                style={[s.attachBtn, showAttachMenu && { backgroundColor: colors.brandTint }]}
+              >
+                {uploading
+                  ? <ActivityIndicator size="small" color={colors.brand} />
+                  : <Paperclip size={18} color={showAttachMenu ? colors.brand : colors.muted2} />}
+              </Pressable>
+            ) : null
           ) : (
             <View style={[s.attachBtn, { backgroundColor: colors.brandTint, borderColor: `${colors.brand}55` }]}>
               <Sparkles size={16} color={colors.brand} />
@@ -2594,6 +2707,8 @@ function normalizeMsg(m: any, roomId: string): GroupMessage {
       companyName: m.sender?.companyName,
       isVerified: m.sender?.isVerified === true,
       verificationStatus: m.sender?.verificationStatus,
+      // Present on inventory cards only — the card's Call button dials it.
+      phone: m.sender?.phone,
     },
     messageType: m.messageType || 'text',
     content: m.content || '',
@@ -2609,13 +2724,14 @@ function normalizeMsg(m: any, roomId: string): GroupMessage {
 // Memoised: without this, every keystroke in the composer (whose state lives in
 // GroupChatEmbedded) re-rendered every visible bubble in the thread.
 const MessageBubble = React.memo(function MessageBubble({ 
-  msg, meId, onInterested, onPropertyViewDetails, onPropertyCall, projectId 
+  msg, meId, onInterested, onPropertyViewDetails, onPropertyCall, onJoinPropertyGroup, projectId 
 }: {
   msg: GroupMessage; 
   meId: string; 
   onInterested: (projectId: string, messageId: string) => void;
   onPropertyViewDetails: (projectId: string, fallback?: InventoryCard) => void;
-  onPropertyCall: (projectId: string, fallbackNumber?: string) => void;
+  onPropertyCall: (projectId: string, fallbackNumber?: string, posterPhone?: string) => void;
+  onJoinPropertyGroup: (projectId: string) => void;
   projectId: string;
 }) {
   const isMe = msg.sender.id === meId;
@@ -2658,7 +2774,15 @@ const MessageBubble = React.memo(function MessageBubble({
       ? projectRef
       : String(projectRef?._id || projectRef?.id || projectId || '');
 
+    // Populated project (present on cards that reference a real project) gives
+    // the card a cover image and a reliable name.
+    const projObj = typeof projectRef === 'object' && projectRef ? projectRef : undefined;
+    const coverUrl = projObj?.media?.coverImage?.url || '';
+    const title = inv.projectName || projObj?.projectName || 'Property';
+
     const price = inv.priceRange?.min ? fmtPrice(inv.priceRange.min * 100000) : '';
+    const priceMax = inv.priceRange?.max ? fmtPrice(inv.priceRange.max * 100000) : '';
+    const priceText = price && priceMax && priceMax !== price ? `${price} – ${priceMax}` : price;
 
     // Older cards sometimes stored "1000 sqft" in `area` even though the schema
     // called that field a locality. Detect it so the UI puts it on the details
@@ -2670,10 +2794,11 @@ const MessageBubble = React.memo(function MessageBubble({
     const bhk = inv.bhkOptions?.filter(Boolean).join(' / ') || '';
     const propertyType = inv.propertyType || '';
 
-    // Requested compact format: price | floor area | property type. Old cards
-    // that pre-date propertyType/area snapshots fall back to their real BHK data
+    // Spec line under the title: configuration · floor area · property type.
+    // Price now has its own prominent slot, so it is not repeated here. Old cards
+    // that pre-date propertyType/area snapshots fall back to their BHK data
     // instead of fabricating "Flat".
-    const detailsParts = [price, areaText, propertyType || bhk].filter(Boolean);
+    const specParts = [bhk, areaText, propertyType].filter(Boolean);
 
     const possessionLabel = inv.possessionStatus === 'ready' ? 'Ready' :
       inv.possessionStatus === '6months' ? '6 Months' :
@@ -2684,28 +2809,61 @@ const MessageBubble = React.memo(function MessageBubble({
     const urgencyLabel = inv.urgency === 'urgent' ? 'Urgent' :
       inv.urgency === 'very_urgent' ? 'Very Urgent' : 'Normal Urgency';
 
+    const extraTags = [
+      inv.bankLoanAvailable ? '🏦 Loan' : '',
+      inv.commissionPercent ? `💼 ${inv.commissionPercent}%` : '',
+    ].filter(Boolean);
+
     return (
       <View style={[mbs.cardWrap, { alignSelf: 'flex-start' }]}>
         <View style={mbs.propertyCard}>
-          {/* [🏠 Inventory] [Sender - VERIFIED] */}
+          {/* Top strip: label + who posted it */}
           <View style={mbs.propertyHeaderRow}>
             <View style={mbs.propertyLabelPill}>
-              <Text style={mbs.propertyLabel}>🏠 Inventory</Text>
+              <Building2 size={11} color={colors.greenText} />
+              <Text style={mbs.propertyLabel}>Inventory</Text>
             </View>
-            <Text style={mbs.propertySender} numberOfLines={1}>
-              {senderName}{isVerified && <Text style={mbs.verifiedText}> · VERIFIED</Text>}
-            </Text>
+            <View style={mbs.propertySenderWrap}>
+              <Text style={mbs.propertySender} numberOfLines={1}>{senderName}</Text>
+              {isVerified && <BadgeCheck size={12} color={colors.greenText} />}
+            </View>
           </View>
 
-          {!!location && (
-            <Text style={mbs.propertyLocation} numberOfLines={1}>📍 {location}</Text>
+          {/* Hero row: cover thumb + title / location / price. The title and
+              price were missing entirely before, which is why cards looked empty
+              when a locality was all the card had. */}
+          <View style={mbs.propertyBody}>
+            {coverUrl ? (
+              <Image source={{ uri: coverUrl }} style={mbs.propertyThumb} resizeMode="cover" />
+            ) : (
+              <View style={[mbs.propertyThumb, mbs.propertyThumbFallback]}>
+                <Building2 size={20} color={colors.greenText} />
+              </View>
+            )}
+
+            <View style={mbs.propertyInfo}>
+              <Text style={mbs.propertyTitle} numberOfLines={1}>{title}</Text>
+
+              {!!location && (
+                <View style={mbs.propertyLine}>
+                  <MapPin size={11} color={colors.muted2} />
+                  <Text style={mbs.propertyLocation} numberOfLines={1}>{location}</Text>
+                </View>
+              )}
+
+              {specParts.length > 0 && (
+                <Text style={mbs.propertySpec} numberOfLines={1}>{specParts.join(' · ')}</Text>
+              )}
+
+              {!!priceText && <Text style={mbs.propertyPrice} numberOfLines={1}>{priceText}</Text>}
+            </View>
+          </View>
+
+          {!!inv.description && (
+            <Text style={mbs.propertyDesc} numberOfLines={2}>{inv.description}</Text>
           )}
 
-          {detailsParts.length > 0 && (
-            <Text style={mbs.propertyDetails} numberOfLines={1}>💰 {detailsParts.join(' | ')}</Text>
-          )}
-
-          {/* [Ready] [Normal Urgency] */}
+          {/* [Ready] [Normal Urgency] [Loan] [Commission] */}
           <View style={mbs.propertyTagsRow}>
             {!!possessionLabel && (
               <View style={[mbs.propertyTag, mbs.propertyTagPossession]}>
@@ -2715,24 +2873,38 @@ const MessageBubble = React.memo(function MessageBubble({
             <View style={[mbs.propertyTag, mbs.propertyTagUrgency]}>
               <Text style={[mbs.propertyTagText, { color: '#92400E' }]}>{urgencyLabel}</Text>
             </View>
+            {extraTags.map(t => (
+              <View key={t} style={[mbs.propertyTag, mbs.propertyTagPlain]}>
+                <Text style={[mbs.propertyTagText, { color: colors.slateText }]}>{t}</Text>
+              </View>
+            ))}
           </View>
 
-          {/* Small actions aligned in one row. minWidth:0 in styles is what lets
-              all three shrink inside a narrow mobile card without overflowing. */}
+          {/* Actions. minWidth:0 in styles is what lets all three shrink inside a
+              narrow mobile card without overflowing. */}
           <View style={mbs.propertyActions}>
-            <Pressable style={mbs.propertyBtn} onPress={() => onPropertyViewDetails(cardProjectId, inv)}>
-              <Text style={mbs.propertyBtnText} numberOfLines={1} adjustsFontSizeToFit>View Details</Text>
+            <Pressable
+              style={[mbs.propertyBtn, mbs.propertyBtnGhost]}
+              onPress={() => onPropertyViewDetails(cardProjectId, inv)}
+            >
+              <Eye size={12} color={colors.greenText} />
+              <Text style={[mbs.propertyBtnText, { color: colors.greenText }]} numberOfLines={1}>Details</Text>
             </Pressable>
-            <Pressable style={mbs.propertyBtn} onPress={() => onInterested(cardProjectId, msg.id)}>
-              <Text style={mbs.propertyBtnText} numberOfLines={1} adjustsFontSizeToFit>Chat Now</Text>
+            <Pressable style={mbs.propertyBtn} onPress={() => onJoinPropertyGroup(cardProjectId)}>
+              <UserPlus size={12} color="#fff" />
+              <Text style={mbs.propertyBtnText} numberOfLines={1}>Join Group</Text>
             </Pressable>
-            <Pressable style={mbs.propertyBtn} onPress={() => onPropertyCall(cardProjectId, inv.callNumber)}>
+            <Pressable
+              style={mbs.propertyBtn}
+              onPress={() => onPropertyCall(cardProjectId, inv.callNumber, msg.sender.phone)}
+            >
+              <Phone size={12} color="#fff" />
               <Text style={mbs.propertyBtnText} numberOfLines={1}>Call</Text>
             </Pressable>
           </View>
 
           {!!messageClock(msg.createdAt) && (
-            <Text style={mbs.propertyTime}>📌 {messageClock(msg.createdAt)}</Text>
+            <Text style={mbs.propertyTime}>{messageClock(msg.createdAt)}</Text>
           )}
         </View>
       </View>
@@ -3127,40 +3299,87 @@ const mbs = StyleSheet.create({
   },
   propertyLabelPill: {
     flexShrink: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
     backgroundColor: '#DCFCE7',
     borderRadius: 6,
     paddingHorizontal: 6,
-    paddingVertical: 2,
+    paddingVertical: 3,
   },
   propertyLabel: {
-    fontSize: 10.5,
+    fontSize: 10,
     fontWeight: '800',
     color: colors.greenText,
+    letterSpacing: 0.2,
   },
-  propertySender: {
+  propertySenderWrap: {
     flex: 1,
     minWidth: 0,
-    textAlign: 'right',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 3,
+  },
+  propertySender: {
+    flexShrink: 1,
     fontSize: 10.5,
     fontWeight: '700',
+    color: colors.muted2,
+  },
+  // Hero row: cover thumbnail beside the title block.
+  propertyBody: {
+    flexDirection: 'row',
+    gap: 10,
+    minWidth: 0,
+  },
+  propertyThumb: {
+    width: 62,
+    height: 62,
+    borderRadius: 10,
+    backgroundColor: '#DCFCE7',
+  },
+  propertyThumbFallback: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  propertyInfo: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  propertyTitle: {
+    fontSize: 13.5,
+    fontWeight: '800',
     color: colors.ink,
   },
-  verifiedText: {
-    fontSize: 9.5,
-    fontWeight: '800',
-    color: colors.greenText,
+  propertyLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    minWidth: 0,
   },
   propertyLocation: {
-    fontSize: 11.5,
+    flexShrink: 1,
+    fontSize: 11,
     fontWeight: '600',
-    color: colors.ink,
-    lineHeight: 16,
+    color: colors.muted2,
   },
-  propertyDetails: {
-    fontSize: 11.5,
+  propertySpec: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.slateText,
+  },
+  propertyPrice: {
+    fontSize: 13,
     fontWeight: '800',
-    color: colors.ink,
-    lineHeight: 16,
+    color: colors.greenText,
+    marginTop: 1,
+  },
+  propertyDesc: {
+    fontSize: 10.5,
+    color: colors.muted2,
+    lineHeight: 15,
   },
   propertyTagsRow: {
     flexDirection: 'row',
@@ -3179,28 +3398,41 @@ const mbs = StyleSheet.create({
   propertyTagUrgency: {
     backgroundColor: '#FEF3C7',
   },
-  propertyTagText: {
-    fontSize: 8.5,
-    fontWeight: '800',
-    color: colors.white,
+  propertyTagPlain: {
+    backgroundColor: colors.slateBg,
   },
   propertyActions: {
     width: '100%',
     minWidth: 0,
     flexDirection: 'row',
-    gap: 5,
-    marginTop: 1,
+    gap: 6,
+    marginTop: 2,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#DCFCE7',
+  },
+  propertyTagText: {
+    fontSize: 8.5,
+    fontWeight: '800',
+    color: colors.white,
   },
   propertyBtn: {
     flex: 1,
     flexBasis: 0,
     minWidth: 0,
-    backgroundColor: colors.greenText,
-    paddingVertical: 8,
-    paddingHorizontal: 2,
-    borderRadius: 8,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 4,
+    backgroundColor: colors.greenText,
+    paddingVertical: 9,
+    paddingHorizontal: 2,
+    borderRadius: 9,
+  },
+  propertyBtnGhost: {
+    backgroundColor: colors.white,
+    borderWidth: 1,
+    borderColor: colors.greenBorder,
   },
   propertyBtnText: {
     fontSize: 9.5,

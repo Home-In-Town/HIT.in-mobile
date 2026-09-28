@@ -1312,6 +1312,11 @@ export interface GroupMessage {
     companyName?: string;
     isVerified?: boolean;
     verificationStatus?: { builder?: string };
+    /**
+     * Only sent for inventory cards — it powers the card's Call button, which
+     * dials whoever posted the property. Absent on every other message type.
+     */
+    phone?: string;
   };
   messageType: 'text' | 'requirement_card' | 'inventory_card' | 'system' | 'image' | 'file';
   content: string;
@@ -1376,6 +1381,16 @@ export const groupChatApi = {
     const res = await handleResponse<{ room: any }>(r);
     return transformGroupRoom(res.room);
   },
+  /**
+   * Join the group of a property when all we have is its projectId — the case
+   * for every inventory card, which never carries a roomId. Also returns the
+   * room when the user is already a member, so the caller can just open it.
+   */
+  async joinProjectRoom(projectId: string): Promise<{ room: GroupRoom; joined: boolean }> {
+    const r = await fetch(`${API_URL}/group-chat/projects/${encodeURIComponent(projectId)}/join`, { method: 'POST', headers: await authHeaders() });
+    const res = await handleResponse<{ room: any; joined?: boolean }>(r);
+    return { room: transformGroupRoom(res.room), joined: res.joined !== false };
+  },
   async leaveRoom(roomId: string): Promise<void> {
     const r = await fetch(`${API_URL}/group-chat/rooms/${encodeURIComponent(roomId)}/leave`, { method: 'POST', headers: await authHeaders() });
     await handleResponse(r);
@@ -1393,6 +1408,7 @@ export const groupChatApi = {
         companyName: m.sender?.companyName,
         isVerified: m.sender?.isVerified === true,
         verificationStatus: m.sender?.verificationStatus,
+        phone: m.sender?.phone,
       },
       messageType: m.messageType || 'text',
       content: m.content || '',

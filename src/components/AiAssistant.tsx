@@ -13,6 +13,7 @@ import {
 import {
   Send, Building2, MapPin, Check, Pencil, Plus, List as ListIcon,
   ArrowRight, CheckCircle2, Undo2, Redo2, RotateCcw, XCircle, Users as UsersIcon, X as XIcon,
+  Eye,
 } from 'lucide-react-native';
 import { leadChatApi, groupChatApi, placesApi, GroupRoom, PlacePrediction } from '../lib/api';
 import { postDraftStorage, chatClearedBeforeIdStorage } from '../lib/storage';
@@ -187,6 +188,9 @@ export default function AiAssistant({
   onReady,
   onTemplateChange,
   disappearMs = 0,
+  onViewProject,
+  onViewInventoryMatch,
+  onJoinProjectGroup,
 }: {
   onViewLeads?: () => void;
   onActiveChange?: (active: boolean) => void;
@@ -208,6 +212,12 @@ export default function AiAssistant({
   // WhatsApp-style disappearing messages: hide AI messages older than this many
   // ms. 0 = Never (default). Only affects display; backend thread is untouched.
   disappearMs?: number;
+  // Match-card actions. The host owns the property detail sheet and the group
+  // join flow, so the assistant only reports which card was acted on. When a
+  // handler is absent its button is not rendered.
+  onViewProject?: (projectId: string, projectName?: string) => void;
+  onViewInventoryMatch?: (card: InventoryMatchCard) => void;
+  onJoinProjectGroup?: (projectId: string) => void;
 }) {
   const { user } = useAuth();
   const toast = useToast();
@@ -974,7 +984,15 @@ export default function AiAssistant({
             return <SummaryBubble key={msg._id} msg={msg} onEdit={edit} onConfirm={confirm} sending={sending} />;
           }
           if (isSystem && t?.inputType === 'results') {
-            return <ResultsBubble key={msg._id} msg={msg} onAddToGroup={openAddToGroup} />;
+            return (
+              <ResultsBubble
+                key={msg._id}
+                msg={msg}
+                onViewProject={onViewProject}
+                onViewInventoryMatch={onViewInventoryMatch}
+                onJoinProjectGroup={onJoinProjectGroup}
+              />
+            );
           }
           if (isSystem && t?.inputType === 'actions') {
             // Only the newest tray is shown. Each completed lead appends one, so
@@ -1773,12 +1791,12 @@ function SummaryBubble({ msg, onEdit, onConfirm, sending }: {
 }
 
 // ═══════════ RESULTS BUBBLE ═══════════
-type MatchCard = { projectId: string; projectName: string; city?: string; location?: string; score: number; slug?: string };
+export type MatchCard = { projectId: string; projectName: string; city?: string; location?: string; score: number; slug?: string };
 
 // A property posted through the AI "sell" conversation. These live as leads, not
 // as published Projects, so they carry no projectId and can't be opened as a
 // project page — but they ARE real supply and must be shown.
-type InventoryMatchCard = {
+export type InventoryMatchCard = {
   leadId: string;
   projectName: string;
   city?: string;
@@ -1792,7 +1810,12 @@ type InventoryMatchCard = {
   postedByRole?: string;
 };
 
-function ResultsBubble({ msg, onAddToGroup }: { msg: Msg; onAddToGroup?: (m: MatchCard) => void }) {
+function ResultsBubble({ msg, onViewProject, onViewInventoryMatch, onJoinProjectGroup }: {
+  msg: Msg;
+  onViewProject?: (projectId: string, projectName?: string) => void;
+  onViewInventoryMatch?: (card: InventoryMatchCard) => void;
+  onJoinProjectGroup?: (projectId: string) => void;
+}) {
   const matches: MatchCard[] =
     msg.template?.options?.matches || [];
   const inventory: InventoryMatchCard[] =
@@ -1816,11 +1839,18 @@ function ResultsBubble({ msg, onAddToGroup }: { msg: Msg; onAddToGroup?: (m: Mat
               </View>
               <ScoreRing score={m.score} />
             </View>
-            {/* Add to Group — shares this matched project into a group */}
-            <Pressable onPress={() => onAddToGroup?.(m)} style={rs.addGroupBtn}>
-              <UsersIcon size={14} color={colors.brand} />
-              <Text style={rs.addGroupText}>Add to Group</Text>
-            </Pressable>
+            {/* Open the property, or join its group — the two things a user
+                actually wants from a match. */}
+            <View style={rs.actionRow}>
+              <Pressable onPress={() => onViewProject?.(m.projectId, m.projectName)} style={[rs.actionBtn, rs.actionBtnGhost]}>
+                <Eye size={13} color={colors.brand} />
+                <Text style={[rs.actionText, { color: colors.brand }]}>View Details</Text>
+              </Pressable>
+              <Pressable onPress={() => onJoinProjectGroup?.(m.projectId)} style={[rs.actionBtn, rs.actionBtnPrimary]}>
+                <UsersIcon size={13} color="#fff" />
+                <Text style={[rs.actionText, { color: '#fff' }]}>Join Group</Text>
+              </Pressable>
+            </View>
           </View>
         ))}
 
@@ -1851,6 +1881,15 @@ function ResultsBubble({ msg, onAddToGroup }: { msg: Msg; onAddToGroup?: (m: Mat
                 </Text>
               </View>
               <ScoreRing score={m.score} />
+            </View>
+
+            {/* Member listings live as leads, not projects, so details come from
+                the card itself rather than a project page. */}
+            <View style={rs.actionRow}>
+              <Pressable onPress={() => onViewInventoryMatch?.(m)} style={[rs.actionBtn, rs.actionBtnGhost]}>
+                <Eye size={13} color={colors.brand} />
+                <Text style={[rs.actionText, { color: colors.brand }]}>View Details</Text>
+              </Pressable>
             </View>
           </View>
         ))}
@@ -2010,6 +2049,12 @@ const rs = StyleSheet.create({
   ringText: { fontSize: 10, fontWeight: '800' },
   addGroupBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 9, borderRadius: 10, borderWidth: 1, borderColor: `${colors.brand}55`, backgroundColor: colors.brandTint },
   addGroupText: { fontSize: 11.5, fontWeight: '800', color: colors.brand },
+  // Match-card actions (View Details / Join Group)
+  actionRow: { flexDirection: 'row', gap: 8 },
+  actionBtn: { flex: 1, flexBasis: 0, minWidth: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, paddingVertical: 9, borderRadius: 10 },
+  actionBtnGhost: { borderWidth: 1, borderColor: `${colors.brand}55`, backgroundColor: colors.brandTint },
+  actionBtnPrimary: { backgroundColor: colors.brand },
+  actionText: { fontSize: 11.5, fontWeight: '800' },
 });
 
 const atg = StyleSheet.create({
