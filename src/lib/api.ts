@@ -243,11 +243,54 @@ function collectProjectAssets(p: any, name: string): ProjectAsset[] {
   return assets;
 }
 
+// ── Shared /public/projects cache ───────────────────────────
+// Five screens load this list (PropertyReels, CRM, Marketplace in two places,
+// HumanLeadManager) through TWO wrappers that shape it differently. Opening the
+// dashboard fired four identical requests inside 700ms, each returning the whole
+// project list.
+//
+// Caching the RAW response — rather than either wrapper's output — is what lets
+// both shapes share one network call. Every consumer maps the raw array into its
+// own objects, so handing out the same array is safe.
+const PUBLIC_PROJECTS_TTL_MS = 60_000;
+let publicProjectsCache: { at: number; data: any[] } | null = null;
+let publicProjectsInFlight: Promise<any[]> | null = null;
+
+async function fetchPublicProjectsRaw(force = false): Promise<any[]> {
+  if (!force) {
+    if (publicProjectsCache && Date.now() - publicProjectsCache.at < PUBLIC_PROJECTS_TTL_MS) {
+      return publicProjectsCache.data;
+    }
+    // Concurrent callers (the common case: several screens mounting together)
+    // await the same request instead of starting their own.
+    if (publicProjectsInFlight) return publicProjectsInFlight;
+  }
+
+  const request = (async () => {
+    const response = await fetch(`${API_URL}/public/projects`, { headers: await authHeaders() });
+    const data = await handleResponse<any[]>(response);
+    publicProjectsCache = { at: Date.now(), data };
+    return data;
+  })();
+
+  publicProjectsInFlight = request;
+  try {
+    return await request;
+  } finally {
+    // Cleared even on failure, so one error doesn't wedge every later caller.
+    publicProjectsInFlight = null;
+  }
+}
+
+function invalidatePublicProjects() {
+  publicProjectsCache = null;
+  publicProjectsInFlight = null;
+}
+
 // ── Projects (for lead form project dropdown + sales journey assets) ───────────────
 export const projectsApi = {
   async getAllPublic(): Promise<ProjectLite[]> {
-    const response = await fetch(`${API_URL}/public/projects`, { headers: await authHeaders() });
-    const data = await handleResponse<any[]>(response);
+    const data = await fetchPublicProjectsRaw();
     return data.map((p) => {
       const name = p.projectName || p.name || 'Untitled';
       return {
@@ -913,22 +956,76 @@ function transformProject(p: any): Project {
   };
 }
 
+// ── Project detail cache ────────────────────────────────────
+// getById is hit repeatedly for the SAME project from independent places: an
+// inventory card's Details button, its Call button (to read the CTA number), and
+// AI match cards. On a phone network those were separate round-trips every time.
+// A short TTL collapses the bursts, an in-flight map collapses concurrent calls,
+// and every write path invalidates the entry so edits are never served stale.
+const PROJECT_CACHE_TTL_MS = 60_000;
+const projectCache = new Map<string, { at: number; project: Project }>();
+const projectInFlight = new Map<string, Promise<Project>>();
+
+// Buyer-match counts, keyed on the sorted project id list. See matchCounts().
+const MATCH_COUNTS_TTL_MS = 60_000;
+const matchCountsCache = new Map<string, { at: number; counts: Record<string, number> }>();
+const matchCountsInFlight = new Map<string, Promise<Record<string, number>>>();
+
+function invalidateProject(id?: string) {
+  if (id) {
+    projectCache.delete(String(id));
+    projectInFlight.delete(String(id));
+  } else {
+    projectCache.clear();
+    projectInFlight.clear();
+  }
+  // A project write also changes the public list and can change who matches it,
+  // so those caches go too rather than serving a stale list for up to a minute.
+  invalidatePublicProjects();
+  matchCountsCache.clear();
+  matchCountsInFlight.clear();
+}
+
 export const projectsApiExtended = {
+  /** Drops cached project details. Call after any out-of-band mutation. */
+  invalidateProjectCache: invalidateProject,
+
   async getAll(): Promise<Project[]> {
     const r = await fetch(`${API_URL}/projects`, { headers: await authHeaders() });
     const data = await handleResponse<any[]>(r);
     return data.map(transformProject);
   },
   // Public projects (all published) — returns properly-shaped Project[] with id, cover, price.
+  // Shares the cached raw list with projectsApi.getAllPublic().
   async getAllPublic(): Promise<Project[]> {
-    const r = await fetch(`${API_URL}/public/projects`, { headers: await authHeaders() });
-    const data = await handleResponse<any[]>(r);
+    const data = await fetchPublicProjectsRaw();
     return data.map(transformProject);
   },
-  async getById(id: string): Promise<Project> {
-    const r = await fetch(`${API_URL}/projects/${encodeURIComponent(id)}`, { headers: await authHeaders() });
-    const data = await handleResponse<any>(r);
-    return transformProject(data);
+  async getById(id: string, opts?: { force?: boolean }): Promise<Project> {
+    const key = String(id);
+
+    if (!opts?.force) {
+      const cached = projectCache.get(key);
+      if (cached && Date.now() - cached.at < PROJECT_CACHE_TTL_MS) return cached.project;
+
+      const pending = projectInFlight.get(key);
+      if (pending) return pending;
+    }
+
+    const request = (async () => {
+      const r = await fetch(`${API_URL}/projects/${encodeURIComponent(id)}`, { headers: await authHeaders() });
+      const data = await handleResponse<any>(r);
+      const project = transformProject(data);
+      projectCache.set(key, { at: Date.now(), project });
+      return project;
+    })();
+
+    projectInFlight.set(key, request);
+    try {
+      return await request;
+    } finally {
+      projectInFlight.delete(key);
+    }
   },
   async create(payload: any): Promise<Project> {
     const r = await fetch(`${API_URL}/projects`, { method: 'POST', headers: await authHeaders(), body: JSON.stringify(payload) });
@@ -936,22 +1033,27 @@ export const projectsApiExtended = {
   },
   async update(id: string, payload: any): Promise<Project> {
     const r = await fetch(`${API_URL}/projects/${encodeURIComponent(id)}`, { method: 'PUT', headers: await authHeaders(), body: JSON.stringify(payload) });
+    invalidateProject(id);
     return transformProject(await handleResponse<any>(r));
   },
   async delete(id: string): Promise<void> {
     const r = await fetch(`${API_URL}/projects/${encodeURIComponent(id)}`, { method: 'DELETE', headers: await authHeaders() });
+    invalidateProject(id);
     await handleResponse(r);
   },
   async publish(id: string): Promise<{ trackableLink: string }> {
     const r = await fetch(`${API_URL}/projects/${encodeURIComponent(id)}/publish`, { method: 'POST', headers: await authHeaders() });
+    invalidateProject(id);
     return handleResponse<{ trackableLink: string }>(r);
   },
   async assignCaptain(id: string, captainId: string): Promise<Project> {
     const r = await fetch(`${API_URL}/projects/${encodeURIComponent(id)}/assign-captain`, { method: 'PUT', headers: await authHeaders(), body: JSON.stringify({ captainId }) });
+    invalidateProject(id);
     return transformProject(await handleResponse<any>(r));
   },
   async assignAgent(id: string, agentId: string): Promise<Project> {
     const r = await fetch(`${API_URL}/projects/${encodeURIComponent(id)}/assign-agent`, { method: 'PUT', headers: await authHeaders(), body: JSON.stringify({ agentId }) });
+    invalidateProject(id);
     return transformProject(await handleResponse<any>(r));
   },
   async getCaptains(): Promise<{ id: string; name: string; companyName?: string }[]> {
@@ -964,12 +1066,47 @@ export const projectsApiExtended = {
     const data = await handleResponse<any[]>(r);
     return data.map((a: any) => ({ id: String(a.id || a._id || ''), name: a.name || '' }));
   },
+  /**
+   * Buyer-match counts per project.
+   *
+   * This is the slowest endpoint in the app — measured at 0.77s to 1.35s, roughly
+   * ten times anything else — and four screens call it on mount (PropertyReels,
+   * CRM, Marketplace, Projects), each with its own state. Moving between those
+   * screens therefore paid ~1s again every time.
+   *
+   * Keyed on the sorted id list so the same set of projects hits the cache
+   * regardless of the order a screen happens to pass them in. Failures are not
+   * cached: the endpoint already degrades to {} and a transient error must not
+   * pin empty counts for a minute.
+   */
   async matchCounts(projectIds: string[]): Promise<Record<string, number>> {
-    try {
-      const r = await fetch(`${API_URL}/lead-matching/match-counts`, { method: 'POST', headers: await authHeaders(), body: JSON.stringify({ projectIds }) });
+    const ids = (projectIds || []).filter(Boolean).map(String);
+    if (ids.length === 0) return {};
+
+    const key = [...ids].sort().join(',');
+
+    const cached = matchCountsCache.get(key);
+    if (cached && Date.now() - cached.at < MATCH_COUNTS_TTL_MS) return cached.counts;
+
+    const pending = matchCountsInFlight.get(key);
+    if (pending) return pending;
+
+    const request = (async () => {
+      const r = await fetch(`${API_URL}/lead-matching/match-counts`, { method: 'POST', headers: await authHeaders(), body: JSON.stringify({ projectIds: ids }) });
       const data = await handleResponse<{ counts: Record<string, number> }>(r);
-      return data.counts || {};
-    } catch { return {}; }
+      const counts = data.counts || {};
+      matchCountsCache.set(key, { at: Date.now(), counts });
+      return counts;
+    })();
+
+    matchCountsInFlight.set(key, request);
+    try {
+      return await request;
+    } catch {
+      return {};
+    } finally {
+      matchCountsInFlight.delete(key);
+    }
   },
 };
 
@@ -1270,6 +1407,12 @@ export interface GroupRoom {
   canLeave?: boolean;
   isAutoCreated?: boolean;
   lastActivity: string;
+  /**
+   * Messages in this room the user has not read yet. Sent by the backend for
+   * joined rooms only (discoverable rooms are always 0) and cleared by
+   * `markRoomRead`.
+   */
+  unreadCount?: number;
 }
 
 export interface InventoryCard {
@@ -1361,6 +1504,7 @@ function transformGroupRoom(raw: any): GroupRoom {
     canLeave: raw?.canLeave !== false,
     isAutoCreated: !!raw?.isAutoCreated,
     lastActivity: raw?.lastActivity || raw?.updatedAt || '',
+    unreadCount: Number(raw?.unreadCount) || 0,
   };
 }
 
@@ -1390,6 +1534,14 @@ export const groupChatApi = {
     const r = await fetch(`${API_URL}/group-chat/projects/${encodeURIComponent(projectId)}/join`, { method: 'POST', headers: await authHeaders() });
     const res = await handleResponse<{ room: any; joined?: boolean }>(r);
     return { room: transformGroupRoom(res.room), joined: res.joined !== false };
+  },
+  /**
+   * Clears this room's unread badge for the caller. Fired when a room is opened;
+   * failures are not surfaced to the user because a stale badge is harmless.
+   */
+  async markRoomRead(roomId: string): Promise<void> {
+    const r = await fetch(`${API_URL}/group-chat/rooms/${encodeURIComponent(roomId)}/read`, { method: 'POST', headers: await authHeaders() });
+    await handleResponse(r);
   },
   async leaveRoom(roomId: string): Promise<void> {
     const r = await fetch(`${API_URL}/group-chat/rooms/${encodeURIComponent(roomId)}/leave`, { method: 'POST', headers: await authHeaders() });

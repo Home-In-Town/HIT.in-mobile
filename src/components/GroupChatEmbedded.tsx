@@ -9,7 +9,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  View, Text, FlatList, Pressable, StyleSheet, ActivityIndicator,
+  View, Text, FlatList, SectionList, Pressable, StyleSheet, ActivityIndicator,
   TextInput, KeyboardAvoidingView, Platform, Modal, ScrollView, Switch, Alert, Share,
 } from 'react-native';
 import * as FileSystem from 'expo-file-system';
@@ -75,21 +75,84 @@ function roomDisplayName(room?: GroupRoom | null): string {
  * linked property's location, price and configuration; area groups fall back to
  * their locality.
  */
-function roomSubtitle(room: GroupRoom): string {
-  const parts: string[] = [`${room.members.length} member${room.members.length !== 1 ? 's' : ''}`];
+/**
+ * Row text split across two lines. One long ' · '-joined string pushed the
+ * price and configuration off the end of a narrow row, so the identity of the
+ * group (who/where) now sits on line 1 and the commercial detail on line 2.
+ *
+ * Every field is guarded: a project room whose project failed to populate falls
+ * back to the area/locality rather than rendering "undefined".
+ */
+function roomLines(room: GroupRoom): { primary: string; secondary: string } {
+  const memberText = `${room.members.length} member${room.members.length !== 1 ? 's' : ''}`;
   const p: any = room.project;
 
   if (room.roomType === 'project' && p) {
     const where = [p.location, p.city].filter(Boolean).join(', ');
-    if (where) parts.push(where);
-    if (p.pricing?.startingPrice) parts.push(`${fmtPrice(p.pricing.startingPrice)}+`);
-    const bhk = (p.configuration?.bhkOptions || []).filter(Boolean);
-    if (bhk.length) parts.push(bhk.join('/'));
-  } else if (room.area?.location) {
-    parts.push(room.area.location);
+    const price = p.pricing?.startingPrice ? `${fmtPrice(p.pricing.startingPrice)}+` : '';
+    const bhk = (p.configuration?.bhkOptions || []).filter(Boolean).join('/');
+    const size = p.configuration?.carpetAreaRange || p.configuration?.plotSizeRange || '';
+    return {
+      primary: [memberText, where].filter(Boolean).join(' · '),
+      secondary: [price, bhk, size].filter(Boolean).join(' · '),
+    };
   }
 
-  return parts.join(' · ');
+  const where = [room.area?.location, room.area?.city].filter(Boolean).join(', ');
+  return {
+    primary: [memberText, where].filter(Boolean).join(' · '),
+    secondary: '',
+  };
+}
+
+/** Group info the backend attaches to each match result. */
+type MatchGroupInfo = {
+  id: string;
+  name: string;
+  membersCount: number;
+  lastActivity?: string;
+};
+
+/**
+ * "Active Today" / "Active 3d ago" for a match card. Returns '' when there is no
+ * timestamp so the caller can drop the segment rather than print "Active ".
+ */
+function activityLabel(iso?: string): string {
+  if (!iso) return '';
+  const then = new Date(iso);
+  if (Number.isNaN(then.getTime())) return '';
+
+  const now = new Date();
+  if (then.toDateString() === now.toDateString()) return 'Active Today';
+
+  const days = Math.floor((now.getTime() - then.getTime()) / 86400000);
+  if (days <= 1) return 'Active Yesterday';
+  if (days < 7) return `Active ${days}d ago`;
+  const weeks = Math.floor(days / 7);
+  return weeks < 5 ? `Active ${weeks}w ago` : 'Active a while ago';
+}
+
+/**
+ * Explains WHY a property matched, quoting the requirement the user actually
+ * entered. Built from the requirement card on the same message, so it needs no
+ * extra data from the server.
+ */
+function matchReason(req: any): string {
+  if (!req) return '';
+  const need = [
+    req.bhkType,
+    req.area ? `in ${req.area}` : '',
+    req.budget ? `under ${req.budget}L` : '',
+  ].filter(Boolean).join(' ');
+  return need ? `Teri need "${need}" se match` : '';
+}
+
+/** Short label for the row's type chip. Universal rooms don't get one. */
+function roomTypeLabel(room: GroupRoom): string {
+  if (room.isUniversal) return '';
+  if (room.roomType === 'project') return 'Project';
+  if (room.roomType === 'area') return 'Area';
+  return '';
 }
 
 type PostMode = 'text' | 'requirement' | 'inventory';
@@ -407,6 +470,79 @@ function PostCard({ item, posted, cooldownLeftMs, posting, onPost, onView }: {
   );
 }
 
+// ── Room list row ──
+// One row for BOTH sections. Joined and discoverable rows previously had their
+// own near-identical components (and the discover variant was additionally
+// duplicated between an inline list and a modal), which let the two drift apart.
+// `joined` is the only thing that differs: the trailing slot shows either
+// activity time + unread badge, or a Join button.
+const RoomSeparator = () => (
+  <View style={{ height: 1, backgroundColor: colors.line, marginLeft: 64 }} />
+);
+
+const GroupRow = React.memo(function GroupRow({ room, joined, joining, onPress, onJoin }: {
+  room: GroupRoom;
+  joined: boolean;
+  joining?: boolean;
+  onPress?: (room: GroupRoom) => void;
+  onJoin?: (room: GroupRoom) => void;
+}) {
+  const { primary, secondary } = roomLines(room);
+  const typeLabel = roomTypeLabel(room);
+  const unread = joined ? (room.unreadCount || 0) : 0;
+
+  return (
+    <Pressable
+      onPress={joined ? () => onPress?.(room) : undefined}
+      disabled={!joined}
+      style={[s.roomRow, room.isUniversal && s.roomRowPinned]}
+    >
+      <View style={[s.roomAvatar, room.isUniversal && { backgroundColor: colors.brand }]}>
+        <Text style={{ fontSize: 17 }}>{room.isUniversal ? '🌐' : (ROOM_ICON[room.roomType] || '💬')}</Text>
+      </View>
+
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <View style={s.roomNameRow}>
+          <Text style={[s.roomName, room.isUniversal && { color: colors.brand }]} numberOfLines={1}>
+            {roomDisplayName(room)}
+          </Text>
+          {!!typeLabel && (
+            <View style={s.roomTypeChip}>
+              <Text style={s.roomTypeChipText}>{typeLabel}</Text>
+            </View>
+          )}
+        </View>
+
+        <Text style={s.roomMeta} numberOfLines={1}>{primary}</Text>
+        {!!secondary && <Text style={s.roomMetaSecondary} numberOfLines={1}>{secondary}</Text>}
+      </View>
+
+      {joined ? (
+        <View style={s.roomTrailing}>
+          <Text style={s.roomTime}>{timeStr(room.lastActivity)}</Text>
+          {unread > 0 && (
+            <View style={s.unreadBadge}>
+              <Text style={s.unreadBadgeText}>{unread > 99 ? '99+' : unread}</Text>
+            </View>
+          )}
+        </View>
+      ) : (
+        <Pressable
+          onPress={() => onJoin?.(room)}
+          disabled={joining}
+          style={[s.smallJoin, joining && { opacity: 0.6 }]}
+          accessibilityRole="button"
+          accessibilityLabel={`Join ${roomDisplayName(room)}`}
+        >
+          {joining
+            ? <ActivityIndicator size="small" color={colors.brand} />
+            : <Text style={s.smallJoinText}>Join Group</Text>}
+        </Pressable>
+      )}
+    </Pressable>
+  );
+});
+
 export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, autoOpenUniversal = false, hideThreadBack = false, headerless = false, onActionsReady }: {
   onRoomOpenChange?: (open: boolean) => void;
   topInset?: number;
@@ -438,14 +574,10 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const [messages, setMessages] = useState<GroupMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMsgs, setLoadingMsgs] = useState(false);
-  const [showDiscover, setShowDiscover] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
   const [roomForm, setRoomForm] = useState({ name: '', city: '', location: '' });
   const [search, setSearch] = useState('');
-  // Collapsible search (YouTube-style): starts as a magnifier icon; tapping it
-  // reveals the input. Collapsing clears the query.
-  const [searchOpen, setSearchOpen] = useState(false);
   // Which discoverable room is mid-join (shows a spinner on its Join button).
   const [joiningId, setJoiningId] = useState<string | null>(null);
 
@@ -594,14 +726,33 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   // no-op and the room received no live messages until it was reopened.
   useEffect(() => {
     const unsub = socket.onGroupMessage((msg: any) => {
-      const incomingRoom = msg.room || msg.roomId;
-      if (!activeRoom?.id || incomingRoom !== activeRoom.id) return;
-      // appendMessage dedups by id, so an echo of our own optimistic message
-      // won't create a duplicate.
-      appendMessage(normalizeMsg(msg, activeRoom.id));
+      const incomingRoom = String(msg.room || msg.roomId || '');
+      if (!incomingRoom) return;
+
+      // A message for the room on screen is appended; one for any OTHER room
+      // bumps that room's unread badge instead of being dropped. Without this the
+      // badge only refreshed on a full room-list reload.
+      if (activeRoom?.id && incomingRoom === activeRoom.id) {
+        // appendMessage dedups by id, so an echo of our own optimistic message
+        // won't create a duplicate.
+        appendMessage(normalizeMsg(msg, activeRoom.id));
+        return;
+      }
+
+      // Mirrors the server-side count: own messages and system notices never
+      // contribute to unread.
+      const senderId = String(msg.sender?._id || msg.sender?.id || '');
+      if (senderId && user?.id && senderId === user.id) return;
+      if (msg.messageType === 'system') return;
+
+      setMyRooms(prev => prev.map(r => (
+        r.id === incomingRoom
+          ? { ...r, unreadCount: (r.unreadCount || 0) + 1, lastActivity: msg.createdAt || r.lastActivity }
+          : r
+      )));
     });
     return unsub;
-  }, [activeRoom?.id, socket.onGroupMessage, socket.ready, appendMessage]);
+  }, [activeRoom?.id, socket.onGroupMessage, socket.ready, appendMessage, user?.id]);
 
   // Another member may delete the group while this screen is open. Close the
   // thread immediately instead of leaving a dead composer that only fails on
@@ -626,19 +777,35 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [socket.ready, activeRoom?.id]);
 
-  const openRoom = async (room: GroupRoom) => {
-    if (activeRoom) socket.leaveGroup(activeRoom.id);
+  // Stable identity: this is the onPress passed to every memoised room row, so a
+  // fresh function each render would change the rows' props and defeat the memo.
+  // The previously-open room is read from a ref instead of the `activeRoom` state
+  // so the callback does not need to change when a room opens.
+  const activeRoomIdRef = useRef<string | null>(null);
+  useEffect(() => { activeRoomIdRef.current = activeRoom?.id ?? null; }, [activeRoom?.id]);
+
+  const openRoom = useCallback(async (room: GroupRoom) => {
+    const previousId = activeRoomIdRef.current;
+    if (previousId) socket.leaveGroup(previousId);
     setActiveRoom(room);
     setMessages([]);
     setLoadingMsgs(true);
     setPostMode('text');
     socket.joinGroup(room.id);
+
+    // Clear the unread badge locally straight away so the list is already
+    // correct when the user comes back, then persist it. A failed mark-read is
+    // deliberately silent — a stale badge is not worth an error toast.
+    setMyRooms(prev => prev.map(r => (r.id === room.id ? { ...r, unreadCount: 0 } : r)));
+    groupChatApi.markRoomRead(room.id).catch(() => {});
+
     try {
       setMessages(await groupChatApi.getMessages(room.id));
       setTimeout(() => flatRef.current?.scrollToEnd({ animated: false }), 150);
     } catch { /* silent */ }
     finally { setLoadingMsgs(false); }
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [socket.joinGroup, socket.leaveGroup]);
 
   const closeRoom = () => {
     if (activeRoom) socket.leaveGroup(activeRoom.id);
@@ -1304,6 +1471,33 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     }
   }, [toast]);
 
+  /**
+   * "Preview Info" on a match card — the same sheet as View Details but short:
+   * only the basics, and no media section. Everything is built from data the
+   * match already carries, so it opens instantly with no network call.
+   */
+  const handlePreviewMatch = useCallback((match: any) => {
+    const p = match?.project || {};
+    const group: MatchGroupInfo | null = match?.group || null;
+    const bhk = (p.configuration?.bhkOptions || []).filter(Boolean).join(' / ');
+    const size = p.configuration?.carpetAreaRange || p.configuration?.plotSizeRange || '';
+
+    setViewProperty({
+      compact: true,
+      title: p.projectName || 'Property',
+      subtitle: [p.location, p.city].filter(Boolean).join(', '),
+      price: p.pricing?.startingPrice ? fmtPrice(p.pricing.startingPrice) : '',
+      image: p.media?.coverImage?.url || '',
+      fields: [
+        { label: 'Match Score', value: `${Math.round(Number(match?.score) || 0)}%` },
+        ...(bhk ? [{ label: 'Configuration', value: bhk }] : []),
+        ...(size ? [{ label: 'Area', value: size }] : []),
+        ...(p.owner?.name ? [{ label: 'Builder', value: p.owner.name }] : []),
+        ...(group ? [{ label: 'Group', value: `${group.name} · ${group.membersCount} members` }] : []),
+      ],
+    });
+  }, []);
+
   /** "View Details" on an AI match card — reuses the property detail sheet. */
   const handleViewMatchedProject = useCallback((projectId: string, projectName?: string) => {
     handlePropertyViewDetails(projectId, projectName ? ({ projectName } as InventoryCard) : undefined);
@@ -1403,10 +1597,11 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
         onPropertyViewDetails={handlePropertyViewDetails}
         onPropertyCall={handlePropertyCall}
         onJoinPropertyGroup={handleJoinPropertyGroup}
+        onPreviewMatch={handlePreviewMatch}
         projectId={(activeRoom?.project as any)?.id || (activeRoom?.project as any)?._id || ''}
       />
     ),
-    [user?.id, handleInterested, handlePropertyViewDetails, handlePropertyCall, handleJoinPropertyGroup, activeRoom?.project]
+    [user?.id, handleInterested, handlePropertyViewDetails, handlePropertyCall, handleJoinPropertyGroup, handlePreviewMatch, activeRoom?.project]
   );
 
   // ── Project media menu ──
@@ -1613,7 +1808,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     ]);
   };
 
-  const handleJoin = async (room: GroupRoom) => {
+  const handleJoin = useCallback(async (room: GroupRoom) => {
     if (joiningId) return; // guard against double-taps creating duplicate joins
     setJoiningId(room.id);
     try {
@@ -1622,12 +1817,41 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
       // already has it (e.g. a refresh landed mid-join).
       setMyRooms(prev => [r, ...prev.filter(x => x.id !== r.id)]);
       setDiscoverRooms(prev => prev.filter(x => x.id !== room.id));
-      setShowDiscover(false);
       toast.show(`Joined ${roomDisplayName(r)}`, 'success');
       openRoom(r);
     } catch (e: any) { toast.show(e?.message || 'Failed', 'error'); }
     finally { setJoiningId(null); }
-  };
+  }, [joiningId, toast, openRoom]);
+
+  // One stable renderItem for the whole SectionList. `section.joined` decides
+  // which variant the row shows, so both sections share a single row component.
+  const renderGroupRow = useCallback(
+    ({ item: room, section }: { item: GroupRoom; section: { joined: boolean } }) => (
+      <GroupRow
+        room={room}
+        joined={section.joined}
+        joining={joiningId === room.id}
+        onPress={openRoom}
+        onJoin={handleJoin}
+      />
+    ),
+    [joiningId, openRoom, handleJoin]
+  );
+
+  const renderSectionHeader = useCallback(
+    ({ section }: { section: { title: string; data: GroupRoom[]; joined: boolean } }) => (
+      <View style={s.sectionHeader}>
+        {section.joined
+          ? <Users size={13} color={colors.brand} />
+          : <Globe size={13} color={colors.brand} />}
+        <Text style={s.sectionTitle}>{section.title}</Text>
+        <View style={s.sectionCountPill}>
+          <Text style={s.sectionCountText}>{section.data.length}</Text>
+        </View>
+      </View>
+    ),
+    []
+  );
 
   const handleCreate = async () => {
     if (!roomForm.name || !roomForm.city || !roomForm.location) {
@@ -1657,147 +1881,83 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     const joinedIds = new Set(myRooms.map(r => r.id));
     const discoverList = discoverRooms.filter(r => !r.isUniversal && !joinedIds.has(r.id));
 
-    // Rendered below the user's own groups (the globe icon still opens the same
-    // list as a full sheet).
-    const discoverSection = discoverList.length ? (
-      <View style={s.discoverSection}>
-        <View style={s.discoverSectionHeader}>
-          <Globe size={13} color={colors.brand} />
-          <Text style={s.discoverSectionTitle}>Discover Groups</Text>
-          <View style={s.discoverCountPill}>
-            <Text style={s.discoverCountText}>{discoverList.length}</Text>
-          </View>
-        </View>
+    // ONE list for both groups the user is in and groups they can join.
+    // Previously the discover rows were a .map() inside ListFooterComponent —
+    // unvirtualized — AND a second copy lived in a full-screen modal reached by a
+    // globe icon. Sections give both lists virtualization from one code path, and
+    // the modal is gone.
+    const sections = [
+      { title: 'My Groups', data: listRooms, joined: true },
+      { title: 'Discover Groups', data: discoverList, joined: false },
+    ].filter(sec => sec.data.length > 0);
 
-        {discoverList.map(room => (
-          <View key={room.id} style={s.discoverInlineRow}>
-            <View style={s.roomAvatar}>
-              <Text style={{ fontSize: 17 }}>{ROOM_ICON[room.roomType] || '💬'}</Text>
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={s.roomName} numberOfLines={1}>{roomDisplayName(room)}</Text>
-              <Text style={s.roomMeta} numberOfLines={1}>{roomSubtitle(room)}</Text>
-            </View>
-            <Pressable
-              onPress={() => handleJoin(room)}
-              disabled={joiningId === room.id}
-              style={[s.smallJoin, joiningId === room.id && { opacity: 0.6 }]}
-              accessibilityRole="button"
-              accessibilityLabel={`Join ${roomDisplayName(room)}`}
-            >
-              {joiningId === room.id
-                ? <ActivityIndicator size="small" color={colors.brand} />
-                : <Text style={s.smallJoinText}>Join Group</Text>}
-            </Pressable>
-          </View>
-        ))}
-      </View>
-    ) : null;
+    const nothingToShow = sections.length === 0;
 
     return (
       <View style={{ flex: 1 }}>
-        {/* Header: group count + search magnifier + globe + create.
-            Search is YouTube-style — a small icon that expands into an input. */}
+        {/* Header: always-visible search + New. The search used to be a magnifier
+            that expanded over the whole header, hiding the other actions while
+            typing, and a globe opened a duplicate Discover sheet. */}
         <View style={s.listHeader}>
-          {searchOpen ? (
-            <View style={s.searchInline}>
-              <Search size={15} color={colors.muted} />
-              <TextInput
-                value={search}
-                onChangeText={setSearch}
-                placeholder="Search groups…"
-                placeholderTextColor={colors.muted}
-                style={s.searchInput}
-                onSubmitEditing={() => loadRooms(search)}
-                autoFocus
-              />
-              <Pressable onPress={() => { setSearch(''); setSearchOpen(false); }} hitSlop={8}>
+          <View style={s.searchInline}>
+            <Search size={15} color={colors.muted} />
+            <TextInput
+              value={search}
+              onChangeText={setSearch}
+              placeholder="Search groups…"
+              placeholderTextColor={colors.muted}
+              style={s.searchInput}
+              onSubmitEditing={() => loadRooms(search)}
+              returnKeyType="search"
+            />
+            {!!search && (
+              <Pressable onPress={() => setSearch('')} hitSlop={8} accessibilityLabel="Clear search">
                 <X size={16} color={colors.muted2} />
               </Pressable>
+            )}
+          </View>
+          <Pressable
+            onPress={() => setShowCreate(true)}
+            style={s.newBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Create a new group"
+          >
+            <Plus size={14} color={colors.brand} />
+            <Text style={s.newBtnText}>New</Text>
+          </Pressable>
+        </View>
+
+        {loading ? <ActivityIndicator color={colors.brand} style={{ marginTop: 40 }} /> : (
+          nothingToShow ? (
+            <View style={s.empty}>
+              <Users size={28} color={colors.muted} />
+              <Text style={s.emptyText}>
+                {search ? `No groups match "${search}"` : 'No groups yet'}
+              </Text>
+              <Text style={s.emptyHint}>
+                {search
+                  ? 'Try a different area or project name.'
+                  : 'Groups you join appear here, and public groups show up under Discover Groups.'}
+              </Text>
+              {!search && (
+                <Pressable onPress={() => setShowCreate(true)} style={s.joinBtn}>
+                  <Text style={s.joinBtnText}>Create a group</Text>
+                </Pressable>
+              )}
             </View>
           ) : (
-            <>
-              <Text style={s.listTitle}>{listRooms.length} group{listRooms.length !== 1 ? 's' : ''}</Text>
-              <View style={{ flexDirection: 'row', gap: 8 }}>
-                <Pressable onPress={() => setSearchOpen(true)} style={s.iconBtn}><Search size={15} color={colors.brand} /></Pressable>
-                <Pressable onPress={() => setShowDiscover(true)} style={s.iconBtn}><Globe size={15} color={colors.brand} /></Pressable>
-                <Pressable onPress={() => setShowCreate(true)} style={s.iconBtn}><Plus size={15} color={colors.brand} /></Pressable>
-              </View>
-            </>
-          )}
-        </View>
-        {loading ? <ActivityIndicator color={colors.brand} style={{ marginTop: 40 }} /> : (
-          <FlatList
-            data={listRooms}
-            keyExtractor={r => r.id}
-            ListEmptyComponent={
-              <View style={s.empty}>
-                <Users size={28} color={colors.muted} />
-                <Text style={s.emptyText}>No groups yet</Text>
-                <Pressable onPress={() => setShowDiscover(true)} style={s.joinBtn}><Text style={s.joinBtnText}>Discover Groups</Text></Pressable>
-              </View>
-            }
-            renderItem={({ item: room }) => (
-              <Pressable onPress={() => openRoom(room)} style={[s.roomRow, room.isUniversal && s.roomRowPinned]}>
-                <View style={[s.roomAvatar, room.isUniversal && { backgroundColor: colors.brand }]}>
-                  <Text style={{ fontSize: 17 }}>{room.isUniversal ? '🌐' : (ROOM_ICON[room.roomType] || '💬')}</Text>
-                </View>
-                <View style={{ flex: 1 }}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    <Text style={[s.roomName, room.isUniversal && { color: colors.brand }]} numberOfLines={1}>
-                      {roomDisplayName(room)}
-                    </Text>
-                  </View>
-                  <Text style={s.roomMeta} numberOfLines={1}>
-                    {room.isUniversal
-                      ? `${room.members.length} member${room.members.length !== 1 ? 's' : ''}`
-                      : roomSubtitle(room)}
-                  </Text>
-                </View>
-                <Text style={s.roomTime}>{timeStr(room.lastActivity)}</Text>
-              </Pressable>
-            )}
-            ItemSeparatorComponent={() => <View style={{ height: 1, backgroundColor: colors.line, marginLeft: 64 }} />}
-            ListFooterComponent={discoverSection}
-            contentContainerStyle={{ paddingBottom: 24 }}
-          />
-        )}
-
-        {/* Discover */}
-        <Modal visible={showDiscover} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setShowDiscover(false)}>
-          <View style={{ flex: 1, backgroundColor: colors.cream }}>
-            <View style={s.modalHeader}>
-              <Text style={s.modalTitle}>Discover Groups</Text>
-              <Pressable onPress={() => setShowDiscover(false)}><X size={20} color={colors.ink} /></Pressable>
-            </View>
-            <FlatList
-              data={discoverList}
+            <SectionList
+              sections={sections}
               keyExtractor={r => r.id}
-              contentContainerStyle={{ padding: 16, gap: 10 }}
-              ListEmptyComponent={<Text style={{ textAlign: 'center', color: colors.muted, marginTop: 40 }}>No groups to discover</Text>}
-              renderItem={({ item: room }) => (
-                <View style={s.discoverRow}>
-                  <Text style={{ fontSize: 19 }}>{ROOM_ICON[room.roomType] || '💬'}</Text>
-                  <View style={{ flex: 1 }}>
-                    <Text style={s.roomName} numberOfLines={1}>{roomDisplayName(room)}</Text>
-                    <Text style={s.roomMeta} numberOfLines={1}>{roomSubtitle(room)}</Text>
-                  </View>
-                  <Pressable
-                    onPress={() => handleJoin(room)}
-                    disabled={joiningId === room.id}
-                    style={[s.smallJoin, joiningId === room.id && { opacity: 0.6 }]}
-                    accessibilityRole="button"
-                    accessibilityLabel={`Join ${roomDisplayName(room)}`}
-                  >
-                    {joiningId === room.id
-                      ? <ActivityIndicator size="small" color={colors.brand} />
-                      : <Text style={s.smallJoinText}>Join Group</Text>}
-                  </Pressable>
-                </View>
-              )}
+              renderItem={renderGroupRow}
+              renderSectionHeader={renderSectionHeader}
+              ItemSeparatorComponent={RoomSeparator}
+              stickySectionHeadersEnabled
+              contentContainerStyle={{ paddingBottom: 24 }}
+              keyboardShouldPersistTaps="handled"
             />
-          </View>
-        </Modal>
+          )
+        )}
 
         {/* Create */}
         <Modal visible={showCreate} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setShowCreate(false)}>
@@ -2284,7 +2444,8 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                 ))}
               </View>
 
-              {(viewProperty?.galleryImages?.length > 0 || viewProperty?.videos?.length > 0 || viewProperty?.brochureUrl || viewProperty?.layoutImage) && (
+              {/* Preview Info is deliberately short: basics only, no media. */}
+              {!viewProperty?.compact && (viewProperty?.galleryImages?.length > 0 || viewProperty?.videos?.length > 0 || viewProperty?.brochureUrl || viewProperty?.layoutImage) && (
                 <View style={pd.mediaSection}>
                   <Text style={pd.mediaTitle}>Media</Text>
 
@@ -2720,11 +2881,149 @@ function normalizeMsg(m: any, roomId: string): GroupMessage {
   };
 }
 
+// ── Shared card action row ──
+// Used by all three property surfaces: the inventory card, the AI Match Found
+// card and each requirement match row. Before this existed the inventory card
+// hand-rolled its own button row, the match rows had a single Interested button,
+// and the AI Match card had no actions at all — so "open this property" was
+// missing exactly where matching results appear.
+type CardActionIcon = 'details' | 'join' | 'call' | 'interested';
+
+const CARD_ACTION_ICON = {
+  details: Eye,
+  join: UserPlus,
+  call: Phone,
+  interested: Check,
+} as const;
+
+const CardActions = React.memo(function CardActions({ actions, tone }: {
+  actions: Array<{ key: string; label: string; icon: CardActionIcon; ghost?: boolean; onPress: () => void }>;
+  tone: 'green' | 'brand';
+}) {
+  const solidBg = tone === 'green' ? colors.greenText : colors.brand;
+  const accent = tone === 'green' ? colors.greenText : colors.brand;
+  const ghostBorder = tone === 'green' ? colors.greenBorder : `${colors.brand}55`;
+  const divider = tone === 'green' ? '#DCFCE7' : `${colors.brand}22`;
+
+  return (
+    <View style={[mbs.cardActions, { borderTopColor: divider }]}>
+      {actions.map(action => {
+        const Icon = CARD_ACTION_ICON[action.icon];
+        const color = action.ghost ? accent : '#fff';
+        return (
+          <Pressable
+            key={action.key}
+            onPress={action.onPress}
+            style={[
+              mbs.cardActionBtn,
+              action.ghost
+                ? { backgroundColor: colors.white, borderWidth: 1, borderColor: ghostBorder }
+                : { backgroundColor: solidBg },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel={action.label}
+          >
+            <Icon size={12} color={color} />
+            <Text style={[mbs.cardActionText, { color }]} numberOfLines={1} adjustsFontSizeToFit>
+              {action.label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+});
+
+// ── Group match card ──
+// Shown for every matching result. A match advertises the property's GROUP, not
+// just the property, because the point of a match is to get the user into the
+// room where that inventory is discussed. The previous version was a plain
+// property row with an Interested button, which gave no reason for the match and
+// no way in.
+//
+// "N Flats available" from the agreed spec is deliberately absent: there is no
+// unit-count field on Project yet, so the line shows the starting price only
+// rather than inventing a number.
+const GroupMatchCard = React.memo(function GroupMatchCard({
+  match, requirement, messageId, onJoin, onPreview, onInterested,
+}: {
+  match: any;
+  requirement: any;
+  messageId: string;
+  onJoin: (projectId: string) => void;
+  onPreview: (match: any) => void;
+  onInterested: (projectId: string, messageId: string) => void;
+}) {
+  const project = match?.project || {};
+  const projectId = String(project._id || project.id || '');
+  const group: MatchGroupInfo | null = match?.group || null;
+
+  const score = Math.round(Number(match?.score) || 0);
+  const scoreColor = score >= 75 ? colors.greenText : score >= 50 ? colors.brand : colors.muted2;
+
+  // Fall back to the project name when the property has no group yet, so the
+  // card still reads sensibly instead of showing an empty title.
+  const title = group?.name || `${project.projectName || 'Property'} Group`;
+  const where = [project.location, project.city].filter(Boolean).join(', ');
+
+  const metaParts = [
+    where,
+    group?.membersCount ? `${group.membersCount} Members` : '',
+    activityLabel(group?.lastActivity),
+  ].filter(Boolean);
+
+  const builderName = project.owner?.name || project.owner?.companyName || '';
+  const startingPrice = project.pricing?.startingPrice
+    ? `from ${fmtPrice(project.pricing.startingPrice)}`
+    : '';
+  const builderParts = [
+    builderName ? `Builder: ${builderName}` : '',
+    startingPrice,
+  ].filter(Boolean);
+
+  const reason = matchReason(requirement);
+
+  return (
+    <View style={mbs.matchCard}>
+      <View style={mbs.matchCardHead}>
+        <View style={[mbs.matchScorePill, { backgroundColor: `${scoreColor}1A`, borderColor: `${scoreColor}55` }]}>
+          <Text style={[mbs.matchScorePillText, { color: scoreColor }]}>{score}% MATCH</Text>
+        </View>
+        <Text style={mbs.matchCardTitle} numberOfLines={1}>{title}</Text>
+      </View>
+
+      {metaParts.length > 0 && (
+        <Text style={mbs.matchCardLine} numberOfLines={1}>📍 {metaParts.join(' | ')}</Text>
+      )}
+
+      {builderParts.length > 0 && (
+        <Text style={mbs.matchCardLine} numberOfLines={1}>🏢 {builderParts.join(' | ')}</Text>
+      )}
+
+      {!!reason && (
+        <Text style={mbs.matchCardReason} numberOfLines={2}>💡 Match Reason: {reason}</Text>
+      )}
+
+      {/* Join Group and Preview Info are the spec's two actions. Interested is
+          kept because it is the only path that opens a deal room with the
+          builder — dropping it would remove that flow from the group entirely. */}
+      <CardActions
+        tone="brand"
+        actions={[
+          { key: 'join', label: 'Join Group', icon: 'join', onPress: () => onJoin(projectId) },
+          { key: 'preview', label: 'Preview Info', icon: 'details', ghost: true, onPress: () => onPreview(match) },
+          { key: 'interested', label: 'Interested', icon: 'interested', onPress: () => onInterested(projectId, messageId) },
+        ]}
+      />
+    </View>
+  );
+});
+
 // ── Message bubble ──
 // Memoised: without this, every keystroke in the composer (whose state lives in
 // GroupChatEmbedded) re-rendered every visible bubble in the thread.
 const MessageBubble = React.memo(function MessageBubble({ 
-  msg, meId, onInterested, onPropertyViewDetails, onPropertyCall, onJoinPropertyGroup, projectId 
+  msg, meId, onInterested, onPropertyViewDetails, onPropertyCall, onJoinPropertyGroup, onPreviewMatch, projectId 
 }: {
   msg: GroupMessage; 
   meId: string; 
@@ -2732,6 +3031,7 @@ const MessageBubble = React.memo(function MessageBubble({
   onPropertyViewDetails: (projectId: string, fallback?: InventoryCard) => void;
   onPropertyCall: (projectId: string, fallbackNumber?: string, posterPhone?: string) => void;
   onJoinPropertyGroup: (projectId: string) => void;
+  onPreviewMatch: (match: any) => void;
   projectId: string;
 }) {
   const isMe = msg.sender.id === meId;
@@ -2744,7 +3044,16 @@ const MessageBubble = React.memo(function MessageBubble({
   if (msg.messageType === 'inventory_card' && msg.inventoryCard) {
     const inv = msg.inventoryCard;
     // AI Match Found card — posted from the private AI Assist for the whole group.
+    // This is a matching RESULT, so it carries the same two actions as a match
+    // row. It previously returned with no actions at all, which meant a shared
+    // match could be seen but not opened or joined. No Call: these cards are
+    // posted by the sharer, not the property owner, so there is no poster phone.
     if (inv.aiMatch) {
+      const matchRef = inv.project;
+      const matchProjectId = typeof matchRef === 'string'
+        ? matchRef
+        : String(matchRef?._id || matchRef?.id || projectId || '');
+
       return (
         <View style={[mbs.cardWrap, { alignSelf: 'flex-start' }]}>
           <View style={[mbs.card, { backgroundColor: colors.brandTint, borderColor: `${colors.brand}55` }]}>
@@ -2754,10 +3063,19 @@ const MessageBubble = React.memo(function MessageBubble({
             </View>
             <Text style={mbs.cardMain}>{inv.projectName || 'Project'}</Text>
             {(inv.area || inv.city) ? <Text style={mbs.cardSub}>📍 {[inv.area, inv.city].filter(Boolean).join(', ')}</Text> : null}
+
+            <CardActions
+              tone="brand"
+              actions={[
+                { key: 'details', label: 'View Details', icon: 'details', ghost: true, onPress: () => onPropertyViewDetails(matchProjectId, inv) },
+                { key: 'join', label: 'Join Group', icon: 'join', onPress: () => onJoinPropertyGroup(matchProjectId) },
+              ]}
+            />
           </View>
         </View>
       );
     }
+
     
     // Compact universal-group inventory card. All values below come from the
     // stored card/project — no raw AI questionnaire and no role-based guesses.
@@ -2794,11 +3112,11 @@ const MessageBubble = React.memo(function MessageBubble({
     const bhk = inv.bhkOptions?.filter(Boolean).join(' / ') || '';
     const propertyType = inv.propertyType || '';
 
-    // Spec line under the title: configuration · floor area · property type.
-    // Price now has its own prominent slot, so it is not repeated here. Old cards
-    // that pre-date propertyType/area snapshots fall back to their BHK data
-    // instead of fabricating "Flat".
-    const specParts = [bhk, areaText, propertyType].filter(Boolean);
+    // Single money line — "₹5.0 Cr | 500 sqft | Flat" — matching the agreed card
+    // spec. filter(Boolean) is what keeps a card with only a price from rendering
+    // a trailing "|". Cards that pre-date the propertyType/area snapshots fall
+    // back to their BHK data rather than fabricating "Flat".
+    const moneyParts = [priceText, areaText, propertyType || bhk].filter(Boolean);
 
     const possessionLabel = inv.possessionStatus === 'ready' ? 'Ready' :
       inv.possessionStatus === '6months' ? '6 Months' :
@@ -2851,11 +3169,9 @@ const MessageBubble = React.memo(function MessageBubble({
                 </View>
               )}
 
-              {specParts.length > 0 && (
-                <Text style={mbs.propertySpec} numberOfLines={1}>{specParts.join(' · ')}</Text>
+              {moneyParts.length > 0 && (
+                <Text style={mbs.propertyMoney} numberOfLines={1}>💰 {moneyParts.join(' | ')}</Text>
               )}
-
-              {!!priceText && <Text style={mbs.propertyPrice} numberOfLines={1}>{priceText}</Text>}
             </View>
           </View>
 
@@ -2880,28 +3196,14 @@ const MessageBubble = React.memo(function MessageBubble({
             ))}
           </View>
 
-          {/* Actions. minWidth:0 in styles is what lets all three shrink inside a
-              narrow mobile card without overflowing. */}
-          <View style={mbs.propertyActions}>
-            <Pressable
-              style={[mbs.propertyBtn, mbs.propertyBtnGhost]}
-              onPress={() => onPropertyViewDetails(cardProjectId, inv)}
-            >
-              <Eye size={12} color={colors.greenText} />
-              <Text style={[mbs.propertyBtnText, { color: colors.greenText }]} numberOfLines={1}>Details</Text>
-            </Pressable>
-            <Pressable style={mbs.propertyBtn} onPress={() => onJoinPropertyGroup(cardProjectId)}>
-              <UserPlus size={12} color="#fff" />
-              <Text style={mbs.propertyBtnText} numberOfLines={1}>Join Group</Text>
-            </Pressable>
-            <Pressable
-              style={mbs.propertyBtn}
-              onPress={() => onPropertyCall(cardProjectId, inv.callNumber, msg.sender.phone)}
-            >
-              <Phone size={12} color="#fff" />
-              <Text style={mbs.propertyBtnText} numberOfLines={1}>Call</Text>
-            </Pressable>
-          </View>
+          <CardActions
+            tone="green"
+            actions={[
+              { key: 'details', label: 'View Details', icon: 'details', ghost: true, onPress: () => onPropertyViewDetails(cardProjectId, inv) },
+              { key: 'join', label: 'Join Group', icon: 'join', onPress: () => onJoinPropertyGroup(cardProjectId) },
+              { key: 'call', label: 'Call', icon: 'call', onPress: () => onPropertyCall(cardProjectId, inv.callNumber, msg.sender.phone) },
+            ]}
+          />
 
           {!!messageClock(msg.createdAt) && (
             <Text style={mbs.propertyTime}>{messageClock(msg.createdAt)}</Text>
@@ -2932,29 +3234,17 @@ const MessageBubble = React.memo(function MessageBubble({
         {matches.length > 0 && (
           <View style={mbs.matchBox}>
             <Text style={mbs.matchTitle}>⚡ {matches.length} Matches Found</Text>
-            {matches.map((m: any, i: number) => {
-              const p = m.project || {};
-              const pid = String(p._id || p.id || '');
-              const scoreColor = m.score >= 70 ? colors.greenText : m.score >= 50 ? colors.amberText : colors.muted2;
-              return (
-                <View key={pid || i} style={mbs.matchRow}>
-                  <View style={{ flex: 1 }}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                      <Text style={mbs.matchName} numberOfLines={1}>{p.projectName || 'Project'}</Text>
-                      <Text style={[mbs.matchScore, { color: scoreColor }]}>{m.score}%</Text>
-                    </View>
-                    <Text style={mbs.matchLoc} numberOfLines={1}>📍 {p.location || p.city || '—'} · {fmtPrice(p.pricing?.startingPrice || 0)}</Text>
-                    <View style={mbs.tagRow}>
-                      {(m.matchedOn || []).slice(0, 4).map((t: string) => <Tag key={t} text={t} brand />)}
-                    </View>
-                  </View>
-                  <Pressable onPress={() => onInterested(pid, msg.id)} style={mbs.interestedBtn}>
-                    <Check size={12} color="#fff" />
-                    <Text style={mbs.interestedText}>Interested</Text>
-                  </Pressable>
-                </View>
-              );
-            })}
+            {matches.map((m: any, i: number) => (
+              <GroupMatchCard
+                key={String(m?.project?._id || m?.project || i)}
+                match={m}
+                requirement={req}
+                messageId={msg.id}
+                onJoin={onJoinPropertyGroup}
+                onPreview={onPreviewMatch}
+                onInterested={onInterested}
+              />
+            ))}
           </View>
         )}
       </View>
@@ -3044,31 +3334,36 @@ const s = StyleSheet.create({
   // Inline (expanded) search that fills the header row when the magnifier is tapped.
   searchInline: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 7 },
   listHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 14, paddingVertical: 8, minHeight: 46 },
-  listTitle: { fontSize: 12, fontWeight: '700', color: colors.muted2 },
-  iconBtn: { padding: 8, borderRadius: 10, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.white },
+  newBtn: { flexShrink: 0, flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 12, paddingVertical: 9, borderRadius: 12, borderWidth: 1, borderColor: colors.brand, backgroundColor: colors.brandTint },
+  newBtnText: { fontSize: 12, fontWeight: '800', color: colors.brand },
   roomRow: { flexDirection: 'row', alignItems: 'center', padding: 12, gap: 12, backgroundColor: colors.white },
   roomRowPinned: { backgroundColor: `${colors.brand}08` },
   roomAvatar: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.brandTint, alignItems: 'center', justifyContent: 'center' },
   pinBadge: { backgroundColor: colors.brandTint, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 8 },
   pinText: { fontSize: 9, fontWeight: '800', color: colors.brand },
-  roomName: { fontSize: 13.5, fontWeight: '700', color: colors.ink },
+  roomNameRow: { flexDirection: 'row', alignItems: 'center', gap: 6, minWidth: 0 },
+  roomName: { fontSize: 13.5, fontWeight: '700', color: colors.ink, flexShrink: 1 },
+  roomTypeChip: { flexShrink: 0, backgroundColor: colors.slateBg, paddingHorizontal: 6, paddingVertical: 1, borderRadius: 6 },
+  roomTypeChipText: { fontSize: 8.5, fontWeight: '800', color: colors.slateText, letterSpacing: 0.2 },
   roomMeta: { fontSize: 10.5, color: colors.muted2, marginTop: 1 },
+  roomMetaSecondary: { fontSize: 10.5, fontWeight: '700', color: colors.slateText, marginTop: 1 },
+  roomTrailing: { alignItems: 'flex-end', gap: 5 },
   roomTime: { fontSize: 10, color: colors.muted },
+  unreadBadge: { minWidth: 19, height: 19, borderRadius: 10, paddingHorizontal: 5, backgroundColor: colors.brand, alignItems: 'center', justifyContent: 'center' },
+  unreadBadgeText: { fontSize: 9.5, fontWeight: '800', color: '#fff' },
   empty: { alignItems: 'center', paddingVertical: 50, gap: 10 },
   emptyText: { fontSize: 13, color: colors.muted },
+  emptyHint: { fontSize: 11.5, color: colors.muted2, textAlign: 'center', paddingHorizontal: 32, lineHeight: 17 },
   joinBtn: { paddingHorizontal: 16, paddingVertical: 9, backgroundColor: colors.brand, borderRadius: 12, marginTop: 4 },
   joinBtnText: { color: '#fff', fontWeight: '700', fontSize: 12 },
-  discoverRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.white, borderRadius: 14, borderWidth: 1, borderColor: colors.line, padding: 12, gap: 12 },
   smallJoin: { minWidth: 76, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, backgroundColor: colors.brandTint, borderWidth: 1, borderColor: colors.brand },
   smallJoinText: { fontSize: 11.5, fontWeight: '800', color: colors.brand },
 
-  // Inline "Discover Groups" section, rendered under the user's own groups.
-  discoverSection: { marginTop: 18, paddingTop: 4 },
-  discoverSectionHeader: { flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 14, paddingBottom: 8 },
-  discoverSectionTitle: { fontSize: 12, fontWeight: '800', color: colors.muted2, letterSpacing: 0.3 },
-  discoverCountPill: { backgroundColor: colors.brandTint, paddingHorizontal: 7, paddingVertical: 1, borderRadius: 8 },
-  discoverCountText: { fontSize: 9.5, fontWeight: '800', color: colors.brand },
-  discoverInlineRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 10, gap: 12, backgroundColor: colors.white, borderTopWidth: 1, borderTopColor: colors.line },
+  // Section headers for the single room SectionList (My Groups / Discover Groups).
+  sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 14, paddingTop: 14, paddingBottom: 7, backgroundColor: colors.cream },
+  sectionTitle: { fontSize: 12, fontWeight: '800', color: colors.muted2, letterSpacing: 0.3 },
+  sectionCountPill: { backgroundColor: colors.brandTint, paddingHorizontal: 7, paddingVertical: 1, borderRadius: 8 },
+  sectionCountText: { fontSize: 9.5, fontWeight: '800', color: colors.brand },
   modalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 16, backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.line },
   modalTitle: { fontSize: 16, fontWeight: '800', color: colors.ink },
   fieldLabel: { fontSize: 12, fontWeight: '700', color: colors.ink },
@@ -3365,16 +3660,12 @@ const mbs = StyleSheet.create({
     fontWeight: '600',
     color: colors.muted2,
   },
-  propertySpec: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: colors.slateText,
-  },
-  propertyPrice: {
-    fontSize: 13,
+  // Single "💰 price | area | type" line, per the agreed card spec.
+  propertyMoney: {
+    fontSize: 12,
     fontWeight: '800',
     color: colors.greenText,
-    marginTop: 1,
+    marginTop: 2,
   },
   propertyDesc: {
     fontSize: 10.5,
@@ -3401,22 +3692,25 @@ const mbs = StyleSheet.create({
   propertyTagPlain: {
     backgroundColor: colors.slateBg,
   },
-  propertyActions: {
-    width: '100%',
-    minWidth: 0,
-    flexDirection: 'row',
-    gap: 6,
-    marginTop: 2,
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: '#DCFCE7',
-  },
   propertyTagText: {
     fontSize: 8.5,
     fontWeight: '800',
     color: colors.white,
   },
-  propertyBtn: {
+  // Shared CardActions row — one definition for the inventory card, the AI match
+  // card and the requirement match rows. Colours come from the `tone` prop, so
+  // only geometry lives here. minWidth:0 is what lets three buttons shrink
+  // inside a narrow card instead of overflowing it.
+  cardActions: {
+    width: '100%',
+    minWidth: 0,
+    flexDirection: 'row',
+    gap: 6,
+    marginTop: 4,
+    paddingTop: 8,
+    borderTopWidth: 1,
+  },
+  cardActionBtn: {
     flex: 1,
     flexBasis: 0,
     minWidth: 0,
@@ -3424,20 +3718,13 @@ const mbs = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 4,
-    backgroundColor: colors.greenText,
     paddingVertical: 9,
     paddingHorizontal: 2,
     borderRadius: 9,
   },
-  propertyBtnGhost: {
-    backgroundColor: colors.white,
-    borderWidth: 1,
-    borderColor: colors.greenBorder,
-  },
-  propertyBtnText: {
+  cardActionText: {
     fontSize: 9.5,
     fontWeight: '800',
-    color: '#fff',
     textAlign: 'center',
   },
   propertyTime: {
@@ -3448,12 +3735,14 @@ const mbs = StyleSheet.create({
   },
   matchBox: { backgroundColor: colors.white, borderWidth: 1, borderColor: `${colors.brand}33`, borderRadius: 16, padding: 10, gap: 8 },
   matchTitle: { fontSize: 11, fontWeight: '800', color: colors.brand },
-  matchRow: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: colors.cream, borderRadius: 12, borderWidth: 1, borderColor: colors.line, padding: 9 },
-  matchName: { fontSize: 11.5, fontWeight: '800', color: colors.ink, flexShrink: 1 },
-  matchScore: { fontSize: 10, fontWeight: '800' },
-  matchLoc: { fontSize: 9.5, color: colors.muted2, marginTop: 1 },
-  interestedBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: colors.brand, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 10 },
-  interestedText: { fontSize: 9.5, fontWeight: '800', color: '#fff' },
+  // Group match card — one per matching result.
+  matchCard: { backgroundColor: colors.white, borderRadius: 12, borderWidth: 1, borderColor: `${colors.brand}33`, padding: 10, gap: 4 },
+  matchCardHead: { flexDirection: 'row', alignItems: 'center', gap: 7, minWidth: 0 },
+  matchScorePill: { flexShrink: 0, borderWidth: 1, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 },
+  matchScorePillText: { fontSize: 9, fontWeight: '800', letterSpacing: 0.2 },
+  matchCardTitle: { flexShrink: 1, fontSize: 13, fontWeight: '800', color: colors.ink },
+  matchCardLine: { fontSize: 10.5, color: colors.muted2, lineHeight: 15 },
+  matchCardReason: { fontSize: 10.5, fontWeight: '700', color: colors.brand, lineHeight: 15, marginTop: 1 },
   textBubble: { maxWidth: '75%', paddingHorizontal: 12, paddingVertical: 9, borderRadius: 16 },
   textMe: { backgroundColor: colors.brand, borderBottomRightRadius: 4 },
   textThem: { backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line, borderBottomLeftRadius: 4 },

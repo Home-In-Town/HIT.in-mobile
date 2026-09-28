@@ -242,7 +242,7 @@ export default function AiAssistant({
   // confirm and persist a duplicate lead. Cleared whenever a new/edited flow
   // makes confirming valid again.
   const confirmingRef = useRef(false);
-  const scrollRef = useRef<ScrollView>(null);
+  const scrollRef = useRef<FlatList<Msg>>(null);
   // Last property draft the user described (persisted), so "Post" still works
   // after the AI session resets or the app restarts.
   const savedDraftRef = useRef<AiPostDraft | null>(null);
@@ -815,6 +815,36 @@ export default function AiAssistant({
     return null;
   }, [visibleMessages]);
 
+  // Stable renderItem for the transcript. Every callback it closes over is a
+  // useCallback and every derived value a useMemo, so the memoised bubbles below
+  // genuinely bail out instead of re-rendering with fresh prop identities.
+  const renderTranscriptItem = useCallback(({ item: msg }: { item: Msg }) => {
+    const isSystem = msg.messageType === 'system';
+    const t = msg.template;
+
+    if (isSystem && t?.inputType === 'summary') {
+      return <SummaryBubble msg={msg} onEdit={edit} onConfirm={confirm} sending={sending} />;
+    }
+    if (isSystem && t?.inputType === 'results') {
+      return (
+        <ResultsBubble
+          msg={msg}
+          onViewProject={onViewProject}
+          onViewInventoryMatch={onViewInventoryMatch}
+          onJoinProjectGroup={onJoinProjectGroup}
+        />
+      );
+    }
+    if (isSystem && t?.inputType === 'actions') {
+      // Only the newest tray is shown. Each completed lead appends one, so older
+      // trays would otherwise stack up and look like duplicates.
+      if (msg._id !== latestActionsId) return null;
+      return <ActionsBubble msg={msg} onNewLead={newLead} onViewLeads={onViewLeads} disabled={sending} />;
+    }
+
+    return <TextBubble msg={msg} />;
+  }, [edit, confirm, sending, newLead, onViewLeads, onViewProject, onViewInventoryMatch, onJoinProjectGroup, latestActionsId]);
+
   // The active template = last system message that carries one.
   // Scanned backwards in place: the previous `[...messages].reverse().find(...)`
   // copied and reversed the whole transcript on every render, including every
@@ -969,71 +999,49 @@ export default function AiAssistant({
 
       {/* Progress bar removed per design — chat starts directly. */}
 
-      <ScrollView
+      {/* Virtualized transcript. This was a ScrollView with a .map(), so every
+          message stayed mounted for the life of the conversation and the whole
+          list re-rendered on each keystroke. */}
+      <FlatList
         ref={scrollRef}
+        data={visibleMessages}
+        keyExtractor={m => m._id}
+        renderItem={renderTranscriptItem}
         style={{ flex: 1 }}
         contentContainerStyle={{ paddingHorizontal: 12, paddingTop: 12, paddingBottom: 16, gap: 6 }}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
-      >
-        {visibleMessages.map((msg) => {
-          const isSystem = msg.messageType === 'system';
-          const t = msg.template;
-
-          if (isSystem && t?.inputType === 'summary') {
-            return <SummaryBubble key={msg._id} msg={msg} onEdit={edit} onConfirm={confirm} sending={sending} />;
-          }
-          if (isSystem && t?.inputType === 'results') {
-            return (
-              <ResultsBubble
-                key={msg._id}
-                msg={msg}
-                onViewProject={onViewProject}
-                onViewInventoryMatch={onViewInventoryMatch}
-                onJoinProjectGroup={onJoinProjectGroup}
-              />
-            );
-          }
-          if (isSystem && t?.inputType === 'actions') {
-            // Only the newest tray is shown. Each completed lead appends one, so
-            // older trays would otherwise stack up and look like duplicates.
-            if (msg._id !== latestActionsId) return null;
-            return <ActionsBubble key={msg._id} msg={msg} onNewLead={newLead} onViewLeads={onViewLeads} disabled={sending} />;
-          }
-
-          return (
-            <View key={msg._id} style={[mb.row, isSystem ? mb.rowThem : mb.rowMe]}>
-              {isSystem && <View style={mb.avatar}><Text style={{ fontSize: 14 }}>🤖</Text></View>}
-              <View style={[mb.bubble, isSystem ? mb.bubbleThem : mb.bubbleMe]}>
-                <Text style={[mb.text, isSystem ? mb.textThem : mb.textMe]}>{msg.content}</Text>
-                <Text style={[mb.time, isSystem ? mb.timeThem : mb.timeMe]}>{fmtTime(msg.createdAt)}</Text>
+        onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: false })}
+        initialNumToRender={12}
+        maxToRenderPerBatch={10}
+        windowSize={7}
+        removeClippedSubviews={Platform.OS === 'android'}
+        ListFooterComponent={
+          <>
+            {/* Whole transcript aged out per the disappearing-messages setting. */}
+            {emptyAfterDisappear && !typing && (
+              <View style={s.endedNote}>
+                <Text style={s.endedNoteText}>
+                  Purane messages disappear ho gaye ({disappearLabelFor(disappearMs)}). Naya lead shuru karein.
+                </Text>
+                <Pressable onPress={restartChat} style={s.endedStartBtn}>
+                  <RotateCcw size={13} color="#fff" />
+                  <Text style={s.endedStartText}>Start new chat</Text>
+                </Pressable>
               </View>
-            </View>
-          );
-        })}
+            )}
 
-        {/* Whole transcript aged out per the disappearing-messages setting. */}
-        {emptyAfterDisappear && !typing && (
-          <View style={s.endedNote}>
-            <Text style={s.endedNoteText}>
-              Purane messages disappear ho gaye ({disappearLabelFor(disappearMs)}). Naya lead shuru karein.
-            </Text>
-            <Pressable onPress={restartChat} style={s.endedStartBtn}>
-              <RotateCcw size={13} color="#fff" />
-              <Text style={s.endedStartText}>Start new chat</Text>
-            </Pressable>
-          </View>
-        )}
-
-        {typing && (
-          <View style={[mb.row, mb.rowThem]}>
-            <View style={mb.avatar}><Text style={{ fontSize: 14 }}>🤖</Text></View>
-            <View style={[mb.bubble, mb.bubbleThem, { flexDirection: 'row', gap: 5, paddingVertical: 14 }]}>
-              <TypingDot delay={0} /><TypingDot delay={150} /><TypingDot delay={300} />
-            </View>
-          </View>
-        )}
-      </ScrollView>
+            {typing && (
+              <View style={[mb.row, mb.rowThem]}>
+                <View style={mb.avatar}><Text style={{ fontSize: 14 }}>🤖</Text></View>
+                <View style={[mb.bubble, mb.bubbleThem, { flexDirection: 'row', gap: 5, paddingVertical: 14 }]}>
+                  <TypingDot delay={0} /><TypingDot delay={150} /><TypingDot delay={300} />
+                </View>
+              </View>
+            )}
+          </>
+        }
+      />
 
       {/* Structured answer controls (choice chips / multichoice / number unit picker).
           TextControl and PhoneControl are intentionally excluded here — the
@@ -1180,9 +1188,18 @@ const sg = StyleSheet.create({
 function TypingDot({ delay }: { delay: number }) {
   const [on, setOn] = useState(false);
   useEffect(() => {
-    const id = setInterval(() => setOn(o => !o), 500);
-    const t = setTimeout(() => {}, delay);
-    return () => { clearInterval(id); clearTimeout(t); };
+    // `delay` was previously passed to a setTimeout with an empty body, so it did
+    // nothing and all three dots blinked in unison. Offsetting the interval start
+    // is what actually staggers them.
+    let interval: ReturnType<typeof setInterval> | null = null;
+    const start = setTimeout(() => {
+      setOn(true);
+      interval = setInterval(() => setOn(o => !o), 500);
+    }, delay);
+    return () => {
+      clearTimeout(start);
+      if (interval) clearInterval(interval);
+    };
   }, [delay]);
   return <View style={[mb.dot, { opacity: on ? 1 : 0.3 }]} />;
 }
@@ -1747,8 +1764,26 @@ function SendBtn({ onPress, disabled }: { onPress: () => void; disabled: boolean
   );
 }
 
+// ── Plain text bubble ──
+// Memoised because it is the overwhelming majority of the transcript. Previously
+// every bubble was rebuilt on each parent render, and with the transcript in a
+// ScrollView none of them could unmount either — so a long conversation re-laid
+// out entirely on every keystroke.
+const TextBubble = React.memo(function TextBubble({ msg }: { msg: Msg }) {
+  const isSystem = msg.messageType === 'system';
+  return (
+    <View style={[mb.row, isSystem ? mb.rowThem : mb.rowMe]}>
+      {isSystem && <View style={mb.avatar}><Text style={{ fontSize: 14 }}>🤖</Text></View>}
+      <View style={[mb.bubble, isSystem ? mb.bubbleThem : mb.bubbleMe]}>
+        <Text style={[mb.text, isSystem ? mb.textThem : mb.textMe]}>{msg.content}</Text>
+        <Text style={[mb.time, isSystem ? mb.timeThem : mb.timeMe]}>{fmtTime(msg.createdAt)}</Text>
+      </View>
+    </View>
+  );
+});
+
 // ═══════════ SUMMARY BUBBLE ═══════════
-function SummaryBubble({ msg, onEdit, onConfirm, sending }: {
+const SummaryBubble = React.memo(function SummaryBubble({ msg, onEdit, onConfirm, sending }: {
   msg: Msg; onEdit: (slotId: string) => void; onConfirm: () => void; sending: boolean;
 }) {
   const values: { slotId: string; label: string; display: string }[] = msg.template?.options?.values || [];
@@ -1788,7 +1823,7 @@ function SummaryBubble({ msg, onEdit, onConfirm, sending }: {
       </View>
     </View>
   );
-}
+});
 
 // ═══════════ RESULTS BUBBLE ═══════════
 export type MatchCard = { projectId: string; projectName: string; city?: string; location?: string; score: number; slug?: string };
@@ -1810,7 +1845,7 @@ export type InventoryMatchCard = {
   postedByRole?: string;
 };
 
-function ResultsBubble({ msg, onViewProject, onViewInventoryMatch, onJoinProjectGroup }: {
+const ResultsBubble = React.memo(function ResultsBubble({ msg, onViewProject, onViewInventoryMatch, onJoinProjectGroup }: {
   msg: Msg;
   onViewProject?: (projectId: string, projectName?: string) => void;
   onViewInventoryMatch?: (card: InventoryMatchCard) => void;
@@ -1896,7 +1931,7 @@ function ResultsBubble({ msg, onViewProject, onViewInventoryMatch, onJoinProject
       </View>
     </View>
   );
-}
+});
 
 function ScoreRing({ score }: { score: number }) {
   const clamped = Math.max(0, Math.min(100, Math.round(score)));
@@ -1909,7 +1944,7 @@ function ScoreRing({ score }: { score: number }) {
 }
 
 // ═══════════ ACTIONS BUBBLE ═══════════
-function ActionsBubble({ msg, onNewLead, onViewLeads, disabled }: {
+const ActionsBubble = React.memo(function ActionsBubble({ msg, onNewLead, onViewLeads, disabled }: {
   msg: Msg; onNewLead: () => void; onViewLeads?: () => void; disabled: boolean;
 }) {
   const actions: { action: string; label: { en: string; hi: string }; icon?: string }[] = msg.template?.options?.actions || [];
@@ -1944,7 +1979,7 @@ function ActionsBubble({ msg, onNewLead, onViewLeads, disabled }: {
       </View>
     </View>
   );
-}
+});
 
 // ═══════════ Styles ═══════════
 const s = StyleSheet.create({
