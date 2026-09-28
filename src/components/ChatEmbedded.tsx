@@ -26,6 +26,60 @@ function diffStr(iso: string) {
   return h < 24 ? `${h}h` : `${Math.floor(h / 24)}d`;
 }
 
+const initial = (name?: string) => (name || '?').charAt(0).toUpperCase();
+
+// Module-level so FlatList sees one stable component type instead of a new one
+// on every parent render.
+const SessionSeparator = () => (
+  <View style={{ height: 1, backgroundColor: colors.line, marginLeft: 60 }} />
+);
+
+const SessionRow = React.memo(function SessionRow({ session, partnerName, onPress }: {
+  session: ChatSession;
+  partnerName?: string;
+  onPress: (session: ChatSession) => void;
+}) {
+  return (
+    <Pressable onPress={() => onPress(session)} style={s.sessionRow}>
+      <View style={s.avatar}><Text style={s.avatarText}>{initial(partnerName)}</Text></View>
+      <View style={{ flex: 1 }}>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+          <Text style={s.name}>{partnerName || 'Unknown'}</Text>
+          <Text style={s.time}>{diffStr(session.updatedAt)}</Text>
+        </View>
+        <Text style={s.lastMsg} numberOfLines={1}>{session.lastMessage || 'Start chatting'}</Text>
+      </View>
+      {session.unreadCount > 0 && (
+        <View style={s.badge}><Text style={s.badgeText}>{session.unreadCount}</Text></View>
+      )}
+    </Pressable>
+  );
+});
+
+const MessageRow = React.memo(function MessageRow({ msg, isMe }: {
+  msg: ChatMessage;
+  isMe: boolean;
+}) {
+  return (
+    <View style={[{ flexDirection: 'row' }, isMe ? { justifyContent: 'flex-end' } : null]}>
+      {!isMe && (
+        <View style={[s.avatar, s.avatarSmall]}>
+          <Text style={[s.avatarText, { fontSize: 9 }]}>{initial(msg.sender.name)}</Text>
+        </View>
+      )}
+      <View style={[s.bubble, isMe ? s.bubbleMe : s.bubbleThem]}>
+        <Text style={[s.bubbleText, { color: isMe ? '#fff' : colors.ink }]}>{msg.content}</Text>
+        <Text style={[
+          s.bubbleTime,
+          { color: isMe ? 'rgba(255,255,255,0.6)' : colors.muted, textAlign: isMe ? 'right' : 'left' },
+        ]}>
+          {timeStr(msg.createdAt)}
+        </Text>
+      </View>
+    </View>
+  );
+});
+
 export default function ChatEmbedded() {
   const { user } = useAuth();
   const toast = useToast();
@@ -63,8 +117,16 @@ export default function ChatEmbedded() {
     return unsub;
   }, [active?.id, socket.onMessage]);
 
-  const openSession = async (session: ChatSession) => {
-    if (active) socket.leaveChat(active.id);
+  // useCallback matters here: this is the onPress handed to every memoised
+  // SessionRow. As a plain function it was rebuilt on each render, changing the
+  // row's props and defeating the memo entirely. `activeIdRef` keeps the "leave
+  // previous chat" behaviour without putting `active` in the dependency list.
+  const activeIdRef = useRef<string | null>(null);
+  useEffect(() => { activeIdRef.current = active?.id ?? null; }, [active?.id]);
+
+  const openSession = useCallback(async (session: ChatSession) => {
+    const previousId = activeIdRef.current;
+    if (previousId) socket.leaveChat(previousId);
     setActive(session);
     setMessages([]);
     setLoadingMsgs(true);
@@ -75,7 +137,8 @@ export default function ChatEmbedded() {
     } catch { /* silent */ }
     finally { setLoadingMsgs(false); }
     chatApi.markRead(session.id).catch(() => {});
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [socket.joinChat, socket.leaveChat]);
 
   const send = () => {
     if (!text.trim() || !active) return;
@@ -83,8 +146,29 @@ export default function ChatEmbedded() {
     setText('');
   };
 
-  const getPartner = (s: ChatSession) => s.participants.find(p => p.id !== user?.id);
-  const initial = (name: string) => (name || '?').charAt(0).toUpperCase();
+  const getPartner = useCallback(
+    (session: ChatSession) => session.participants.find(p => p.id !== user?.id),
+    [user?.id]
+  );
+
+  // Stable renderItem + separator. Both used to be inline arrows, so the session
+  // list rebuilt every row on any parent render, and the separator was treated
+  // as a brand-new component type each time (remounting all separators).
+  const renderSession = useCallback(
+    ({ item: session }: { item: ChatSession }) => (
+      <SessionRow session={session} partnerName={getPartner(session)?.name} onPress={openSession} />
+    ),
+    [getPartner, openSession]
+  );
+
+  // The composer's `text` state lives in this component, so before memoisation
+  // every keystroke re-rendered every message bubble in the thread.
+  const renderMessage = useCallback(
+    ({ item: msg }: { item: ChatMessage }) => (
+      <MessageRow msg={msg} isMe={msg.sender.id === user?.id} />
+    ),
+    [user?.id]
+  );
 
   if (!active) {
     return (
@@ -98,25 +182,8 @@ export default function ChatEmbedded() {
           <FlatList
             data={sessions}
             keyExtractor={s => s.id}
-            renderItem={({ item: session }) => {
-              const partner = getPartner(session);
-              return (
-                <Pressable onPress={() => openSession(session)} style={s.sessionRow}>
-                  <View style={s.avatar}><Text style={s.avatarText}>{initial(partner?.name || '')}</Text></View>
-                  <View style={{ flex: 1 }}>
-                    <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                      <Text style={s.name}>{partner?.name || 'Unknown'}</Text>
-                      <Text style={s.time}>{diffStr(session.updatedAt)}</Text>
-                    </View>
-                    <Text style={s.lastMsg} numberOfLines={1}>{session.lastMessage || 'Start chatting'}</Text>
-                  </View>
-                  {session.unreadCount > 0 && (
-                    <View style={s.badge}><Text style={s.badgeText}>{session.unreadCount}</Text></View>
-                  )}
-                </Pressable>
-              );
-            }}
-            ItemSeparatorComponent={() => <View style={{ height: 1, backgroundColor: colors.line, marginLeft: 60 }} />}
+            renderItem={renderSession}
+            ItemSeparatorComponent={SessionSeparator}
           />
         )}
       </View>
@@ -140,18 +207,7 @@ export default function ChatEmbedded() {
           keyExtractor={m => m.id}
           contentContainerStyle={{ padding: 12, gap: 8 }}
           onContentSizeChange={() => flatRef.current?.scrollToEnd({ animated: false })}
-          renderItem={({ item: msg }) => {
-            const isMe = msg.sender.id === user?.id;
-            return (
-              <View style={[{ flexDirection: 'row' }, isMe ? { justifyContent: 'flex-end' } : {}]}>
-                {!isMe && <View style={[s.avatar, { width: 26, height: 26, marginRight: 6 }]}><Text style={[s.avatarText, { fontSize: 9 }]}>{initial(msg.sender.name)}</Text></View>}
-                <View style={[{ maxWidth: '72%', padding: 10, borderRadius: 16 }, isMe ? { backgroundColor: colors.brand } : { backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line }]}>
-                  <Text style={{ fontSize: 13, color: isMe ? '#fff' : colors.ink }}>{msg.content}</Text>
-                  <Text style={{ fontSize: 8, color: isMe ? 'rgba(255,255,255,0.6)' : colors.muted, marginTop: 2, textAlign: isMe ? 'right' : 'left' }}>{timeStr(msg.createdAt)}</Text>
-                </View>
-              </View>
-            );
-          }}
+          renderItem={renderMessage}
         />
       )}
       <View style={{ flexDirection: 'row', gap: 8, padding: 12, backgroundColor: colors.white, borderTopWidth: 1, borderTopColor: colors.line }}>
@@ -171,7 +227,14 @@ const s = StyleSheet.create({
   emptyText: { fontSize: 13, color: colors.muted },
   sessionRow: { flexDirection: 'row', alignItems: 'center', padding: 12, gap: 10, backgroundColor: colors.white },
   avatar: { width: 38, height: 38, borderRadius: 19, backgroundColor: colors.brand, alignItems: 'center', justifyContent: 'center' },
+  avatarSmall: { width: 26, height: 26, marginRight: 6 },
   avatarText: { color: '#fff', fontWeight: 'bold', fontSize: 13 },
+  // Message bubbles — these were inline style objects rebuilt on every render.
+  bubble: { maxWidth: '72%', padding: 10, borderRadius: 16 },
+  bubbleMe: { backgroundColor: colors.brand },
+  bubbleThem: { backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line },
+  bubbleText: { fontSize: 13 },
+  bubbleTime: { fontSize: 8, marginTop: 2 },
   name: { fontSize: 13, fontWeight: '700', color: colors.ink, flex: 1 },
   time: { fontSize: 10, color: colors.muted },
   lastMsg: { fontSize: 11, color: colors.muted2, marginTop: 2 },

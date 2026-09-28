@@ -36,15 +36,23 @@ export default function PropertyDetailScreen() {
 
   const allImages = property ? [property.image, ...(property.galleryImages || [])].filter(Boolean) : [];
 
+  // Auto-advance the hero carousel. `activeSlide` is deliberately NOT a
+  // dependency: having it there tore down and recreated the interval on every
+  // slide (and on every manual swipe), so the timer restarted constantly and the
+  // slide could advance early. A functional update reads the latest index
+  // without the effect needing to know it.
+  const slideCount = allImages.length;
   useEffect(() => {
-    if (allImages.length <= 1) return;
+    if (slideCount <= 1) return;
     const interval = setInterval(() => {
-      const next = (activeSlide + 1) % allImages.length;
-      flatListRef.current?.scrollToIndex({ index: next, animated: true });
-      setActiveSlide(next);
+      setActiveSlide(prev => {
+        const next = (prev + 1) % slideCount;
+        flatListRef.current?.scrollToIndex({ index: next, animated: true });
+        return next;
+      });
     }, 3000);
     return () => clearInterval(interval);
-  }, [activeSlide, allImages.length]);
+  }, [slideCount]);
 
   if (!property) {
     return (

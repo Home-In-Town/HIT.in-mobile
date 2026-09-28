@@ -37,6 +37,88 @@ const STATUS_C: Record<string, string> = {
   'ready': colors.greenText,
 };
 
+const projectId = (p: Project): string =>
+  String((p as any).id || (p as any)._id || '');
+
+/**
+ * One reel card. Memoised so that match counts landing from the background
+ * request (or a share sheet opening) re-render only the affected card instead of
+ * every card in the feed — each card holds a full-screen image, so that was the
+ * most expensive re-render in the app.
+ */
+const ReelCard = React.memo(function ReelCard({ p, matchN, onPress, onShare }: {
+  p: Project;
+  matchN: number;
+  onPress?: (p: Project) => void;
+  onShare: (p: Project) => void;
+}) {
+  const cover = coverUrl(p);
+  return (
+    <Pressable style={[s.card, { height: CARD_H }]} onPress={() => onPress?.(p)}>
+      {/* Cover image */}
+      {cover ? (
+        <Image source={{ uri: cover }} style={s.cardImg} resizeMode="cover" />
+      ) : (
+        <View style={[s.cardImg, s.noImg]}>
+          <Building2 size={40} color={colors.muted} />
+        </View>
+      )}
+
+      {/* Gradient overlay content */}
+      <View style={s.overlay}>
+        {/* Top row — status + match signal */}
+        <View style={s.topRow}>
+          <View style={[s.statusBadge, { backgroundColor: 'rgba(0,0,0,0.55)' }]}>
+            <Text style={[s.statusText, { color: STATUS_C[p.projectStatus] || '#fff' }]}>
+              {p.projectStatus?.replace('-', ' ').toUpperCase() || 'LISTING'}
+            </Text>
+          </View>
+          <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+            {matchN > 0 && (
+              <View style={s.matchBadge}>
+                <View style={s.matchPulse} />
+                <Zap size={10} color={colors.greenText} />
+                <Text style={s.matchText}>{matchN} buyer{matchN !== 1 ? 's' : ''} match</Text>
+              </View>
+            )}
+            <Pressable
+              onPress={e => { e.stopPropagation?.(); onShare(p); }}
+              style={s.shareBtnOverlay}
+            >
+              <Share2 size={14} color="#fff" />
+            </Pressable>
+          </View>
+        </View>
+
+        {/* Bottom info */}
+        <View style={s.bottomInfo}>
+          <Text style={s.cardName} numberOfLines={2}>{p.name}</Text>
+
+          <View style={s.infoRow}>
+            <MapPin size={13} color="rgba(255,255,255,0.8)" />
+            <Text style={s.infoText}>{p.city}{p.location ? ` · ${p.location}` : ''}</Text>
+          </View>
+
+          <View style={s.priceRow}>
+            <Text style={s.priceText}>Starting {fmtPrice(p.startingPrice)}</Text>
+            {p.pricePerSqFt ? <Text style={s.priceSubText}>  ₹{p.pricePerSqFt}/sqft</Text> : null}
+          </View>
+
+          {/* Tags row */}
+          <View style={s.tagsRow}>
+            {p.bhkOptions?.slice(0, 3).map(b => (
+              <View key={b} style={s.tag}><Text style={s.tagText}>{b}</Text></View>
+            ))}
+            {p.reraApproved && <View style={s.tag}><CheckCircle size={10} color="#fff" /><Text style={s.tagText}> RERA</Text></View>}
+            {p.bankLoanAvailable && <View style={s.tag}><Text style={s.tagText}>Loan ✓</Text></View>}
+            {p.gatedCommunity && <View style={s.tag}><Home size={10} color="#fff" /><Text style={s.tagText}> Gated</Text></View>}
+          </View>
+        </View>
+      </View>
+    </Pressable>
+  );
+});
+
 export default function PropertyReels({ onProjectPress }: Props) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [matchCounts, setMatchCounts] = useState<Record<string, number>>({});
@@ -63,6 +145,20 @@ export default function PropertyReels({ onProjectPress }: Props) {
 
   useEffect(() => { load(); }, [load]);
 
+  // Stable renderItem — an inline arrow here handed every card a brand-new
+  // props object on each render, which defeated ReelCard's memoisation.
+  const renderReel = useCallback(
+    ({ item: p }: { item: Project }) => (
+      <ReelCard
+        p={p}
+        matchN={matchCounts[projectId(p)] || 0}
+        onPress={onProjectPress}
+        onShare={setShareProject}
+      />
+    ),
+    [matchCounts, onProjectPress]
+  );
+
   if (loading) {
     return (
       <View style={s.center}>
@@ -83,84 +179,23 @@ export default function PropertyReels({ onProjectPress }: Props) {
   return (
     <>
       <FlatList
-      data={projects}
-      keyExtractor={p => (p as any).id || (p as any)._id || Math.random().toString()}
-      pagingEnabled
-      showsVerticalScrollIndicator={false}
-      snapToInterval={CARD_H + 16}
-      decelerationRate="fast"
-      contentContainerStyle={{ gap: 16, paddingHorizontal: 16, paddingBottom: 24 }}
-      renderItem={({ item: p }) => {
-        const cover = coverUrl(p);
-        const matchN = matchCounts[(p as any).id || (p as any)._id] || 0;
-        return (
-          <Pressable
-            style={[s.card, { height: CARD_H }]}
-            onPress={() => onProjectPress?.(p)}
-          >            {/* Cover image */}
-            {cover ? (
-              <Image source={{ uri: cover }} style={s.cardImg} resizeMode="cover" />
-            ) : (
-              <View style={[s.cardImg, s.noImg]}>
-                <Building2 size={40} color={colors.muted} />
-              </View>
-            )}
-
-            {/* Gradient overlay content */}
-            <View style={s.overlay}>
-              {/* Top row — status + match signal */}
-              <View style={s.topRow}>
-                <View style={[s.statusBadge, { backgroundColor: 'rgba(0,0,0,0.55)' }]}>
-                  <Text style={[s.statusText, { color: STATUS_C[p.projectStatus] || '#fff' }]}>
-                    {p.projectStatus?.replace('-', ' ').toUpperCase() || 'LISTING'}
-                  </Text>
-                </View>
-                <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
-                  {matchN > 0 && (
-                    <View style={s.matchBadge}>
-                      <View style={s.matchPulse} />
-                      <Zap size={10} color={colors.greenText} />
-                      <Text style={s.matchText}>{matchN} buyer{matchN !== 1 ? 's' : ''} match</Text>
-                    </View>
-                  )}
-                  <Pressable
-                    onPress={e => { e.stopPropagation?.(); setShareProject(p); }}
-                    style={s.shareBtnOverlay}
-                  >
-                    <Share2 size={14} color="#fff" />
-                  </Pressable>
-                </View>
-              </View>
-
-              {/* Bottom info */}
-              <View style={s.bottomInfo}>
-                <Text style={s.cardName} numberOfLines={2}>{p.name}</Text>
-
-                <View style={s.infoRow}>
-                  <MapPin size={13} color="rgba(255,255,255,0.8)" />
-                  <Text style={s.infoText}>{p.city}{p.location ? ` · ${p.location}` : ''}</Text>
-                </View>
-
-                <View style={s.priceRow}>
-                  <Text style={s.priceText}>Starting {fmtPrice(p.startingPrice)}</Text>
-                  {p.pricePerSqFt ? <Text style={s.priceSubText}>  ₹{p.pricePerSqFt}/sqft</Text> : null}
-                </View>
-
-                {/* Tags row */}
-                <View style={s.tagsRow}>
-                  {p.bhkOptions?.slice(0, 3).map(b => (
-                    <View key={b} style={s.tag}><Text style={s.tagText}>{b}</Text></View>
-                  ))}
-                  {p.reraApproved && <View style={s.tag}><CheckCircle size={10} color="#fff" /><Text style={s.tagText}> RERA</Text></View>}
-                  {p.bankLoanAvailable && <View style={s.tag}><Text style={s.tagText}>Loan ✓</Text></View>}
-                  {p.gatedCommunity && <View style={s.tag}><Home size={10} color="#fff" /><Text style={s.tagText}> Gated</Text></View>}
-                </View>
-              </View>
-            </View>
-          </Pressable>
-        );
-      }}
-    />
+        data={projects}
+        // Index fallback instead of Math.random(): a random key changed on every
+        // render, so any project without an id was unmounted and remounted
+        // continuously — reloading its full-screen image each time.
+        keyExtractor={(p, i) => projectId(p) || `reel-${i}`}
+        pagingEnabled
+        showsVerticalScrollIndicator={false}
+        snapToInterval={CARD_H + 16}
+        decelerationRate="fast"
+        contentContainerStyle={{ gap: 16, paddingHorizontal: 16, paddingBottom: 24 }}
+        // Full-screen image cards are heavy, so keep only a small window mounted.
+        initialNumToRender={2}
+        maxToRenderPerBatch={3}
+        windowSize={3}
+        removeClippedSubviews={Platform.OS === 'android'}
+        renderItem={renderReel}
+      />
     <ShareModal project={shareProject} onClose={() => setShareProject(null)} />
     </>
   );

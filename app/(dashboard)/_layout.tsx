@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View } from 'react-native';
+import { View, AppState } from 'react-native';
 import { Stack } from 'expo-router';
 import { useAuth } from '../../src/lib/authContext';
 import { notificationsApi } from '../../src/lib/api';
@@ -11,12 +11,55 @@ function DashboardShell() {
   const { open, closeSidebar } = useSidebar();
   const [unread, setUnread] = useState(0);
 
+  // Unread badge polling. The interval used to run unconditionally, so a
+  // backgrounded app kept making a request every minute for as long as the
+  // process lived. Now polling stops when the app leaves the foreground and
+  // fires once immediately on return, so the badge is still fresh on resume.
   useEffect(() => {
+    let timer: ReturnType<typeof setInterval> | null = null;
+    // Android commonly emits a 'change' → 'active' event shortly after the
+    // activity settles, even though the app was already active. Without tracking
+    // the previous state, that fired a SECOND unread request milliseconds after
+    // the one on mount (visible in the server logs as duplicate
+    // /notifications?limit=1 calls ~150ms apart).
+    let lastState = AppState.currentState;
+
     const fetchUnread = () =>
       notificationsApi.list({ limit: 1 }).then(r => setUnread(r.unreadCount)).catch(() => {});
-    fetchUnread();
-    const id = setInterval(fetchUnread, 60000);
-    return () => clearInterval(id);
+
+    const startPolling = () => {
+      if (timer) return;
+      timer = setInterval(fetchUnread, 60000);
+    };
+    const stopPolling = () => {
+      if (!timer) return;
+      clearInterval(timer);
+      timer = null;
+    };
+
+    if (lastState === 'active') {
+      fetchUnread();
+      startPolling();
+    }
+
+    const sub = AppState.addEventListener('change', state => {
+      const wasActive = lastState === 'active';
+      lastState = state;
+
+      if (state !== 'active') {
+        stopPolling();
+        return;
+      }
+      // Only a real background → foreground transition needs a refresh.
+      if (wasActive) return;
+      fetchUnread();
+      startPolling();
+    });
+
+    return () => {
+      stopPolling();
+      sub.remove();
+    };
   }, []);
 
   return (
