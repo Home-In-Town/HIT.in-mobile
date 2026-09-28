@@ -2248,9 +2248,11 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
             keyboardShouldPersistTaps="handled"
           >
             {([
-              { v: 'buy', icon: '🔑', label: 'Buy' },
-              { v: 'sell', icon: '🏷️', label: 'Sell' },
-              { v: 'rent', icon: '🏠', label: 'Rent' },
+              // `v` is the intent sent to the assistant — only the label is
+              // presentational, so these values must stay as they are.
+              { v: 'buy', icon: '🔑', label: 'Buy Property' },
+              { v: 'sell', icon: '🏷️', label: 'Sell Property' },
+              { v: 'rent', icon: '🏠', label: 'Rent Property' },
             ] as const).map((opt) => (
               <Pressable key={opt.v} style={ip.chip} onPress={() => aiStartWithIntent(opt.v)}>
                 <Text style={ip.chipIcon}>{opt.icon}</Text>
