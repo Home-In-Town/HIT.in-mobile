@@ -2178,6 +2178,31 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
 
   // ═══════════ THREAD (full-screen) ═══════════
   const proj = (activeRoom.project as any) || null;
+
+  // Subtitle under the thread title. The universal room has no name of its own to
+  // show, so it keeps the old wording; named groups lead with their membership
+  // count followed by whatever identifies them (company, location, area).
+  const threadSubtitle = (() => {
+    if (activeRoom.isUniversal) {
+      return newJoinCount > 0 ? `+${newJoinCount} new this week` : 'Universal group';
+    }
+
+    const memberText = `${activeRoom.members.length} member${activeRoom.members.length !== 1 ? 's' : ''}`;
+    const joined = newJoinCount > 0 ? `+${newJoinCount} new` : '';
+
+    let context = '';
+    if (activeRoom.roomType === 'builder') {
+      context = activeRoom.builder?.isVerified
+        ? 'Verified'
+        : (activeRoom.builder?.role === 'agent' ? 'Agent' : 'Builder');
+    } else if (activeRoom.roomType === 'project') {
+      context = [proj?.location, proj?.city].filter(Boolean).join(', ') || 'Project group';
+    } else {
+      context = activeRoom.area?.location || activeRoom.area?.city || 'Group';
+    }
+
+    return [memberText, joined, context].filter(Boolean).join(' · ');
+  })();
   // Share link / PDF / QR / Gallery all act on the linked project, so they are
   // only offered when the group actually has one (area groups do not).
   const hasProjectMedia = !!(proj?.slug || proj?.id || proj?._id);
@@ -2197,21 +2222,18 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
             {activeRoom.isUniversal ? '🌐' : (ROOM_ICON[activeRoom.roomType] || '💬')}
           </Text>
         </View>
-        {/* Membership stats instead of a repeated section name. The tab above
-            already says "AI Matching", so the room title added nothing and only
-            got truncated once the Post / Matching buttons were in the row. */}
+        {/* The universal room keeps membership stats as its title — the tab above
+            already names it, so repeating "AI Lead Matching" here said nothing.
+            Every other group is a NAMED thing (a company, a property, an area),
+            so the name leads and the membership count moves to the subtitle. */}
         <View style={{ flex: 1 }}>
           <Text style={s.threadTitle} numberOfLines={1}>
-            {activeRoom.members.length} members
+            {activeRoom.isUniversal
+              ? `${activeRoom.members.length} members`
+              : roomDisplayName(activeRoom)}
           </Text>
           <Text style={s.threadSub} numberOfLines={1}>
-            {newJoinCount > 0
-              ? `+${newJoinCount} new this week`
-              : activeRoom.isUniversal
-                ? 'Universal group'
-                : activeRoom.roomType === 'project'
-                  ? ([proj?.location, proj?.city].filter(Boolean).join(', ') || 'Project group')
-                  : (activeRoom.area?.location || activeRoom.area?.city || 'Group')}
+            {threadSubtitle}
           </Text>
         </View>
 
