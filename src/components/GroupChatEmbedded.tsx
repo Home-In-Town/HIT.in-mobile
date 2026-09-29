@@ -3397,7 +3397,7 @@ const MessageBubble = React.memo(function MessageBubble({
           {/* Top strip: label + who posted it */}
           <View style={mbs.propertyHeaderRow}>
             <View style={mbs.propertyLabelPill}>
-              <Building2 size={11} color={colors.greenText} />
+              <Building2 size={11} color={colors.brand} />
               <Text style={mbs.propertyLabel}>Inventory</Text>
             </View>
             <View style={mbs.propertySenderWrap}>
@@ -3414,7 +3414,7 @@ const MessageBubble = React.memo(function MessageBubble({
               <Image source={{ uri: coverUrl }} style={mbs.propertyThumb} resizeMode="cover" />
             ) : (
               <View style={[mbs.propertyThumb, mbs.propertyThumbFallback]}>
-                <Building2 size={20} color={colors.greenText} />
+                <Building2 size={20} color={colors.brand} />
               </View>
             )}
 
@@ -3442,7 +3442,7 @@ const MessageBubble = React.memo(function MessageBubble({
           <View style={mbs.propertyTagsRow}>
             {!!possessionLabel && (
               <View style={[mbs.propertyTag, mbs.propertyTagPossession]}>
-                <Text style={[mbs.propertyTagText, { color: '#fff' }]}>{possessionLabel}</Text>
+                <Text style={[mbs.propertyTagText, { color: colors.greenText }]}>{possessionLabel}</Text>
               </View>
             )}
             <View style={[mbs.propertyTag, mbs.propertyTagUrgency]}>
@@ -3456,7 +3456,7 @@ const MessageBubble = React.memo(function MessageBubble({
           </View>
 
           <CardActions
-            tone="green"
+            tone="brand"
             actions={[
               { key: 'details', label: 'View Details', icon: 'details', ghost: true, onPress: () => onPropertyViewDetails(cardProjectId, inv) },
               { key: 'join', label: 'Join Group', icon: 'join', onPress: () => onJoinPropertyGroup(cardProjectId) },
@@ -3894,12 +3894,15 @@ const mbs = StyleSheet.create({
   tag: { backgroundColor: colors.slateBg, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 10 },
   tagText: { fontSize: 8.5, fontWeight: '700', color: colors.slateText },
   // Compact universal-group inventory card styles
+  // Same surface as the AI Assist match card: a white card on a neutral border,
+  // with brand accents. The card used to be green end to end, which read as a
+  // status colour on a card that carries no status.
   propertyCard: {
     width: '100%',
     minWidth: 0,
-    backgroundColor: '#F0FDF4',
+    backgroundColor: colors.white,
     borderWidth: 1,
-    borderColor: colors.greenBorder,
+    borderColor: colors.line,
     borderRadius: 12,
     paddingHorizontal: 10,
     paddingVertical: 9,
@@ -3916,7 +3919,7 @@ const mbs = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 3,
-    backgroundColor: '#DCFCE7',
+    backgroundColor: colors.brandTint,
     borderRadius: 6,
     paddingHorizontal: 6,
     paddingVertical: 3,
@@ -3924,7 +3927,7 @@ const mbs = StyleSheet.create({
   propertyLabel: {
     fontSize: 10,
     fontWeight: '800',
-    color: colors.greenText,
+    color: colors.brand,
     letterSpacing: 0.2,
   },
   propertySenderWrap: {
@@ -3951,11 +3954,13 @@ const mbs = StyleSheet.create({
     width: 62,
     height: 62,
     borderRadius: 10,
-    backgroundColor: '#DCFCE7',
+    backgroundColor: colors.brandTint,
   },
   propertyThumbFallback: {
     alignItems: 'center',
     justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: colors.line,
   },
   propertyInfo: {
     flex: 1,
@@ -4002,8 +4007,12 @@ const mbs = StyleSheet.create({
     paddingVertical: 3,
     borderRadius: 6,
   },
+  // Status pills stay coloured — they carry meaning. Softened to a tinted pill
+  // so they read as a badge on the white card instead of a solid block.
   propertyTagPossession: {
-    backgroundColor: colors.greenText,
+    backgroundColor: colors.greenBg,
+    borderWidth: 1,
+    borderColor: colors.greenBorder,
   },
   propertyTagUrgency: {
     backgroundColor: '#FEF3C7',
