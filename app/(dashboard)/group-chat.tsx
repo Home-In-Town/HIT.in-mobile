@@ -23,7 +23,7 @@ function timeStr(iso: string): string {
   return d.toLocaleDateString();
 }
 
-const ROOM_ICON = { project: '🏗', area: '📍', universal: '🌐' };
+const ROOM_ICON: Record<string, string> = { project: '🏗', builder: '🏢', area: '📍', universal: '🌐' };
 
 export default function GroupChatScreen() {
   const insets = useSafeAreaInsets();

@@ -7,7 +7,7 @@
 //
 // When a room is open we call onRoomOpenChange(true) so the hub hides its top tabs.
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, FlatList, SectionList, Pressable, StyleSheet, ActivityIndicator,
   TextInput, KeyboardAvoidingView, Platform, Modal, ScrollView, Switch, Alert, Share,
@@ -25,7 +25,7 @@ import {
   Search, MapPin, Check, Camera, Paperclip, Sparkles, ChevronDown, ChevronUp, Clock,
   Phone, Eye, UserPlus, BadgeCheck,
 } from 'lucide-react-native';
-import { groupChatApi, shareApi, mediaApi, leadMatchingApi, projectsApiExtended, GroupRoom, GroupMessage, InventoryCard } from '../lib/api';
+import { groupChatApi, shareApi, mediaApi, leadMatchingApi, projectsApiExtended, GroupRoom, GroupMessage, InventoryCard, OwnerPortfolioProject } from '../lib/api';
 import AiAssistant, { AiAssistantApi, AiPostDraft, InventoryMatchCard, aiOwnsInput } from './AiAssistant';
 import { postedListStorage, disappearStorage } from '../lib/storage';
 import { useAuth } from '../lib/authContext';
@@ -33,7 +33,7 @@ import { useSocket } from '../hooks/useSocket';
 import { useToast } from './Toast';
 import { colors } from '../theme';
 
-const ROOM_ICON: Record<string, string> = { project: '🏗', area: '📍', universal: '🌐' };
+const ROOM_ICON: Record<string, string> = { project: '🏗', builder: '🏢', area: '📍', universal: '🌐' };
 
 function timeStr(iso: string) {
   if (!iso) return '';
@@ -67,6 +67,12 @@ const noop = () => {};
 function roomDisplayName(room?: GroupRoom | null): string {
   if (!room) return '';
   if (room.isUniversal || /hit community/i.test(room.name)) return 'AI Lead Matching';
+  // Builder rooms are shown by company. The server already names the room after
+  // the company, but prefer the live builder record so a company name changed
+  // moments ago still reads correctly.
+  if (room.roomType === 'builder') {
+    return room.builder?.companyName || room.builder?.name || room.name;
+  }
   return room.name;
 }
 
@@ -86,6 +92,14 @@ function roomDisplayName(room?: GroupRoom | null): string {
 function roomLines(room: GroupRoom): { primary: string; secondary: string } {
   const memberText = `${room.members.length} member${room.members.length !== 1 ? 's' : ''}`;
   const p: any = room.project;
+
+  if (room.roomType === 'builder') {
+    const who = room.builder?.role === 'agent' ? 'Agent' : 'Builder';
+    return {
+      primary: [memberText, room.builder?.isVerified ? 'Verified' : ''].filter(Boolean).join(' · '),
+      secondary: `${who} · Tap to see their properties`,
+    };
+  }
 
   if (room.roomType === 'project' && p) {
     const where = [p.location, p.city].filter(Boolean).join(', ');
@@ -150,6 +164,7 @@ function matchReason(req: any): string {
 /** Short label for the row's type chip. Universal rooms don't get one. */
 function roomTypeLabel(room: GroupRoom): string {
   if (room.isUniversal) return '';
+  if (room.roomType === 'builder') return 'Company';
   if (room.roomType === 'project') return 'Project';
   if (room.roomType === 'area') return 'Area';
   return '';
@@ -470,6 +485,71 @@ function PostCard({ item, posted, cooldownLeftMs, posting, onPost, onView }: {
   );
 }
 
+// ── Builder property card ──
+// Shown as a horizontal strip inside a company group: the properties that
+// builder has published. Two actions, because they answer different questions —
+// Details is "what is this property", Open Group is "take me to its discussion".
+const BuilderPropertyCard = React.memo(function BuilderPropertyCard({ project, opening, onDetails, onOpenGroup }: {
+  project: OwnerPortfolioProject;
+  opening: boolean;
+  onDetails: (project: OwnerPortfolioProject) => void;
+  onOpenGroup: (project: OwnerPortfolioProject) => void;
+}) {
+  const where = [project.location, project.city].filter(Boolean).join(', ');
+  const price = project.startingPrice ? fmtPrice(project.startingPrice) : '';
+  const bhk = (project.bhkOptions || []).filter(Boolean).join('/');
+
+  return (
+    <View style={bp.card}>
+      {project.coverImage ? (
+        <Image source={{ uri: project.coverImage }} style={bp.cover} resizeMode="cover" />
+      ) : (
+        <View style={[bp.cover, bp.coverFallback]}>
+          <Building2 size={18} color={colors.greenText} />
+        </View>
+      )}
+
+      <View style={bp.body}>
+        <Text style={bp.name} numberOfLines={1}>{project.name}</Text>
+        {!!where && <Text style={bp.meta} numberOfLines={1}>📍 {where}</Text>}
+        {!!(price || bhk) && (
+          <Text style={bp.price} numberOfLines={1}>
+            {[price, bhk].filter(Boolean).join(' · ')}
+          </Text>
+        )}
+      </View>
+
+      <View style={bp.actions}>
+        <Pressable
+          onPress={() => onDetails(project)}
+          style={[bp.btn, bp.btnGhost]}
+          accessibilityRole="button"
+          accessibilityLabel={`Details of ${project.name}`}
+        >
+          <Eye size={11} color={colors.brand} />
+          <Text style={[bp.btnText, { color: colors.brand }]} numberOfLines={1}>Details</Text>
+        </Pressable>
+        <Pressable
+          onPress={() => onOpenGroup(project)}
+          disabled={opening}
+          style={[bp.btn, bp.btnSolid, opening && { opacity: 0.6 }]}
+          accessibilityRole="button"
+          accessibilityLabel={`Open group of ${project.name}`}
+        >
+          {opening
+            ? <ActivityIndicator size="small" color="#fff" />
+            : (
+              <>
+                <Users size={11} color="#fff" />
+                <Text style={[bp.btnText, { color: '#fff' }]} numberOfLines={1}>Open Group</Text>
+              </>
+            )}
+        </Pressable>
+      </View>
+    </View>
+  );
+});
+
 // ── Room list row ──
 // One row for BOTH sections. Joined and discoverable rows previously had their
 // own near-identical components (and the discover variant was additionally
@@ -626,6 +706,10 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const [myProjects, setMyProjects] = useState<any[]>([]); // backend published projects (source of truth)
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [viewProperty, setViewProperty] = useState<any | null>(null); // View Property detail sheet
+  // Properties of the builder whose company group is open. Loaded per room, so
+  // switching groups never shows the previous builder's inventory.
+  const [builderProjects, setBuilderProjects] = useState<OwnerPortfolioProject[]>([]);
+  const [loadingBuilderProjects, setLoadingBuilderProjects] = useState(false);
   // Matching results state
   const [showMatching, setShowMatching] = useState(false);
   const [matchingResults, setMatchingResults] = useState<any[]>([]);
@@ -673,10 +757,21 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const role = user?.role ?? '';
   const canRequirement = ['agent', 'admin', 'captain'].includes(role);
   const canInventory = ['builder', 'admin', 'captain', 'agent'].includes(role);
-  // Photos / PDFs in a group are published by admins and captains only. The
-  // backend enforces the same rule on both /attachments and the message route;
-  // hiding the paperclip just stops other members from hitting a 403.
-  const canUploadMedia = ['admin', 'captain'].includes(role);
+  /**
+   * Who may publish (and remove) media in the room on screen.
+   *
+   * Admins and captains anywhere; beyond that a builder owns the media in THEIR
+   * rooms — their company group and the groups of properties they own. Mirrors
+   * the server's canPublishMedia exactly, so the paperclip is only hidden where
+   * the request would have been refused anyway.
+   */
+  const canUploadMedia = useMemo(() => {
+    if (['admin', 'captain'].includes(role)) return true;
+    if (!activeRoom || !user?.id) return false;
+    if (activeRoom.builder?.id && activeRoom.builder.id === user.id) return true;
+    const ownerId = activeRoom.project?.owner?.id;
+    return !!ownerId && ownerId === user.id;
+  }, [role, activeRoom, user?.id]);
 
   // Requirement / inventory composer state
   const [reqForm, setReqForm] = useState({ bhkType: '2BHK', budget: '', area: '', city: '', possessionNeeded: 'immediate', loanRequired: false, urgency: 'normal', clientNotes: '' });
@@ -754,6 +849,16 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     return unsub;
   }, [activeRoom?.id, socket.onGroupMessage, socket.ready, appendMessage, user?.id]);
 
+  // Someone removed a message (e.g. a builder taking their photo down). Drop it
+  // from the open thread so every member's view converges without a reload.
+  useEffect(() => {
+    const unsub = socket.onGroupMessageDeleted(({ roomId, messageId }) => {
+      if (!activeRoom?.id || String(roomId) !== activeRoom.id) return;
+      setMessages(prev => prev.filter(m => m.id !== String(messageId)));
+    });
+    return unsub;
+  }, [activeRoom?.id, socket.onGroupMessageDeleted, socket.ready]);
+
   // Another member may delete the group while this screen is open. Close the
   // thread immediately instead of leaving a dead composer that only fails on
   // the next send.
@@ -798,6 +903,18 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     // deliberately silent — a stale badge is not worth an error toast.
     setMyRooms(prev => prev.map(r => (r.id === room.id ? { ...r, unreadCount: 0 } : r)));
     groupChatApi.markRoomRead(room.id).catch(() => {});
+
+    // A company group shows that builder's properties as cards. Reset first so
+    // the previous builder's inventory is never visible while this one loads.
+    setBuilderProjects([]);
+    const builderId = room.roomType === 'builder' ? room.builder?.id : '';
+    if (builderId) {
+      setLoadingBuilderProjects(true);
+      projectsApiExtended.getOwnerPortfolio(builderId)
+        .then(res => setBuilderProjects(res.projects))
+        .catch(() => setBuilderProjects([]))
+        .finally(() => setLoadingBuilderProjects(false));
+    }
 
     try {
       setMessages(await groupChatApi.getMessages(room.id));
@@ -1498,6 +1615,26 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     });
   }, []);
 
+  /**
+   * "Details" on a builder's property card. Built from the portfolio data the
+   * strip already holds, so it opens with no extra request.
+   */
+  const handleBuilderProjectDetails = useCallback((project: OwnerPortfolioProject) => {
+    setViewProperty({
+      compact: true,
+      title: project.name,
+      subtitle: [project.location, project.city].filter(Boolean).join(', '),
+      price: project.startingPrice ? fmtPrice(project.startingPrice) : '',
+      image: project.coverImage,
+      fields: [
+        ...(project.propertyType ? [{ label: 'Property Type', value: project.propertyType }] : []),
+        ...(project.bhkOptions?.length ? [{ label: 'Configuration', value: project.bhkOptions.join(' / ') }] : []),
+        ...(project.carpetAreaRange ? [{ label: 'Area', value: project.carpetAreaRange }] : []),
+        ...(project.projectStatus ? [{ label: 'Status', value: project.projectStatus }] : []),
+      ],
+    });
+  }, []);
+
   /** "View Details" on an AI match card — reuses the property detail sheet. */
   const handleViewMatchedProject = useCallback((projectId: string, projectName?: string) => {
     handlePropertyViewDetails(projectId, projectName ? ({ projectName } as InventoryCard) : undefined);
@@ -1552,6 +1689,49 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   }, [joiningId, toast]);
 
   /**
+   * Long-press on a photo or file removes it. Confirmed first, because it also
+   * deletes the stored file server-side and cannot be undone.
+   */
+  const handleDeleteMessage = useCallback((msg: GroupMessage) => {
+    if (!activeRoom) return;
+    const isMedia = msg.messageType === 'image' || msg.messageType === 'file';
+    Alert.alert(
+      isMedia ? 'Delete this media?' : 'Delete this message?',
+      isMedia
+        ? 'It will be removed for everyone in the group and the file will be deleted.'
+        : 'It will be removed for everyone in the group.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            // Optimistic: drop it locally, restore on failure so a network error
+            // never silently hides a message that still exists.
+            const snapshot = msg;
+            setMessages(prev => prev.filter(m => m.id !== msg.id));
+            try {
+              await groupChatApi.deleteMessage(activeRoom.id, msg.id);
+              toast.show('Deleted', 'success');
+            } catch (e: any) {
+              setMessages(prev => (prev.some(m => m.id === snapshot.id) ? prev : [...prev, snapshot]));
+              toast.show(e?.message || 'Could not delete', 'error');
+            }
+          },
+        },
+      ],
+    );
+  }, [activeRoom, toast]);
+
+  /**
+   * "Open Group" on a builder's property card. Declared here, after
+   * handleJoinPropertyGroup, because it delegates to it.
+   */
+  const handleOpenProjectGroup = useCallback((project: OwnerPortfolioProject) => {
+    handleJoinPropertyGroup(project.id);
+  }, [handleJoinPropertyGroup]);
+
+  /**
    * Call dials the person who POSTED the property first (sender phone, sent by
    * the backend for inventory cards only), then the card's own callNumber, and
    * finally the project's CTA numbers.
@@ -1598,10 +1778,12 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
         onPropertyCall={handlePropertyCall}
         onJoinPropertyGroup={handleJoinPropertyGroup}
         onPreviewMatch={handlePreviewMatch}
+        onDeleteMessage={handleDeleteMessage}
+        canModerate={canUploadMedia}
         projectId={(activeRoom?.project as any)?.id || (activeRoom?.project as any)?._id || ''}
       />
     ),
-    [user?.id, handleInterested, handlePropertyViewDetails, handlePropertyCall, handleJoinPropertyGroup, handlePreviewMatch, activeRoom?.project]
+    [user?.id, handleInterested, handlePropertyViewDetails, handlePropertyCall, handleJoinPropertyGroup, handlePreviewMatch, handleDeleteMessage, canUploadMedia, activeRoom?.project]
   );
 
   // ── Project media menu ──
@@ -1841,9 +2023,11 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const renderSectionHeader = useCallback(
     ({ section }: { section: { title: string; data: GroupRoom[]; joined: boolean } }) => (
       <View style={s.sectionHeader}>
-        {section.joined
-          ? <Users size={13} color={colors.brand} />
-          : <Globe size={13} color={colors.brand} />}
+        {!section.joined
+          ? <Globe size={13} color={colors.brand} />
+          : section.title === 'Builders'
+            ? <Building2 size={13} color={colors.brand} />
+            : <MapPin size={13} color={colors.brand} />}
         <Text style={s.sectionTitle}>{section.title}</Text>
         <View style={s.sectionCountPill}>
           <Text style={s.sectionCountText}>{section.data.length}</Text>
@@ -1879,15 +2063,24 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     // a join resolves while a refresh is in flight, so a group can never show up
     // in both My Groups and Discover.
     const joinedIds = new Set(myRooms.map(r => r.id));
-    const discoverList = discoverRooms.filter(r => !r.isUniversal && !joinedIds.has(r.id));
 
-    // ONE list for both groups the user is in and groups they can join.
-    // Previously the discover rows were a .map() inside ListFooterComponent —
-    // unvirtualized — AND a second copy lived in a full-screen modal reached by a
-    // globe icon. Sections give both lists virtualization from one code path, and
-    // the modal is gone.
+    // The list is organised by COMPANY. Property groups are deliberately not
+    // top-level rows any more — they are reached from inside their builder's
+    // group, through the property cards. Listing both would show the same
+    // property twice: once under its company and once on its own.
+    const myBuilders = listRooms.filter(r => r.roomType === 'builder');
+    const myAreas = listRooms.filter(r => r.roomType === 'area');
+
+    // Project rooms are excluded here for the same reason.
+    const discoverList = discoverRooms.filter(r =>
+      !r.isUniversal && !joinedIds.has(r.id) && r.roomType !== 'project'
+    );
+
+    // ONE list for everything. Empty sections drop out, so a user with no area
+    // groups simply never sees that heading.
     const sections = [
-      { title: 'My Groups', data: listRooms, joined: true },
+      { title: 'Builders', data: myBuilders, joined: true },
+      { title: 'Area Groups', data: myAreas, joined: true },
       { title: 'Discover Groups', data: discoverList, joined: false },
     ].filter(sec => sec.data.length > 0);
 
@@ -2186,6 +2379,45 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
           >
             <MoreVertical size={18} color={colors.blueText} />
           </Pressable>
+        </View>
+      )}
+
+      {/* ── Company group: that builder's properties ──
+          A company group's purpose is to show what the builder has, so their
+          published properties sit above the conversation. Details answers "what
+          is this"; Open Group goes to that property's own discussion, which is
+          how property groups stay reachable now that the list is by company. ── */}
+      {activeRoom.roomType === 'builder' && (
+        <View style={bp.strip}>
+          <View style={bp.stripHead}>
+            <Building2 size={12} color={colors.brand} />
+            <Text style={bp.stripTitle}>Properties</Text>
+            {builderProjects.length > 0 && (
+              <Text style={bp.stripCount}>{builderProjects.length}</Text>
+            )}
+          </View>
+
+          {loadingBuilderProjects ? (
+            <ActivityIndicator color={colors.brand} style={{ paddingVertical: 12 }} />
+          ) : builderProjects.length === 0 ? (
+            <Text style={bp.stripEmpty}>No published properties yet.</Text>
+          ) : (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={bp.stripRow}
+            >
+              {builderProjects.map(project => (
+                <BuilderPropertyCard
+                  key={project.id}
+                  project={project}
+                  opening={joiningId === project.id}
+                  onDetails={handleBuilderProjectDetails}
+                  onOpenGroup={handleOpenProjectGroup}
+                />
+              ))}
+            </ScrollView>
+          )}
         </View>
       )}
 
@@ -3025,7 +3257,7 @@ const GroupMatchCard = React.memo(function GroupMatchCard({
 // Memoised: without this, every keystroke in the composer (whose state lives in
 // GroupChatEmbedded) re-rendered every visible bubble in the thread.
 const MessageBubble = React.memo(function MessageBubble({ 
-  msg, meId, onInterested, onPropertyViewDetails, onPropertyCall, onJoinPropertyGroup, onPreviewMatch, projectId 
+  msg, meId, onInterested, onPropertyViewDetails, onPropertyCall, onJoinPropertyGroup, onPreviewMatch, onDeleteMessage, canModerate, projectId 
 }: {
   msg: GroupMessage; 
   meId: string; 
@@ -3034,6 +3266,9 @@ const MessageBubble = React.memo(function MessageBubble({
   onPropertyCall: (projectId: string, fallbackNumber?: string, posterPhone?: string) => void;
   onJoinPropertyGroup: (projectId: string) => void;
   onPreviewMatch: (match: any) => void;
+  onDeleteMessage: (msg: GroupMessage) => void;
+  /** True when this user may remove other people's media in this room. */
+  canModerate: boolean;
   projectId: string;
 }) {
   const isMe = msg.sender.id === meId;
@@ -3253,15 +3488,25 @@ const MessageBubble = React.memo(function MessageBubble({
     );
   }
 
+  // Own media can always be removed; other people's only by a room owner or an
+  // admin/captain. Matches the server, so a long-press never leads to a 403.
+  const canDelete = isMe || canModerate;
+
   // image attachment
   if (msg.messageType === 'image' && msg.content) {
     return (
       <View style={[{ flexDirection: 'row' }, isMe ? { justifyContent: 'flex-end' } : { justifyContent: 'flex-start' }]}>
         <View style={[mbs.textBubble, isMe ? mbs.textMe : mbs.textThem, { padding: 4 }]}>
           {!isMe && <Text style={[mbs.textSender, { marginHorizontal: 6, marginTop: 4 }]}>{msg.sender.name} · {msg.sender.role}</Text>}
-          <Pressable onPress={() => Linking.openURL(msg.content)}>
+          <Pressable
+            onPress={() => Linking.openURL(msg.content)}
+            onLongPress={canDelete ? () => onDeleteMessage(msg) : undefined}
+            delayLongPress={400}
+            accessibilityHint={canDelete ? 'Long press to delete' : undefined}
+          >
             <Image source={{ uri: msg.content }} style={mbs.attachImage} resizeMode="cover" />
           </Pressable>
+          {canDelete && <Text style={mbs.deleteHint}>Hold to delete</Text>}
         </View>
       </View>
     );
@@ -3275,10 +3520,21 @@ const MessageBubble = React.memo(function MessageBubble({
       <View style={[{ flexDirection: 'row' }, isMe ? { justifyContent: 'flex-end' } : { justifyContent: 'flex-start' }]}>
         <View style={[mbs.textBubble, isMe ? mbs.textMe : mbs.textThem]}>
           {!isMe && <Text style={mbs.textSender}>{msg.sender.name} · {msg.sender.role}</Text>}
-          <Pressable onPress={() => Linking.openURL(msg.content)} style={mbs.fileRow}>
+          <Pressable
+            onPress={() => Linking.openURL(msg.content)}
+            onLongPress={canDelete ? () => onDeleteMessage(msg) : undefined}
+            delayLongPress={400}
+            style={mbs.fileRow}
+            accessibilityHint={canDelete ? 'Long press to delete' : undefined}
+          >
             <FileText size={18} color={isMe ? '#fff' : colors.brand} />
             <Text style={[mbs.fileName, { color: isMe ? '#fff' : colors.ink }]} numberOfLines={1}>{fileName}</Text>
           </Pressable>
+          {canDelete && (
+            <Text style={[mbs.deleteHint, { color: isMe ? 'rgba(255,255,255,0.7)' : colors.muted }]}>
+              Hold to delete
+            </Text>
+          )}
         </View>
       </View>
     );
@@ -3503,6 +3759,45 @@ const ld = StyleSheet.create({
 });
 
 // Sell / Buy / Rent starter chips shown above the composer.
+// Builder property cards — the horizontal strip inside a company group.
+const bp = StyleSheet.create({
+  strip: { backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.line, paddingTop: 10, paddingBottom: 10 },
+  stripHead: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, marginBottom: 8 },
+  stripTitle: { fontSize: 10, fontWeight: '800', color: colors.muted, letterSpacing: 0.4, textTransform: 'uppercase' },
+  stripCount: { fontSize: 9.5, fontWeight: '800', color: colors.brand },
+  stripRow: { paddingHorizontal: 14, gap: 10 },
+  stripEmpty: { paddingHorizontal: 14, fontSize: 11.5, color: colors.muted },
+  card: {
+    width: 186,
+    backgroundColor: colors.cream,
+    borderWidth: 1,
+    borderColor: colors.line,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  cover: { width: '100%', height: 84, backgroundColor: '#DCFCE7' },
+  coverFallback: { alignItems: 'center', justifyContent: 'center' },
+  body: { paddingHorizontal: 9, paddingTop: 7, gap: 1 },
+  name: { fontSize: 12, fontWeight: '800', color: colors.ink },
+  meta: { fontSize: 10, color: colors.muted2 },
+  price: { fontSize: 11, fontWeight: '800', color: colors.greenText, marginTop: 1 },
+  actions: { flexDirection: 'row', gap: 6, paddingHorizontal: 9, paddingVertical: 8 },
+  btn: {
+    flex: 1,
+    flexBasis: 0,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 3,
+    paddingVertical: 7,
+    borderRadius: 8,
+  },
+  btnGhost: { backgroundColor: colors.white, borderWidth: 1, borderColor: `${colors.brand}55` },
+  btnSolid: { backgroundColor: colors.brand },
+  btnText: { fontSize: 9, fontWeight: '800' },
+});
+
 const ip = StyleSheet.create({
   stripWrap: { backgroundColor: colors.white, borderTopWidth: 1, borderTopColor: colors.line, paddingTop: 9, paddingBottom: 3 },
   stripLabel: { fontSize: 9.5, fontWeight: '800', color: colors.muted, letterSpacing: 0.4, paddingHorizontal: 12, marginBottom: 7, textTransform: 'uppercase' },
@@ -3751,6 +4046,8 @@ const mbs = StyleSheet.create({
   textSender: { fontSize: 9, fontWeight: '800', color: colors.brand, marginBottom: 2 },
   textContent: { fontSize: 13, lineHeight: 20 },
   attachImage: { width: 200, height: 200, borderRadius: 12 },
+  // Long-press is invisible without a hint, so the affordance is spelled out.
+  deleteHint: { fontSize: 8, color: colors.muted, textAlign: 'center', marginTop: 3, marginBottom: 1 },
   fileRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 2 },
   fileName: { fontSize: 12.5, fontWeight: '600', maxWidth: 180 },
 });

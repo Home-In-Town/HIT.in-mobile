@@ -986,6 +986,21 @@ function invalidateProject(id?: string) {
   matchCountsInFlight.clear();
 }
 
+/** One property card inside a builder's company group. */
+export interface OwnerPortfolioProject {
+  id: string;
+  name: string;
+  slug?: string;
+  city?: string;
+  location?: string;
+  propertyType?: string;
+  projectStatus?: string;
+  coverImage: string;
+  startingPrice: number;
+  bhkOptions: string[];
+  carpetAreaRange: string;
+}
+
 export const projectsApiExtended = {
   /** Drops cached project details. Call after any out-of-band mutation. */
   invalidateProjectCache: invalidateProject,
@@ -1079,6 +1094,39 @@ export const projectsApiExtended = {
    * cached: the endpoint already degrades to {} and a transient error must not
    * pin empty counts for a minute.
    */
+  /**
+   * A builder's published properties, used for the cards inside their company
+   * group. Public endpoint, so it also returns the builder's display identity.
+   */
+  async getOwnerPortfolio(ownerId: string): Promise<{
+    builder: { id: string; name?: string; companyName?: string };
+    projects: OwnerPortfolioProject[];
+  }> {
+    const r = await fetch(`${API_URL}/public/owners/${encodeURIComponent(ownerId)}/projects`, {
+      headers: await authHeaders(),
+    });
+    const data = await handleResponse<{ builder: any; projects: any[] }>(r);
+    return {
+      builder: {
+        id: String(data.builder?.id || data.builder?._id || ownerId),
+        name: data.builder?.name,
+        companyName: data.builder?.companyName,
+      },
+      projects: (data.projects || []).map((p: any) => ({
+        id: String(p._id || p.id || ''),
+        name: p.projectName || 'Property',
+        slug: p.slug,
+        city: p.city,
+        location: p.location,
+        propertyType: p.propertyType,
+        projectStatus: p.projectStatus,
+        coverImage: p.media?.coverImage?.url || '',
+        startingPrice: Number(p.pricing?.startingPrice) || 0,
+        bhkOptions: p.configuration?.bhkOptions || [],
+        carpetAreaRange: p.configuration?.carpetAreaRange || '',
+      })),
+    };
+  },
   async matchCounts(projectIds: string[]): Promise<Record<string, number>> {
     const ids = (projectIds || []).filter(Boolean).map(String);
     if (ids.length === 0) return {};
@@ -1355,7 +1403,18 @@ export const leadChatApi = {
 export interface GroupRoom {
   id: string;
   name: string;
-  roomType: 'project' | 'area' | 'universal';
+  roomType: 'project' | 'builder' | 'area' | 'universal';
+  /**
+   * Set on builder rooms — the company-level group. The Groups list is organised
+   * by company, so this is what the row shows.
+   */
+  builder?: {
+    id: string;
+    name?: string;
+    companyName?: string;
+    role?: string;
+    isVerified?: boolean;
+  };
   // Fully populated by GET /group-chat/rooms and POST .../join so a property
   // group can render every available detail of its linked project.
   project?: {
@@ -1488,6 +1547,17 @@ function transformGroupRoom(raw: any): GroupRoom {
           : { id: String(raw.project.owner) })
         : undefined,
     } : undefined,
+    builder: raw?.builder
+      ? (typeof raw.builder === 'object'
+        ? {
+          id: String(raw.builder._id || raw.builder.id || ''),
+          name: raw.builder.name,
+          companyName: raw.builder.companyName,
+          role: raw.builder.role,
+          isVerified: raw.builder.isVerified === true,
+        }
+        : { id: String(raw.builder) })
+      : undefined,
     area: raw?.area,
     createdBy: raw?.createdBy
       ? (typeof raw.createdBy === 'object'
@@ -1580,6 +1650,18 @@ export const groupChatApi = {
   }): Promise<any> {
     const r = await fetch(`${API_URL}/group-chat/rooms/${encodeURIComponent(roomId)}/messages`, { method: 'POST', headers: await authHeaders(), body: JSON.stringify(data) });
     return handleResponse<any>(r);
+  },
+  /**
+   * Removes a message from a group. Allowed for the sender, and for whoever owns
+   * the group (their company group / their property group). Media messages also
+   * have their stored file deleted server-side.
+   */
+  async deleteMessage(roomId: string, messageId: string): Promise<void> {
+    const r = await fetch(
+      `${API_URL}/group-chat/rooms/${encodeURIComponent(roomId)}/messages/${encodeURIComponent(messageId)}`,
+      { method: 'DELETE', headers: await authHeaders() },
+    );
+    await handleResponse(r);
   },
   async showInterest(data: { projectId: string; messageId: string; roomId?: string }): Promise<any> {
     const r = await fetch(`${API_URL}/group-chat/interested`, { method: 'POST', headers: await authHeaders(), body: JSON.stringify(data) });
