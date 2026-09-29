@@ -8,12 +8,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, ScrollView, StyleSheet, Pressable, ActivityIndicator,
-  TextInput, KeyboardAvoidingView, Platform, Modal, FlatList,
+  TextInput, KeyboardAvoidingView, Platform, Modal, FlatList, Image, Linking,
 } from 'react-native';
 import {
   Send, Building2, MapPin, Check, Pencil, Plus, List as ListIcon,
   ArrowRight, CheckCircle2, Undo2, Redo2, RotateCcw, XCircle, Users as UsersIcon, X as XIcon,
-  Eye,
+  Eye, MessageCircle,
 } from 'lucide-react-native';
 import { leadChatApi, groupChatApi, placesApi, GroupRoom, PlacePrediction } from '../lib/api';
 import { postDraftStorage, chatClearedBeforeIdStorage } from '../lib/storage';
@@ -1826,7 +1826,25 @@ const SummaryBubble = React.memo(function SummaryBubble({ msg, onEdit, onConfirm
 });
 
 // ═══════════ RESULTS BUBBLE ═══════════
-export type MatchCard = { projectId: string; projectName: string; city?: string; location?: string; score: number; slug?: string };
+// The server has always sent the rich fields below; the type only declared six of
+// them, so the card had nothing to render but a name and a location.
+export type MatchCard = {
+  projectId: string;
+  projectName: string;
+  city?: string;
+  location?: string;
+  score: number;
+  slug?: string;
+  coverImageUrl?: string;
+  startingPrice?: number;
+  bhkOptions?: string[];
+  projectStatus?: string;
+  builderName?: string;
+  builderCompany?: string;
+  isVerifiedBuilder?: boolean;
+  whatsappNumber?: string;
+  callNumber?: string;
+};
 
 // A property posted through the AI "sell" conversation. These live as leads, not
 // as published Projects, so they carry no projectId and can't be opened as a
@@ -1845,6 +1863,9 @@ export type InventoryMatchCard = {
   postedByRole?: string;
 };
 
+/** How many project matches show before "View all". */
+const MATCH_PREVIEW_COUNT = 3;
+
 const ResultsBubble = React.memo(function ResultsBubble({ msg, onViewProject, onViewInventoryMatch, onJoinProjectGroup }: {
   msg: Msg;
   onViewProject?: (projectId: string, projectName?: string) => void;
@@ -1856,38 +1877,112 @@ const ResultsBubble = React.memo(function ResultsBubble({ msg, onViewProject, on
   const inventory: InventoryMatchCard[] =
     msg.template?.options?.inventoryMatches || [];
   const hasMatches = matches.length > 0 || inventory.length > 0;
+  const totalCount = matches.length + inventory.length;
+
+  // Long match lists buried the conversation, so only the strongest few show
+  // until the user asks for the rest.
+  const [showAllMatches, setShowAllMatches] = useState(false);
+  const shownMatches = showAllMatches ? matches : matches.slice(0, MATCH_PREVIEW_COUNT);
   return (
     <View style={[mb.row, mb.rowThem]}>
       <View style={mb.avatar}><Text style={{ fontSize: 14 }}>🤖</Text></View>
       <View style={{ flex: 1, gap: 8 }}>
+        {/* Header states what happened and that it was automatic, rather than
+            just counting rows. */}
         <View style={[rs.headCard, hasMatches && rs.headCardMatch]}>
-          <Text style={{ fontSize: 16 }}>{hasMatches ? '🎯' : '⏳'}</Text>
-          <Text style={rs.headText}>{msg.content}</Text>
-        </View>
-        {matches.map((m) => (
-          <View key={m.projectId} style={rs.cardCol}>
-            <View style={rs.cardTop}>
-              <View style={rs.icon}><Building2 size={22} color={colors.brand} /></View>
-              <View style={{ flex: 1 }}>
-                <Text style={rs.name} numberOfLines={1}>{m.projectName || 'Project'}</Text>
-                <Text style={rs.loc} numberOfLines={1}>📍 {[m.location, m.city].filter(Boolean).join(', ') || '—'}</Text>
-              </View>
-              <ScoreRing score={m.score} />
-            </View>
-            {/* Open the property, or join its group — the two things a user
-                actually wants from a match. */}
-            <View style={rs.actionRow}>
-              <Pressable onPress={() => onViewProject?.(m.projectId, m.projectName)} style={[rs.actionBtn, rs.actionBtnGhost]}>
-                <Eye size={13} color={colors.brand} />
-                <Text style={[rs.actionText, { color: colors.brand }]}>View Details</Text>
-              </Pressable>
-              <Pressable onPress={() => onJoinProjectGroup?.(m.projectId)} style={[rs.actionBtn, rs.actionBtnPrimary]}>
-                <UsersIcon size={13} color="#fff" />
-                <Text style={[rs.actionText, { color: '#fff' }]}>Join Group</Text>
-              </Pressable>
-            </View>
+          <View style={rs.headIcon}>
+            <Text style={{ fontSize: 13 }}>{hasMatches ? '🔥' : '⏳'}</Text>
           </View>
-        ))}
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={rs.headTitle} numberOfLines={1}>
+              {hasMatches ? `${totalCount} ${totalCount === 1 ? 'Match' : 'Matches'} Found` : 'No matches yet'}
+            </Text>
+            <Text style={rs.headSub} numberOfLines={1}>
+              {hasMatches ? 'Lead → Inventory auto-match' : msg.content}
+            </Text>
+          </View>
+          {hasMatches && (
+            <View style={rs.aiBadge}>
+              <Text style={rs.aiBadgeText}>⚡ AI</Text>
+            </View>
+          )}
+        </View>
+
+        {shownMatches.map((m) => {
+          const spec = [
+            (m.bhkOptions || []).filter(Boolean).join('/'),
+            m.projectStatus,
+            m.startingPrice ? fmtPrice(m.startingPrice) : '',
+          ].filter(Boolean).join(' · ');
+          // "Skyline - Besa": the locality belongs with the name, so the row reads
+          // as one identity instead of a name plus a separate pin line.
+          const where = m.location || m.city || '';
+          const title = where ? `${m.projectName || 'Project'} - ${where}` : (m.projectName || 'Project');
+          const phone = String(m.whatsappNumber || m.callNumber || '').replace(/[^0-9]/g, '');
+
+          return (
+            <View key={m.projectId} style={rs.matchCard}>
+              <View style={rs.matchTop}>
+                {m.coverImageUrl ? (
+                  <Image source={{ uri: m.coverImageUrl }} style={rs.thumb} resizeMode="cover" />
+                ) : (
+                  <View style={[rs.thumb, rs.thumbFallback]}>
+                    <Building2 size={18} color={colors.brand} />
+                  </View>
+                )}
+
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <View style={rs.titleRow}>
+                    <Text style={rs.matchName} numberOfLines={1}>{title}</Text>
+                    <View style={rs.scorePill}>
+                      <Text style={rs.scorePillText}>{Math.round(m.score)}% Match</Text>
+                    </View>
+                  </View>
+                  {!!spec && <Text style={rs.matchSpec} numberOfLines={1}>{spec}</Text>}
+                  {!!(m.builderCompany || m.builderName) && (
+                    <Text style={rs.matchBuilder} numberOfLines={1}>
+                      {m.builderCompany || m.builderName}
+                      {m.isVerifiedBuilder ? ' · Verified' : ''}
+                    </Text>
+                  )}
+                </View>
+              </View>
+
+              <View style={rs.actionRow}>
+                <Pressable onPress={() => onJoinProjectGroup?.(m.projectId)} style={[rs.actionBtn, rs.actionBtnPrimary]}>
+                  <UsersIcon size={13} color="#fff" />
+                  <Text style={[rs.actionText, { color: '#fff' }]}>Join Group</Text>
+                </Pressable>
+                {/* Only offered when the builder actually published a number —
+                    a WhatsApp button that opens nothing is worse than no button. */}
+                {!!phone && (
+                  <Pressable
+                    onPress={() => Linking.openURL(`https://wa.me/${phone.length === 10 ? `91${phone}` : phone}`).catch(() => {})}
+                    style={[rs.actionBtn, rs.actionBtnWhatsapp]}
+                  >
+                    <MessageCircle size={13} color="#fff" />
+                    <Text style={[rs.actionText, { color: '#fff' }]}>WhatsApp</Text>
+                  </Pressable>
+                )}
+              </View>
+            </View>
+          );
+        })}
+
+        {/* Footer: what just happened, plus a way to see the rest when the list
+            was trimmed. */}
+        {hasMatches && (
+          <View style={rs.footer}>
+            <Text style={rs.footerText} numberOfLines={1}>
+              Kisi ke paas lead, kisi ke paas inventory → auto
+            </Text>
+            {matches.length > MATCH_PREVIEW_COUNT && (
+              <Pressable onPress={() => setShowAllMatches(v => !v)} hitSlop={6}>
+                <Text style={rs.footerLink}>{showAllMatches ? 'Show less' : 'View all'}</Text>
+              </Pressable>
+            )}
+          </View>
+        )}
 
         {/* Properties posted by other users through the Sell flow. Labelled so it
             is obvious these are member listings rather than builder projects. */}
@@ -2070,6 +2165,29 @@ const rs = StyleSheet.create({
   headCard: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line, borderRadius: 16, paddingHorizontal: 14, paddingVertical: 11 },
   headCardMatch: { backgroundColor: colors.greenBg, borderColor: colors.greenBorder },
   headText: { flex: 1, fontSize: 13, fontWeight: '700', color: colors.ink },
+  // Results header: emoji chip + headline/sub + "AI" tag.
+  headIcon: { width: 26, height: 26, borderRadius: 13, backgroundColor: colors.white, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.line },
+  headTitle: { fontSize: 13, fontWeight: '800', color: colors.ink },
+  headSub: { fontSize: 10.5, color: colors.muted2, marginTop: 1 },
+  aiBadge: { paddingHorizontal: 7, paddingVertical: 3, borderRadius: 8, backgroundColor: colors.white, borderWidth: 1, borderColor: colors.greenBorder },
+  aiBadgeText: { fontSize: 9.5, fontWeight: '900', color: colors.greenText, letterSpacing: 0.2 },
+
+  // Project match card (thumbnail + title/score/spec/builder + actions).
+  matchCard: { backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line, borderRadius: 16, padding: 10, gap: 10 },
+  matchTop: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  thumb: { width: 54, height: 54, borderRadius: 12, backgroundColor: colors.brandTint },
+  thumbFallback: { alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.line },
+  titleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  matchName: { flex: 1, minWidth: 0, fontSize: 13, fontWeight: '800', color: colors.ink },
+  scorePill: { paddingHorizontal: 7, paddingVertical: 2.5, borderRadius: 8, backgroundColor: colors.greenBg, borderWidth: 1, borderColor: colors.greenBorder },
+  scorePillText: { fontSize: 9.5, fontWeight: '900', color: colors.greenText },
+  matchSpec: { fontSize: 11, color: colors.ink, marginTop: 3 },
+  matchBuilder: { fontSize: 10.5, color: colors.muted2, marginTop: 2 },
+
+  // Results footer: tagline + "View all" toggle.
+  footer: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 4, paddingTop: 2 },
+  footerText: { flex: 1, minWidth: 0, fontSize: 10, color: colors.muted2, fontStyle: 'italic' },
+  footerLink: { fontSize: 10.5, fontWeight: '800', color: colors.brand },
   card: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line, borderRadius: 16, padding: 12 },
   cardCol: { backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line, borderRadius: 16, padding: 12, gap: 10 },
   // Member-posted listing (from the Sell flow) — green edge distinguishes it from
@@ -2089,6 +2207,7 @@ const rs = StyleSheet.create({
   actionBtn: { flex: 1, flexBasis: 0, minWidth: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, paddingVertical: 9, borderRadius: 10 },
   actionBtnGhost: { borderWidth: 1, borderColor: `${colors.brand}55`, backgroundColor: colors.brandTint },
   actionBtnPrimary: { backgroundColor: colors.brand },
+  actionBtnWhatsapp: { backgroundColor: '#25D366' },
   actionText: { fontSize: 11.5, fontWeight: '800' },
 });
 
