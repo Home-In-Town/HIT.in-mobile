@@ -4,7 +4,7 @@
 // with price-pin markers, a search bar + filter chips, a property count badge,
 // a "24/7 AI Guide" pill, and a bottom horizontal property-card carousel.
 // Tapping a pin or card opens the full PropertyDetail screen.
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View, Text, StyleSheet, TextInput, Pressable, FlatList,
   ActivityIndicator, Dimensions, Platform, Linking, Alert, Modal, Image,
@@ -17,6 +17,7 @@ import {
   CheckCircle, Building2,
 } from 'lucide-react-native';
 import { mapPropertiesApi, MapProperty } from '../lib/mapProperties';
+import { useAuth } from '../lib/authContext';
 import { colors } from '../theme';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -30,8 +31,12 @@ const DEFAULT_REGION: Region = {
   longitudeDelta: 0.4,
 };
 
+// "Favourites" is the signed-in user's OWN uploads, not a saved/bookmarked list.
+// It sits second so it's reachable without scrolling the chip row.
+const FAVOURITES = 'Favourites';
 const CATEGORY_TABS = [
   { name: 'All', icon: '🏠' },
+  { name: FAVOURITES, icon: '⭐' },
   { name: 'Flat', icon: '🏢' },
   { name: 'Plot', icon: '📐' },
   { name: 'Villa', icon: '🏡' },
@@ -40,12 +45,16 @@ const CATEGORY_TABS = [
 
 export default function PropertyMap({ isAdmin = false }: { isAdmin?: boolean }) {
   const router = useRouter();
+  const { user } = useAuth();
+  const myId = user?.id ? String(user.id) : '';
   const mapRef = useRef<MapView>(null);
   const cardListRef = useRef<FlatList>(null);
 
   const [properties, setProperties] = useState<MapProperty[]>([]);
-  const [filteredProperties, setFilteredProperties] = useState<MapProperty[]>([]);
   const [loading, setLoading] = useState(true);
+  // A failed load and a genuinely empty market used to be indistinguishable:
+  // both fell through to setProperties([]) and rendered "No properties".
+  const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
   const [activeCategory, setActiveCategory] = useState('All');
@@ -55,9 +64,6 @@ export default function PropertyMap({ isAdmin = false }: { isAdmin?: boolean }) 
   const [showIncompletePanel, setShowIncompletePanel] = useState(false);
 
   const incompleteCount = incompleteProperties.length;
-
-  useEffect(() => { fetchProperties(); requestLocation(); }, []);
-  useEffect(() => { filterProperties(); }, [activeCategory, searchQuery, properties]);
 
   const fitMapToProperties = (data: MapProperty[]) => {
     if (data.length > 0 && mapRef.current) {
@@ -71,38 +77,49 @@ export default function PropertyMap({ isAdmin = false }: { isAdmin?: boolean }) 
     }
   };
 
-  const fetchProperties = async () => {
+  const fetchProperties = useCallback(async (force = false) => {
     try {
       setLoading(true);
-      const { properties: data, incompleteProperties: incomplete } = await mapPropertiesApi.getAll();
+      setError(null);
+      const { properties: data, incompleteProperties: incomplete } = await mapPropertiesApi.getAll(force);
       setIncompleteProperties(incomplete);
       setProperties(data);
-      setFilteredProperties(data);
       fitMapToProperties(data);
-    } catch {
+    } catch (e: any) {
+      setError(e?.message || 'Could not load properties');
       setProperties([]);
-      setFilteredProperties([]);
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
+  // Permission only. `showsUserLocation` and the My Location FAB both need it,
+  // but nothing needs a fix at mount — the map opens fitted to the properties,
+  // so the getCurrentPositionAsync() call that used to live here paid for a GPS
+  // lock and discarded the result.
   const requestLocation = async () => {
-    try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status === 'granted') { await Location.getCurrentPositionAsync({}); }
-    } catch { /* use default region */ }
+    try { await Location.requestForegroundPermissionsAsync(); }
+    catch { /* the map still works from the default region */ }
   };
 
-  const filterProperties = useCallback(() => {
-    let filtered = [...properties];
-    if (activeCategory !== 'All') {
+  useEffect(() => { fetchProperties(); requestLocation(); }, [fetchProperties]);
+
+  // Derived, not state. The previous version filtered into state and then read
+  // that state back in the same tick, which is why searching animated the map to
+  // the *previous* result set's first property.
+  const filteredProperties = useMemo(() => {
+    let filtered = properties;
+    if (activeCategory === FAVOURITES) {
+      // Signed out there is no "mine", so the filter matches nothing rather
+      // than everything.
+      filtered = myId ? filtered.filter((p) => p.ownerId === myId) : [];
+    } else if (activeCategory !== 'All') {
       const categoryMap: Record<string, string> = { Flat: 'flat', Plot: 'plot', Villa: 'villa', Rent: 'rent' };
       const target = categoryMap[activeCategory];
       if (target) filtered = filtered.filter((p) => p.type.toLowerCase().includes(target));
     }
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
+    const q = searchQuery.trim().toLowerCase();
+    if (q) {
       filtered = filtered.filter(
         (p) =>
           p.property_name.toLowerCase().includes(q) ||
@@ -111,13 +128,37 @@ export default function PropertyMap({ isAdmin = false }: { isAdmin?: boolean }) 
           (p.location && p.location.toLowerCase().includes(q))
       );
     }
-    setFilteredProperties(filtered);
-  }, [properties, activeCategory, searchQuery]);
+    return filtered;
+  }, [properties, activeCategory, searchQuery, myId]);
+
+  // The selected index addresses the filtered list, so it points at a different
+  // property once that list changes. Clear it rather than highlight a random card.
+  useEffect(() => { setSelectedIndex(-1); }, [activeCategory, searchQuery]);
+
+  // Re-frame the map when the chip changes. Without this, picking Favourites
+  // could leave every one of the user's pins off-screen and the filter would
+  // look like it did nothing.
+  const lastCategory = useRef(activeCategory);
+  useEffect(() => {
+    if (lastCategory.current === activeCategory) return;
+    lastCategory.current = activeCategory;
+    fitMapToProperties(filteredProperties);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeCategory, filteredProperties]);
+
+  // Custom marker views re-rasterise continuously while tracksViewChanges is on,
+  // which is a standing cost on Android. Markers only need redrawing just after
+  // the set or the selection changes.
+  const [trackMarkers, setTrackMarkers] = useState(true);
+  useEffect(() => {
+    setTrackMarkers(true);
+    const t = setTimeout(() => setTrackMarkers(false), 800);
+    return () => clearTimeout(t);
+  }, [filteredProperties, selectedIndex]);
 
   const handleSearch = () => {
-    filterProperties();
-    if (filteredProperties.length > 0 && mapRef.current) {
-      const first = filteredProperties[0];
+    const first = filteredProperties[0];
+    if (first && mapRef.current) {
       mapRef.current.animateToRegion({ latitude: first.lat, longitude: first.lng, latitudeDelta: 0.05, longitudeDelta: 0.05 }, 500);
     }
   };
@@ -175,7 +216,7 @@ export default function PropertyMap({ isAdmin = false }: { isAdmin?: boolean }) 
               cardListRef.current?.scrollToIndex({ index, animated: true });
               openDetail(property);
             }}
-            tracksViewChanges
+            tracksViewChanges={trackMarkers}
           >
             <View style={[styles.marker, selectedIndex === index && styles.markerActive]}>
               <View style={[styles.markerDot, selectedIndex === index && styles.markerDotActive]} />
@@ -295,10 +336,17 @@ export default function PropertyMap({ isAdmin = false }: { isAdmin?: boolean }) 
                 style={[styles.card, selectedIndex === index && styles.cardActive]}
                 onPress={() => openDetail(item)}
               >
-                <Image
-                  source={{ uri: item.image || 'https://via.placeholder.com/100x110/f3f4f6/9ca3af?text=No+Image' }}
-                  style={styles.cardImage}
-                />
+                {/* Rendered locally rather than via a placeholder URL: the
+                    via.placeholder.com domain this used to point at no longer
+                    resolves, so every image-less property fired a failing
+                    request and still showed nothing. */}
+                {item.image ? (
+                  <Image source={{ uri: item.image }} style={styles.cardImage} />
+                ) : (
+                  <View style={[styles.cardImage, styles.imgFallback]}>
+                    <Building2 size={22} color={colors.muted} />
+                  </View>
+                )}
                 <View style={styles.cardInfo}>
                   <Text style={styles.cardName} numberOfLines={1}>{item.property_name}</Text>
                   <Text style={styles.cardLocation} numberOfLines={1}>📍 {item.property_location}</Text>
@@ -335,11 +383,33 @@ export default function PropertyMap({ isAdmin = false }: { isAdmin?: boolean }) 
         </View>
       )}
 
-      {/* Empty */}
+      {/* Empty vs failed. A load failure now says so and offers a retry instead
+          of claiming there are no properties. The retry forces past the shared
+          60 s cache, otherwise it would replay the same failure. */}
       {!loading && filteredProperties.length === 0 && (
         <View style={styles.loadingOverlay}>
-          <Building2 size={30} color={colors.muted} />
-          <Text style={styles.loadingText}>No properties to show on the map.</Text>
+          {error ? (
+            <>
+              <AlertTriangle size={30} color={colors.amber} />
+              <Text style={styles.loadingText}>{error}</Text>
+              <Pressable style={styles.retryBtn} onPress={() => fetchProperties(true)}>
+                <Text style={styles.retryText}>Retry</Text>
+              </Pressable>
+            </>
+          ) : (
+            <>
+              <Building2 size={30} color={colors.muted} />
+              <Text style={styles.loadingText}>
+                {properties.length === 0
+                  ? 'No properties to show on the map.'
+                  : activeCategory === FAVOURITES
+                    // Only published projects with a resolvable location reach
+                    // the map, so drafts and pin-less uploads can't show here.
+                    ? "You haven't uploaded a published property with a map location yet."
+                    : 'No properties match this search.'}
+              </Text>
+            </>
+          )}
         </View>
       )}
 
@@ -360,7 +430,13 @@ export default function PropertyMap({ isAdmin = false }: { isAdmin?: boolean }) 
               contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 12 }}
               renderItem={({ item }) => (
                 <View style={styles.dirItem}>
-                  <Image source={{ uri: item.image || 'https://via.placeholder.com/60' }} style={styles.dirImg} />
+                  {item.image ? (
+                    <Image source={{ uri: item.image }} style={styles.dirImg} />
+                  ) : (
+                    <View style={[styles.dirImg, styles.imgFallback]}>
+                      <Building2 size={18} color={colors.muted} />
+                    </View>
+                  )}
                   <View style={{ flex: 1, marginLeft: 12 }}>
                     <Text style={styles.dirName} numberOfLines={1}>{item.property_name}</Text>
                     <Text style={styles.dirLoc} numberOfLines={1}>📍 {item.property_location}</Text>
@@ -475,6 +551,11 @@ const styles = StyleSheet.create({
   // Loading / empty
   loadingOverlay: { position: 'absolute', top: '45%', alignSelf: 'center', alignItems: 'center', backgroundColor: colors.white, paddingHorizontal: 24, paddingVertical: 16, borderRadius: 16, gap: 8, shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 8, elevation: 5 },
   loadingText: { fontSize: 13, color: colors.muted2, marginTop: 4, textAlign: 'center' },
+  retryBtn: { marginTop: 4, backgroundColor: colors.brand, paddingHorizontal: 18, paddingVertical: 8, borderRadius: 10 },
+  retryText: { fontSize: 12, fontWeight: '800', color: '#fff' },
+  // Local stand-in for a missing cover image, used by the carousel card and the
+  // directions rows.
+  imgFallback: { alignItems: 'center', justifyContent: 'center', backgroundColor: colors.slateBg },
 
   // Sheets
   sheetOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.3)' },

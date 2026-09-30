@@ -5,12 +5,12 @@
 // Properties whose location cannot be resolved are returned separately as
 // "incomplete" so they can be surfaced but not plotted.
 
-import Constants from 'expo-constants';
-import { tokenStorage } from './storage';
-
-const API_URL =
-  (Constants.expoConfig?.extra as { apiUrl?: string } | undefined)?.apiUrl ||
-  'https://sales-website-backend-624770114041.asia-south1.run.app/api';
+// The raw list comes from api.ts's shared 60 s cache rather than a second fetch
+// of its own. This module used to carry a duplicate API_URL, a duplicate
+// authHeaders() and an uncached fetch, so opening the Project tab re-downloaded
+// every published project even though another screen had just fetched the same
+// list. The transform below still belongs here — it is map-specific.
+import { fetchPublicProjectsRaw } from './api';
 
 export interface MapProperty {
   id: string;
@@ -54,6 +54,8 @@ export interface MapProperty {
   googleMapLink?: string;
   city?: string;
   location?: string;
+  /** Uploader's user id. Drives the map's "Favourites" (my uploads) filter. */
+  ownerId?: string;
 }
 
 interface RawProject {
@@ -64,7 +66,9 @@ interface RawProject {
   category?: string;
   propertyType?: string;
   builderName?: string;
-  owner?: { name: string; phone: string };
+  // Populated by the backend (ProjectRepository.getPublished), so it carries _id.
+  // Typed as a union because an unpopulated ref arrives as a bare id string.
+  owner?: { _id?: string; id?: string; name: string; phone: string } | string;
   city?: string;
   location?: string;
   latitude?: number;
@@ -171,7 +175,11 @@ function mapProject(raw: RawProject): MapProperty | null {
   const coverImage = raw.media?.coverImage?.url || '';
   const galleryImages = raw.media?.galleryImages?.map((img) => img.url) || [];
   const videos = raw.media?.videos?.map((v) => v.url) || [];
-  const builderName = raw.builderName || raw.owner?.name || '';
+  const owner = typeof raw.owner === 'object' && raw.owner ? raw.owner : undefined;
+  const ownerId = typeof raw.owner === 'string'
+    ? raw.owner
+    : String(owner?._id || owner?.id || '');
+  const builderName = raw.builderName || owner?.name || '';
 
   return {
     id: raw._id || (raw as any).id,
@@ -209,22 +217,15 @@ function mapProject(raw: RawProject): MapProperty | null {
     googleMapLink: raw.googleMapLink,
     city: raw.city,
     location: raw.location,
+    ownerId,
   };
-}
-
-async function authHeaders(): Promise<Record<string, string>> {
-  const token = await tokenStorage.get();
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
-  return headers;
 }
 
 export const mapPropertiesApi = {
   // Fetch all published projects and split into map-ready + incomplete lists.
-  async getAll(): Promise<{ properties: MapProperty[]; incompleteProperties: { name: string; reason: string }[] }> {
-    const res = await fetch(`${API_URL}/public/projects`, { headers: await authHeaders() });
-    if (!res.ok) throw new Error(`Failed to load projects (${res.status})`);
-    const raw: RawProject[] = await res.json();
+  // `force` bypasses the shared cache, for an explicit retry after a failure.
+  async getAll(force = false): Promise<{ properties: MapProperty[]; incompleteProperties: { name: string; reason: string }[] }> {
+    const raw: RawProject[] = await fetchPublicProjectsRaw(force);
 
     const properties: MapProperty[] = [];
     const incompleteProperties: { name: string; reason: string }[] = [];

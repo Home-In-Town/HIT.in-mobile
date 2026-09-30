@@ -1,41 +1,32 @@
-// Home Dashboard — matches homeintown.in mobile dashboard exactly.
-// Top navbar (menu + logo + upload) → dark welcome card (greeting + views/leads)
-// → quick actions (AI Lead Matching / Marketplace) → property reels
-// → bottom bar (CRM / Team). Tapping "CRM" opens the CRM leads view.
+﻿// Home Dashboard.
+// Top navbar (menu + logo + upload) → dark welcome card (greeting + views/leads,
+// AI tab only) → the AI Leads / CRM / Project switcher, which swaps between three
+// embedded screens: LeadMatchingHub, CrmLeadsScreen and the PropertyMap.
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  View, Text, ScrollView, Pressable, StyleSheet, Image,
-  RefreshControl, Linking, Modal, Animated,
+  View, Text, Pressable, StyleSheet, Animated,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import {
-  Menu, Plus, Zap, ShoppingBag, MapPin, Eye, Share2,
-  BarChart3, Users, Building2,
+  Menu, Plus, Zap, ShoppingBag, BarChart3,
 } from 'lucide-react-native';
 import {
   crmBridgeApi, CrmAnalytics, analyticsApi,
-  projectsApiExtended, Project,
 } from '../../src/lib/api';
 import { useAuth } from '../../src/lib/authContext';
 import { useSidebar } from '../../src/lib/sidebarContext';
-import { ShareModal } from '../../src/components/ShareActions';
-import { SkeletonCard } from '../../src/components/Skeleton';
 import { colors } from '../../src/theme';
 // Reused screens rendered as embedded tab content (no duplication).
 import CrmLeadsScreen from './crm-leads';
 import LeadMatchingHub from './lead-matching';
 import PropertyMap from '../../src/components/PropertyMap';
 
+// 'marketplace' is the Project segment. The name is historical — the segment was
+// a marketplace before it became the map — and is left alone because renaming it
+// would touch every reference for no behavioural gain.
 type OverviewTab = 'ai' | 'crm' | 'marketplace';
-
-function fmtPrice(n: number): string {
-  if (!n) return '—';
-  if (n >= 10000000) return `₹${(n / 10000000).toFixed(2)} Cr`;
-  if (n >= 100000) return `₹${(n / 100000).toFixed(1)} Lac`;
-  return `₹${n.toLocaleString('en-IN')}`;
-}
 
 // One segment of the AI Leads / CRM / Project switcher.
 //
@@ -82,21 +73,6 @@ function SectionTab({ active, icon, label, badge, onPress }: {
   );
 }
 
-function pricePerSqFt(price: number, area?: string): string | null {
-  if (!price || !area) return null;
-  // area like "800 - 1500 sq ft" — take first number
-  const m = area.match(/(\d[\d,]*)/);
-  if (!m) return null;
-  const sqft = Number(m[1].replace(/,/g, ''));
-  if (!sqft) return null;
-  return `₹${Math.round(price / sqft).toLocaleString('en-IN')}/sqft`;
-}
-
-function coverUrl(p: Project): string | null {
-  if (!p.coverImage) return null;
-  return typeof p.coverImage === 'string' ? p.coverImage : (p.coverImage as any).url ?? null;
-}
-
 function greetingText(): string {
   const h = new Date().getHours();
   if (h < 12) return 'GOOD MORNING';
@@ -112,14 +88,9 @@ export default function HomeDashboard() {
 
   const [analytics, setAnalytics] = useState<CrmAnalytics | null>(null);
   const [stats, setStats] = useState({ views: 0, leads: 0 });
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [matchCounts, setMatchCounts] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [shareProject, setShareProject] = useState<Project | null>(null);
   // Active Overview tab — AI Lead Matching is the default view.
   const [tab, setTab] = useState<OverviewTab>('ai');
-  const [showTeamDev, setShowTeamDev] = useState(false);
   // True while an AI Lead Matching conversation is active → hide the welcome banner.
   const [chatActive, setChatActive] = useState(false);
   // Bumped on every "AI Leads" tap so the hub returns to its default landing page.
@@ -129,37 +100,31 @@ export default function HomeDashboard() {
   // builder/agent/admin/captain), so include 'agent' here to match permissions.
   const canUpload = ['admin', 'builder', 'captain', 'agent'].includes(user?.role ?? '');
 
+  // Two requests, both for the chrome this screen owns: the welcome card's
+  // views/leads totals and the CRM segment's hot-lead dot. The tab contents fetch
+  // their own data.
+  //
+  // This used to also pull the full public project list and then a match count
+  // for every project in it — a second copy of a list the Project tab fetches
+  // anyway — to feed a property-reels section that had been switched off with
+  // `{false && ...}`. Both requests went out on every dashboard open.
   const load = useCallback(async () => {
     try {
-      const [pubProjects, overview, crm] = await Promise.allSettled([
-        projectsApiExtended.getAllPublic(),
+      const [overview, crm] = await Promise.allSettled([
         analyticsApi.overview(),
         crmBridgeApi.getAnalytics(),
       ]);
 
-      // All public projects (properly shaped Project[])
-      const list = (pubProjects.status === 'fulfilled' ? pubProjects.value : []) as Project[];
-      setProjects(list);
-
-      // Analytics totals
       if (overview.status === 'fulfilled' && Array.isArray(overview.value)) {
         const views = overview.value.reduce((s: number, p: any) => s + (p.totalVisits || 0), 0);
         const leads = overview.value.reduce((s: number, p: any) => s + (p.uniqueLeads || 0), 0);
         setStats({ views, leads });
       }
 
-      // CRM analytics (for hot badge)
       if (crm.status === 'fulfilled') setAnalytics(crm.value);
-
-      // Match counts
-      const ids = list.map((p: Project) => p.id).filter(Boolean);
-      if (ids.length) {
-        projectsApiExtended.matchCounts(ids).then(setMatchCounts).catch(() => {});
-      }
-    } catch { /* silent */ }
+    } catch { /* silent — the banner just shows placeholders */ }
     finally {
       setLoading(false);
-      setRefreshing(false);
     }
   }, []);
 
@@ -262,124 +227,6 @@ export default function HomeDashboard() {
         </View>
       )}
 
-      {/* ── Property Reels (unused — moved out of AI tab) ── */}
-      {false && (
-      <ScrollView
-        style={{ flex: 1 }}
-        contentContainerStyle={{ paddingBottom: 120 }}
-      >
-        <View style={{ paddingHorizontal: 12, paddingTop: 12, gap: 12 }}>
-          {loading ? (
-            <>
-              <SkeletonCard />
-              <SkeletonCard />
-            </>
-          ) : projects.length === 0 ? (
-            <View style={s.emptyReels}>
-              <Building2 size={30} color={colors.muted} />
-              <Text style={s.emptyText}>No properties to show</Text>
-            </View>
-          ) : (
-            projects.map(p => {
-              const cover = coverUrl(p);
-              const ppsf = pricePerSqFt(p.startingPrice, p.carpetAreaRange);
-              const matchN = matchCounts[(p as any).id] || 0;
-              return (
-                <View key={p.id} style={s.reelCard}>
-                  {/* Image */}
-                  <View style={s.reelImgWrap}>
-                    {cover ? (
-                      <Image source={{ uri: cover }} style={s.reelImg} resizeMode="cover" />
-                    ) : (
-                      <View style={[s.reelImg, s.reelNoImg]}>
-                        <Text style={{ fontSize: 25, color: colors.muted, fontWeight: '800' }}>₹</Text>
-                      </View>
-                    )}
-                    <View style={s.reelTypeBadge}>
-                      <Text style={s.reelTypeText}>{(p.type || 'FLAT').toUpperCase()}</Text>
-                    </View>
-                  </View>
-
-                  {/* Content */}
-                  <View style={s.reelContent}>
-                    {/* Name + price */}
-                    <View>
-                      <Text style={s.reelName} numberOfLines={1}>{p.name}</Text>
-                      <Text style={s.reelPrice}>{fmtPrice(p.startingPrice)}</Text>
-                    </View>
-
-                    {/* Location + rate */}
-                    <View style={s.reelLocRow}>
-                      <View style={s.reelLocLeft}>
-                        <MapPin size={12} color={colors.muted} />
-                        <Text style={s.reelLoc} numberOfLines={1}>
-                          {p.location ? `${p.location.split(',')[0]}, ` : ''}{(p.city || '').split(',')[0]}
-                        </Text>
-                      </View>
-                      {ppsf && <Text style={s.reelRate}>{ppsf}</Text>}
-                    </View>
-
-                    {/* Match signal */}
-                    {matchN > 0 && (
-                      <View style={s.matchRow}>
-                        <View style={s.matchDot} />
-                        <Text style={s.matchText}>
-                          {matchN} live {matchN === 1 ? 'buyer matches' : 'buyers match'} this
-                        </Text>
-                      </View>
-                    )}
-
-                    {/* Tags */}
-                    <View style={s.tagsRow}>
-                      {p.bhkOptions?.length > 0 && (
-                        <View style={[s.tag, { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' }]}>
-                          <Text style={[s.tagText, { color: '#1D4ED8' }]}>{p.bhkOptions.slice(0, 2).join(', ')}</Text>
-                        </View>
-                      )}
-                      {p.carpetAreaRange ? (
-                        <View style={[s.tag, { backgroundColor: colors.slateBg, borderColor: colors.slateBorder }]}>
-                          <Text style={[s.tagText, { color: colors.slateText }]}>{p.carpetAreaRange}</Text>
-                        </View>
-                      ) : null}
-                      {p.projectStatus && p.projectStatus !== 'pre-launch' && (
-                        <View style={[s.tag, { backgroundColor: '#FFF7ED', borderColor: '#FED7AA' }]}>
-                          <Text style={[s.tagText, { color: '#C2410C' }]}>
-                            {p.projectStatus === 'ready' ? 'Ready' : 'UC'}
-                          </Text>
-                        </View>
-                      )}
-                      {p.reraApproved && (
-                        <View style={[s.tag, { backgroundColor: colors.greenBg, borderColor: colors.greenBorder }]}>
-                          <Text style={[s.tagText, { color: colors.greenText }]}>RERA</Text>
-                        </View>
-                      )}
-                    </View>
-
-                    {/* Actions */}
-                    <View style={s.reelActions}>
-                      <Pressable
-                        style={s.viewBtn}
-                        onPress={() => p.slug && Linking.openURL(`https://homeintown.in/visit/${p.slug}`)}
-                      >
-                        <Eye size={13} color="#fff" />
-                        <Text style={s.viewBtnText}>View Details</Text>
-                      </Pressable>
-                      <Pressable style={s.shareBtn} onPress={() => setShareProject(p)}>
-                        <Share2 size={13} color={colors.brand} />
-                        <Text style={s.shareBtnText}>Share</Text>
-                      </Pressable>
-                    </View>
-                  </View>
-                </View>
-              );
-            })
-          )}
-        </View>
-      </ScrollView>
-      )}
-
-      {/* Share sheet */}
-      <ShareModal project={shareProject} onClose={() => setShareProject(null)} />
     </View>
   );
 }
@@ -417,13 +264,6 @@ const s = StyleSheet.create({
   welcomeStatNum: { color: '#fff', fontSize: 19, fontWeight: '800' },
   welcomeStatLabel: { color: 'rgba(255,255,255,0.4)', fontSize: 8, fontWeight: '800', letterSpacing: 0.6, marginTop: 1 },
 
-  // Quick actions — 3 cards, slightly more compact
-  quickRow: { flexDirection: 'row', gap: 8, marginHorizontal: 12, marginTop: 12 },
-  quickCard: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', gap: 7,
-    backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line,
-    borderRadius: 14, paddingHorizontal: 8, paddingVertical: 11,
-  },
   // CRM "hot lead" badge, overlaid on that segment's icon.
   hotDotInline: { position: 'absolute', top: -3, right: -4, width: 7, height: 7, borderRadius: 4, backgroundColor: '#EF4444', borderWidth: 1, borderColor: colors.white },
 
@@ -460,69 +300,4 @@ const s = StyleSheet.create({
   segmentLabel: { fontSize: 12, fontWeight: '800', color: colors.muted2 },
   segmentLabelActive: { color: '#fff' },
 
-  // Floating Team button (bottom right)
-  teamFab: {
-    position: 'absolute', right: 16,
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: colors.night, paddingHorizontal: 16, paddingVertical: 11,
-    borderRadius: 26, shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 10,
-    shadowOffset: { width: 0, height: 4 }, elevation: 6,
-  },
-  teamFabTitle: { fontSize: 12, fontWeight: '800', color: '#fff' },
-  teamFabSub: { fontSize: 8, color: 'rgba(255,255,255,0.5)', fontWeight: '700', letterSpacing: 0.4, marginTop: 1 },
-
-  // Under-development popup
-  devOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', alignItems: 'center', justifyContent: 'center', padding: 32 },
-  devCard: { backgroundColor: colors.white, borderRadius: 20, padding: 22, alignItems: 'center', width: '100%', maxWidth: 340, gap: 10 },
-  devIcon: { width: 56, height: 56, borderRadius: 28, backgroundColor: colors.brandTint, alignItems: 'center', justifyContent: 'center' },
-  devTitle: { fontSize: 17, fontWeight: '800', color: colors.ink, marginTop: 4 },
-  devMsg: { fontSize: 13, color: colors.muted2, textAlign: 'center', lineHeight: 19 },
-  devBtn: { backgroundColor: colors.brand, paddingHorizontal: 28, paddingVertical: 11, borderRadius: 12, marginTop: 6 },
-  devBtnText: { color: '#fff', fontSize: 14, fontWeight: '800' },
-
-  emptyReels: { alignItems: 'center', paddingVertical: 50, gap: 10 },
-  emptyText: { fontSize: 13, color: colors.muted },
-  reelCard: {
-    flexDirection: 'row', backgroundColor: colors.white,
-    borderRadius: 16, borderWidth: 1, borderColor: colors.line,
-    overflow: 'hidden', height: 168,
-    shadowColor: '#000', shadowOpacity: 0.04, shadowRadius: 6, shadowOffset: { width: 0, height: 2 }, elevation: 2,
-  },
-  reelImgWrap: { width: 120, height: 168, position: 'relative' },
-  reelImg: { width: 120, height: 168 },
-  reelNoImg: { width: 120, height: 168, backgroundColor: colors.slateBg, alignItems: 'center', justifyContent: 'center' },
-  reelTypeBadge: { position: 'absolute', top: 8, left: 8, backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 4 },
-  reelTypeText: { color: '#fff', fontSize: 8, fontWeight: '800' },
-  reelContent: { flex: 1, padding: 12, justifyContent: 'space-between', gap: 6 },
-  reelName: { fontSize: 13, fontWeight: '800', color: colors.ink },
-  reelPrice: { fontSize: 13, fontWeight: '800', color: colors.brand, marginTop: 2 },
-  reelLocRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 6 },
-  reelLocLeft: { flexDirection: 'row', alignItems: 'center', gap: 4, flex: 1 },
-  reelLoc: { fontSize: 10, color: colors.muted2, fontWeight: '500', flex: 1 },
-  reelRate: { fontSize: 9, color: colors.muted, fontWeight: '700' },
-  matchRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  matchDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#3F6212' },
-  matchText: { fontSize: 9, fontWeight: '700', color: '#3F6212' },
-  tagsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 4 },
-  tag: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, borderWidth: 1 },
-  tagText: { fontSize: 8, fontWeight: '800' },
-  reelActions: { flexDirection: 'row', gap: 6 },
-  viewBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, backgroundColor: '#1C1917', paddingVertical: 8, borderRadius: 8 },
-  viewBtnText: { color: '#fff', fontSize: 9, fontWeight: '800' },
-  shareBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, backgroundColor: '#FFF8F0', borderWidth: 1, borderColor: `${colors.brand}33`, paddingVertical: 8, borderRadius: 8 },
-  shareBtnText: { color: colors.brand, fontSize: 9, fontWeight: '800' },
-
-  // Bottom bar
-  bottomBar: {
-    position: 'absolute', bottom: 0, left: 0, right: 0,
-    flexDirection: 'row', gap: 8,
-    backgroundColor: colors.white,
-    borderTopWidth: 1, borderTopColor: colors.line,
-    paddingHorizontal: 12, paddingTop: 8,
-  },
-  bottomItem: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 10, paddingVertical: 6 },
-  bottomIcon: { width: 36, height: 36, borderRadius: 11, backgroundColor: `${colors.brand}15`, alignItems: 'center', justifyContent: 'center', position: 'relative' },
-  hotDot: { position: 'absolute', top: 2, right: 2, width: 8, height: 8, borderRadius: 4, backgroundColor: '#EF4444', borderWidth: 1, borderColor: colors.white },
-  bottomTitle: { fontSize: 12, fontWeight: '800', color: colors.ink },
-  bottomSub: { fontSize: 8, color: colors.muted, fontWeight: '700', letterSpacing: 0.4, marginTop: 1 },
 });

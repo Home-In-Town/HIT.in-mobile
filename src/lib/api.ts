@@ -256,7 +256,7 @@ const PUBLIC_PROJECTS_TTL_MS = 60_000;
 let publicProjectsCache: { at: number; data: any[] } | null = null;
 let publicProjectsInFlight: Promise<any[]> | null = null;
 
-async function fetchPublicProjectsRaw(force = false): Promise<any[]> {
+export async function fetchPublicProjectsRaw(force = false): Promise<any[]> {
   if (!force) {
     if (publicProjectsCache && Date.now() - publicProjectsCache.at < PUBLIC_PROJECTS_TTL_MS) {
       return publicProjectsCache.data;
