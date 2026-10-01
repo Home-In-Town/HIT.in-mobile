@@ -1,68 +1,36 @@
 {
-  "verdict": "CHANGES_REQUESTED",
+  "verdict": "APPROVED",
+  "pass": 2,
+  "commitsReviewed": ["550d5e3", "879a000"],
   "findings": [
     {
-      "id": "M1",
-      "blocking": true,
-      "confidence": "confirmed",
-      "title": "Builder-card Details opens nothing when the project fetch fails",
-      "file": "src/components/GroupChatEmbedded.tsx",
-      "detail": "The strip call site passes `onDetails={(p) => handlePropertyViewDetails(p.id)}` with no `fallback`, so a deleted/unpublished project or an offline device lands in the `else toast.show('Could not load property details')` branch and no sheet opens. That contradicts the handler's own documented contract ('View Details must ALWAYS open something') and re-creates the exact symptom the user reported ('card pr click kiya to detail nahi dhikhti'). The previous compact handler always opened from portfolio data already in hand.",
-      "fix": "Give the builder path a fallback sheet built from the OwnerPortfolioProject the card already holds (adapt it to the sheetFromCard shape, or add a second fallback branch that takes an OwnerPortfolioProject) so the card tap always opens something."
-    },
-    {
-      "id": "M2",
-      "blocking": true,
-      "confidence": "confirmed",
-      "title": "No pending feedback while the card tap awaits getById",
-      "file": "src/components/GroupChatEmbedded.tsx",
-      "detail": "handlePropertyViewDetails awaits projectsApiExtended.getById before setViewProperty. The card tap is the call that populates the 60 s cache, so the first tap per project pays a full Cloud Run round-trip with nothing on screen after the finger lifts (only the press-down opacity). Open Group on the same card already shows a spinner, and Share uses sharingId for exactly this.",
-      "fix": "Add a per-card pending flag (same pattern as sharing/sharingId) or an immediate loading state in the detail sheet."
-    },
-    {
-      "id": "M3",
-      "blocking": false,
-      "confidence": "confirmed",
-      "title": "Header 3-dot gate is tautologically false, leaving unreachable code",
-      "file": "src/components/GroupChatEmbedded.tsx",
-      "detail": "`{!activeRoom.isUniversal && !proj && hasProjectMedia && ...}` can never be true because hasProjectMedia is derived from proj (`!!(proj?.slug || proj?.id || proj?._id)`). Decision 6's user-visible goal (never an empty menu) is met, but the Pressable now ships permanently unreachable behind a comment that reads as a live condition.",
-      "fix": "Delete the header dots button outright, the same standard applied to handleBuilderProjectDetails, instead of gating it on a condition that cannot hold."
-    },
-    {
-      "id": "M4",
-      "blocking": false,
-      "confidence": "confirmed",
-      "title": "showGroupInfo survives a remote group delete",
-      "file": "src/components/GroupChatEmbedded.tsx",
-      "detail": "The socket onGroupDeleted handler (L919-927) clears activeRoom, messages and showRoomMenu but not showGroupInfo. The sheet unmounts with the thread, yet the flag stays true, so the group-info sheet re-mounts visible the next time any room is opened.",
-      "fix": "Add setShowGroupInfo(false) beside setShowRoomMenu(false) in that handler."
-    },
-    {
       "id": "M5",
+      "label": "Stacked modals on the detail sheet's Share",
       "blocking": false,
       "confidence": "possible",
-      "title": "Share from inside the detail sheet stacks two React Native Modals",
-      "file": "src/components/GroupChatEmbedded.tsx",
-      "detail": "ShareModal is itself a Modal (ShareActions.tsx L215-227) mounted as a sibling while the detail Modal is still visible, so Android is asked to present a second dialog window over a live one. Needs a device check: if the share sheet appears blank or behind the detail sheet, close the detail sheet in the same handler.",
-      "fix": "Verify on device (A-9 check 3); if it fails, setViewProperty(null) before setShareProject."
+      "carriedFrom": "pass 1",
+      "detail": "ShareModal is a sibling RN Modal mounted while the detail Modal is still visible. Tap Share inside the detail sheet on device ebbbfc95; if the share sheet comes up blank or behind the detail sheet, add setViewProperty(null) in that handler. Deferral to the device step is accepted."
     },
     {
-      "id": "M6",
+      "id": "N1",
+      "label": "Second card tap dropped silently while one fetch is pending",
       "blocking": false,
       "confidence": "confirmed",
-      "title": "New Status / Category / Payment Plan rows show raw enum values",
-      "file": "src/components/GroupChatEmbedded.tsx",
-      "detail": "overview.push('Status', p.projectStatus) prints storage values such as 'ready-to-move' / 'under-construction' verbatim, while the same file already normalises this class of value (`String(inv.possessionStatus).replace(/[-_]/g, ' ')` in sheetFromCard).",
-      "fix": "Apply the same hyphen/underscore normalisation to Status, Category and Payment Plan."
+      "detail": "handleBuilderCardDetails returns early on any non-null detailsId, so tapping card B while card A's getById is in flight does nothing and only A shows a spinner. Either let a new tap supersede the pending one, or disable the other cards' Details while detailsId is set."
+    },
+    {
+      "id": "N2",
+      "label": "Group-media rows can carry an empty URL",
+      "blocking": false,
+      "confidence": "confirmed",
+      "detail": "api.ts getRoomMedia maps a link's url from the first https?:// match in the message content and falls back to '' (media falls back through attachment?.url || content || ''). Such an entry renders a tappable row whose Linking.openURL('') rejects into .catch(() => {}). Drop entries with an empty url when mapping. Only reachable once the backend phase ships GET /group-chat/rooms/:roomId/media."
     },
     {
       "id": "M7",
+      "label": "Runtime verification still open",
       "blocking": false,
       "confidence": "confirmed",
-      "title": "A-9 runtime verification still open",
-      "file": "n/a",
-      "detail": "tsc is recorded clean (twice, exit 0) and the two required greps pass, but no release build, no install on ebbbfc95, and nothing visual confirmed. adb screenshots are black on this device, so the five on-device checks (card-body tap, section list with no dashes, Share from card and sheet, group info with Exit/Delete and the 3-dot no longer offering them, 'N members / M projects / Verified') need the user's eyes.",
-      "fix": "Run A-9 and have the user confirm the five points."
+      "detail": "No gradle build, no install, nothing visual; adb screenshots are black on this phone. The five on-device checks (card-body tap opens the sheet; sections with no dash rows and word-form Status; Share from card and from sheet; group info with admins, members and Exit/Delete plus no group 3-dot in the header; 'N members · M projects · Verified') belong to the dedicated verification step after this loop, not to this review gate."
     }
   ],
   "reviewDoc": "c:\\Users\\Pranay Bhujade\\Downloads\\HIT\\HIT_Mobile\\.agents\\tasks\\group-info-feature\\mobile-review.md"

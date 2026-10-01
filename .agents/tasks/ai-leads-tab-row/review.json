@@ -1,0 +1,12 @@
+{
+  "verdict": "CHANGES_REQUESTED",
+  "findings": [
+    "[blocking] Label cannot shrink (likely): hub.subTabText has no flexShrink and React Native defaults flexShrink to 0, so numberOfLines={1} cannot truncate 'Matching' inside its flex:1 cell — it overflows and can collide with the neighbouring tab on a ~320dp screen or at a system font scale above 1.0. Add flexShrink: 1 to subTabText and flexShrink: 0 to the icon (or give the Text flex: 1 with textAlign: 'center') in app/(dashboard)/lead-matching.tsx.",
+    "[blocking] Wrong reachability claim in the new comment above doPost (confirmed): it says the handlers are reached 'in the non-headerless thread header, from the AI menu', but that menu only offers Disappearing messages / End Chat / Exit Chat. aiPost / aiMatching are referenced only by the onActionsReady publish effect (line 1512). Drop the AI-menu clause in src/components/GroupChatEmbedded.tsx (~line 1296).",
+    "[blocking] The inline label comment in SubTab promises shrink behaviour the stylesheet does not implement ('Matching must shrink the cell, never wrap it'). Fix together with the flexShrink finding so comment and code agree.",
+    "[non-blocking] Headerless AI bar now mounts with AI mode (confirmed): adding aiActive to the `headerless && aiAllowed` gate correctly removes the empty white strip, but the whole ~42px bar now appears/disappears on AI-mode toggle and shifts the thread content, where previously only the 3-dot inside a stable bar toggled. Either accept the shift or keep the bar mounted at zero height. The retained aiAllowed term is now redundant since aiActive = aiMode && aiAllowed.",
+    "[non-blocking] hub.subBar has no accessibilityRole=\"tablist\", so the two new accessibilityRole=\"tab\" items sit without a parent list.",
+    "[non-blocking] Install and visual confirmation outstanding (from the coder's evidence): tsc is clean and the release APK reports BUILD SUCCESSFUL, but device ebbbfc95 never appeared on adb, so the APK was not installed and the row was never seen on screen. The user must plug in, unlock, install, and confirm the row visually — adb screenshots come back black on this phone."
+  ],
+  "reviewDoc": "c:\\Users\\Pranay Bhujade\\Downloads\\HIT\\HIT_Mobile\\.agents\\tasks\\ai-leads-tab-row/review.md"
+}

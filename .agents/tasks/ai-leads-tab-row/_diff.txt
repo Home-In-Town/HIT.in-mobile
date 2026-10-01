@@ -1,0 +1,364 @@
+diff --git a/app/(dashboard)/lead-matching.tsx b/app/(dashboard)/lead-matching.tsx
+index 7dae215..7f3ed5a 100644
+--- a/app/(dashboard)/lead-matching.tsx
++++ b/app/(dashboard)/lead-matching.tsx
+@@ -3,13 +3,13 @@
+ 
+ import React, { useCallback, useEffect, useRef, useState } from 'react';
+ import {
+   View, Text, ScrollView, StyleSheet, Pressable, ActivityIndicator, Modal,
+ } from 'react-native';
+ import { useSafeAreaInsets } from 'react-native-safe-area-context';
+-import { Users, MessageSquare, BarChart2, X } from 'lucide-react-native';
++import { Users, MessageSquare, BarChart2, X, Building2, Search, LucideIcon } from 'lucide-react-native';
+ import { leadMatchingApi } from '../../src/lib/api';
+ import { useAuth } from '../../src/lib/authContext';
+ import { useToast } from '../../src/components/Toast';
+ import { colors } from '../../src/theme';
+ 
+ // We import the full screens as components and render them inside tabs.
+@@ -179,12 +179,58 @@ function Chip({ label }: { label: string }) {
+     <View style={{ backgroundColor: colors.slateBg, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, borderWidth: 1, borderColor: colors.slateBorder }}>
+       <Text style={{ fontSize: 10, fontWeight: '600', color: colors.slateText }}>{label}</Text>
+     </View>
+   );
+ }
+ 
++// ΓöÇΓöÇ Sub-row tab ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
++// One renderer for every item in the sub-row, so the two pane switchers and the
++// two AI actions cannot drift apart visually. Previously the pane switchers were
++// inline here and the actions were pills (filled green / orange-bordered) inside
++// GroupChatEmbedded, i.e. two separate implementations that looked nothing alike.
++//
++// `isPane` exists because the underline means different things per kind:
++//   ΓÇó pane ('Groups' / 'Chats') ΓÇö picks which content pane is shown, so the
++//     underline reads as "this view is active" and is mutually exclusive.
++//   ΓÇó action ('My Post' / 'Matching') ΓÇö one-shot triggers that open a modal (the
++//     My Posts sheet / the Matching results sheet) and have no selected state at
++//     all, so they must NEVER hold a persistent underline: a lit tab would claim
++//     a view is active when the pane behind it never changed. They get the same
++//     text + icon treatment and a pressed-state opacity instead ΓÇö applied to all
++//     four, so an action tap still gives feedback like a pane tap does.
++function SubTab({ label, Icon, active, isPane, onPress }: {
++  label: string;
++  Icon: LucideIcon;
++  active: boolean;
++  isPane: boolean;
++  onPress: () => void;
++}) {
++  const lit = isPane && active;
++  return (
++    <Pressable
++      onPress={onPress}
++      style={({ pressed }) => [hub.subTab, lit && hub.subTabActive, pressed && hub.subTabPressed]}
++      accessibilityRole={isPane ? 'tab' : 'button'}
++      accessibilityState={isPane ? { selected: active } : undefined}
++      accessibilityLabel={label}
++    >
++      {/* flexShrink: 0 so the icon keeps its 14px box when the label needs to give
++          way ΓÇö RN already defaults to 0, stated explicitly because the Text next
++          to it deliberately overrides that default. */}
++      <Icon size={14} color={lit ? colors.brand : colors.muted2} style={hub.subTabIcon} />
++      {/* Four labels share the width two labels used to have, so clamp to one line.
++          numberOfLines alone is not enough: RN defaults flexShrink to 0 (unlike
++          CSS), so the Text would be laid out at its intrinsic width and overflow
++          its flex: 1 cell instead of ellipsizing ΓÇö visible on a ~320dp screen or
++          at a system font scale above 1.0, where "Matching" is the widest label.
++          hub.subTabText carries flexShrink: 1 so the clamp can actually truncate. */}
++      <Text numberOfLines={1} style={[hub.subTabText, lit && hub.subTabTextActive]}>{label}</Text>
++    </Pressable>
++  );
++}
++
+ // ΓöÇΓöÇ Main Hub ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+ export default function LeadMatchingHub({
+   embedded = false,
+   onChatActiveChange,
+   resetSignal = 0,
+ }: {
+@@ -194,14 +240,15 @@ export default function LeadMatchingHub({
+   // Every change returns this hub to its default landing view.
+   resetSignal?: number;
+ } = {}) {
+   const insets = useSafeAreaInsets();
+   const { user } = useAuth();
+   // 'assistant' = the AI Lead Matching group chat (default). 'groups' / 'chats'
+-  // switch the content pane. My Post / Matching are actions that live on the
+-  // assistant chat itself, not in this hub's navigation.
++  // switch the content pane. My Post / Matching are NOT pane switchers ΓÇö they are
++  // actions on the assistant chat ΓÇö so they deliberately do not touch `tab`, even
++  // though they now sit in the same row (see SUB below).
+   const [tab, setTab] = useState<'chats' | 'assistant' | 'groups'>('assistant');
+   const [showLeads, setShowLeads] = useState(false);
+   // Post / Matching triggers exposed by the embedded assistant group.
+   const groupActionsRef = useRef<GroupActions | null>(null);
+   // Stable identity so the child's onActionsReady effect doesn't re-run each render.
+   const handleActionsReady = useCallback((a: GroupActions) => {
+@@ -226,20 +273,41 @@ export default function LeadMatchingHub({
+   // banner. The AI Lead Matching section IS the group chat, so this is always
+   // true ΓÇö `tab` was in the deps but changed nothing, so it only re-fired.
+   React.useEffect(() => {
+     onChatActiveChange?.(true);
+   }, [onChatActiveChange]);
+ 
+-  // Sub-row under the AI Leads section: Groups ┬╖ Chats.
+-  // Only the two pane switchers live here. My Post / Matching are actions on the
+-  // assistant chat, not navigation, so they sit in the chat's own action row
+-  // (GroupChatEmbedded) where they originally were ΓÇö keeping them here made a
+-  // 4-item bar that mixed navigation with actions.
++  // Sub-row under the AI Leads section: Groups ┬╖ Chats ┬╖ My Post ┬╖ Matching.
++  //
++  // Only the two pane switchers used to live here; My Post / Matching sat in the
++  // chat's own action row inside GroupChatEmbedded as coloured pills, on the
++  // reasoning that a 4-item bar mixing navigation with actions was confusing.
++  // The user has since asked for all four on one line in the tab treatment, so
++  // the actions moved up here and the pill row was deleted. The old reasoning is
++  // recorded above so the split is not silently reintroduced; the navigation /
++  // action distinction now lives in `kind` and is expressed by the indicator
++  // rules documented on SubTab rather than by a separate row.
++  //
++  // Nothing about what the actions DO changed: they call the same post() /
++  // matching() triggers the assistant pane already published through
++  // onActionsReady ΓåÆ groupActionsRef, so no new props or state were needed.
++  //
++  // Visibility: `tab === 'assistant' && groupOpen` reproduces the child's old
++  // gate (`headerless && aiAllowed`) exactly. Only the assistant pane is passed
++  // `headerless`/`hideThreadBack`, and inside it `aiAllowed` collapses to
++  // `!!activeRoom` ΓÇö which the child reports upward via onRoomOpenChange, i.e.
++  // `groupOpen`. Spreading a conditional array (rather than rendering a hidden
++  // placeholder) leaves the row with exactly two `flex: 1` cells when the actions
++  // are absent, so Groups / Chats keep their full-width positions with no gap.
+   const SUB = [
+-    { key: 'groups', label: 'Groups', icon: Users,         kind: 'pane' as const },
+-    { key: 'chats',  label: 'Chats',  icon: MessageSquare, kind: 'pane' as const },
++    { key: 'groups',   label: 'Groups',   icon: Users,         kind: 'pane' as const, active: tab === 'groups', onPress: () => setTab('groups') },
++    { key: 'chats',    label: 'Chats',    icon: MessageSquare, kind: 'pane' as const, active: tab === 'chats',  onPress: () => setTab('chats') },
++    ...(tab === 'assistant' && groupOpen ? [
++      { key: 'post',     label: 'My Post',  icon: Building2, kind: 'action' as const, active: false, onPress: () => groupActionsRef.current?.post() },
++      { key: 'matching', label: 'Matching', icon: Search,    kind: 'action' as const, active: false, onPress: () => groupActionsRef.current?.matching() },
++    ] : []),
+   ];
+ 
+   // Keep the tab bar visible on the AI Lead Matching section (it IS the primary
+   // section). Only hide chrome when a room is opened from the separate Groups tab.
+   const chromeHidden = tab === 'groups' && groupOpen;
+ 
+@@ -259,30 +327,25 @@ export default function LeadMatchingHub({
+                   <Text style={hub.leadsBtnText}>Leads</Text>
+                 </Pressable>
+               )}
+             </View>
+           )}
+ 
+-          {/* Sub-row: Groups ┬╖ Chats */}
+-          <View style={hub.subBar}>
+-            {SUB.map(item => {
+-              const Icon = item.icon;
+-              const active =
+-                (item.key === 'groups' && tab === 'groups') ||
+-                (item.key === 'chats' && tab === 'chats');
+-              return (
+-                <Pressable
+-                  key={item.key}
+-                  onPress={() => setTab(item.key as 'groups' | 'chats')}
+-                  style={[hub.subTab, active && hub.subTabActive]}
+-                >
+-                  <Icon size={15} color={active ? colors.brand : colors.muted2} />
+-                  <Text style={[hub.subTabText, active && hub.subTabTextActive]}>{item.label}</Text>
+-                </Pressable>
+-              );
+-            })}
++          {/* Sub-row: Groups ┬╖ Chats ┬╖ My Post ┬╖ Matching ΓÇö one row, one
++              renderer. See the SUB comment for the indicator / visibility rules. */}
++          <View style={hub.subBar} accessibilityRole="tablist">
++            {SUB.map(item => (
++              <SubTab
++                key={item.key}
++                label={item.label}
++                Icon={item.icon}
++                active={item.active}
++                isPane={item.kind === 'pane'}
++                onPress={item.onPress}
++              />
++            ))}
+           </View>
+         </>
+       )}
+ 
+       {/* Content: the AI Lead Matching group chat is the base view (headerless ΓÇö
+           this hub's sub-row replaces its header). 'chats' / 'groups' swap panes. */}
+@@ -335,16 +398,29 @@ export default function LeadMatchingHub({
+ }
+ 
+ const hub = StyleSheet.create({
+   root: { flex: 1, backgroundColor: colors.cream },
+   header: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 12, backgroundColor: colors.white },
+   headerTitle: { fontSize: 19, fontWeight: '800', color: colors.ink },
+-  // Sub-row (Groups ┬╖ Chats)
++  // Sub-row (Groups ┬╖ Chats ┬╖ My Post ┬╖ Matching). Metrics are tighter than the
++  // two-item version this started as ΓÇö icon 14 (was 15), gap 4 (was 5) and a 6px
++  // horizontal pad ΓÇö so four flex cells still fit without clipping on a ~320dp
++  // screen. No pills or borders here on purpose: all four are plain text + icon
++  // with the underline as the only state indicator.
+   subBar: { flexDirection: 'row', backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.line },
+-  subTab: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, paddingVertical: 11, borderBottomWidth: 2, borderBottomColor: 'transparent' },
++  subTab: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, paddingVertical: 11, paddingHorizontal: 6, borderBottomWidth: 2, borderBottomColor: 'transparent' },
+   subTabActive: { borderBottomColor: colors.brand },
+-  subTabText: { fontSize: 11, fontWeight: '700', color: colors.muted2 },
++  // Touch feedback for the two action items, which never get an underline and so
++  // would otherwise look inert when tapped. Applied to the panes too for parity.
++  subTabPressed: { opacity: 0.55 },
++  subTabIcon: { flexShrink: 0 },
++  // flexShrink: 1 is what makes numberOfLines={1} on the label effective. RN
++  // defaults flexShrink to 0, so without it the longest label ("Matching") is
++  // measured at its intrinsic width and spills out of its flex: 1 cell into the
++  // neighbouring tab instead of ellipsizing ΓÇö it only just fit at 320dp with the
++  // two-item metrics, and any larger font scale overflowed.
++  subTabText: { fontSize: 11, fontWeight: '700', color: colors.muted2, flexShrink: 1 },
+   subTabTextActive: { color: colors.brand, fontWeight: '800' },
+   leadsBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 18, backgroundColor: colors.brandTint, borderWidth: 1, borderColor: colors.brand },
+   leadsBtnText: { fontSize: 11.5, fontWeight: '800', color: colors.brand },
+   closeBtn: { padding: 6, borderRadius: 10, backgroundColor: colors.slateBg },
+ });
+diff --git a/src/components/GroupChatEmbedded.tsx b/src/components/GroupChatEmbedded.tsx
+index f85468f..c81a65a 100644
+--- a/src/components/GroupChatEmbedded.tsx
++++ b/src/components/GroupChatEmbedded.tsx
+@@ -628,18 +628,21 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
+   topInset?: number;
+   // When true, the Universal ("AI Lead Matching") room opens automatically and
+   // the thread's back button is hidden ΓÇö used when this component IS the
+   // AI Lead Matching section (no separate room-list step).
+   autoOpenUniversal?: boolean;
+   hideThreadBack?: boolean;
+-  // When true, the whole thread header (avatar, member count, My Post / Matching
+-  // buttons) is hidden ΓÇö used when the parent (AI Leads hub) provides its own
+-  // sub-row of Groups ┬╖ Chats ┬╖ My Post ┬╖ Matching above this component.
++  // When true, the whole thread header (avatar, member count) is hidden ΓÇö used
++  // when the parent (AI Leads hub) provides its own single sub-row of
++  // Groups ┬╖ Chats ┬╖ My Post ┬╖ Matching above this component. In that mode only
++  // the AI 3-dot remains here; the My Post / Matching buttons that used to sit in
++  // this component's own row are rendered by the hub instead.
+   headerless?: boolean;
+   // Exposes the post/matching triggers to the parent so its sub-row can drive
+-  // them. Called once the component is ready.
++  // them. In headerless mode this is the ONLY way those two actions are reachable
++  // ΓÇö nothing in this component renders them any more. Called once ready.
+   onActionsReady?: (actions: {
+     post: () => void;
+     matching: () => void;
+     // Return to the default landing view (no AI conversation in progress).
+     resetToLanding: () => void;
+   }) => void;
+@@ -1287,13 +1290,18 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
+       setPostedLeads(sellable);
+     } catch {
+       setPostedLeads([]);
+     }
+   }, []);
+ 
+-  // ΓöÇΓöÇ AI action handlers (used by the group header buttons/menu) ΓöÇΓöÇ
++  // ΓöÇΓöÇ AI action handlers ΓöÇΓöÇ
++  // Reached only from the AI Leads hub's tab row, through the triggers this
++  // component publishes via onActionsReady. They used to also be wired to My Post
++  // / Matching pills rendered by this component; those moved into the hub's single
++  // tab row, but the handlers themselves are unchanged. (The AI 3-dot menu is NOT
++  // another entry point ΓÇö it only offers Disappearing messages / End / Exit Chat.)
+   // Post = show ALL properties the user has posted so far, plus (if present) the
+   // current AI-collected draft as a postable card.
+   const doPost = async () => {
+     const list = await postedListStorage.getAll();
+     setPostedList(list);
+     loadMyProjects();   // backend published projects (for cooldown enrichment)
+@@ -2205,14 +2213,15 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
+   })();
+   // Share link / PDF / QR / Gallery all act on the linked project, so they are
+   // only offered when the group actually has one (area groups do not).
+   const hasProjectMedia = !!(proj?.slug || proj?.id || proj?._id);
+   return (
+     <KeyboardAvoidingView style={{ flex: 1, paddingTop: topInset }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+-      {/* Thread header ΓÇö hidden entirely in headerless mode (the AI Leads hub
+-          provides its own Groups ┬╖ Chats ┬╖ My Post ┬╖ Matching sub-row instead). */}
++      {/* Thread header ΓÇö hidden entirely in headerless mode, where the AI Leads
++          hub supplies the single Groups ┬╖ Chats ┬╖ My Post ┬╖ Matching tab row
++          instead (it used to supply only Groups ┬╖ Chats). */}
+       {!headerless && (
+       <View style={s.threadHeader}>
+         {!hideThreadBack && (
+           <Pressable onPress={closeRoom} style={{ padding: 4 }}><ChevronLeft size={22} color={colors.ink} /></Pressable>
+         )}
+         {/* Universal room gets the globe symbol (matches the room list) so this
+@@ -2313,28 +2322,32 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
+             )}
+           </View>
+         )}
+       </View>
+       )}
+ 
+-      {/* Headerless mode: Action buttons row below the tabs */}
+-      {headerless && aiAllowed && (
++      {/* Headerless mode: AI 3-dot row below the hub's tab row.
++          This row used to also carry the "My Post" and "Matching" pills (filled
++          green / orange-bordered). They now live in the hub's single tab row
++          alongside Groups ┬╖ Chats, styled as tabs, because the user asked for all
++          four controls on one line ΓÇö keeping them here as well would have shown
++          each action twice. aiPost / aiMatching are untouched; the hub calls them
++          through onActionsReady. Only the 3-dot menu stays, because its dropdown
++          is anchored inside this component, so the row is now rendered only when
++          AI mode is actually active (it was `headerless && aiAllowed` before,
++          which kept an empty bar on screen once the pills were gone).
++          Known consequence: the whole ~42px bar now mounts/unmounts with AI mode
++          and shifts the thread down/up, where before the bar was stable and only
++          the 3-dot inside it toggled. Accepted over painting an empty white strip.
++          `aiAllowed` is kept for readability even though aiActive = aiMode &&
++          aiAllowed already implies it. */}
++      {headerless && aiAllowed && aiActive && (
+         <View style={s.aiActionBar}>
+-          <Pressable onPress={aiPost} style={[s.headerAiBtn, { backgroundColor: '#F0FDF4', borderColor: colors.greenBorder }]}>
+-            <Building2 size={13} color={colors.greenText} />
+-            <Text style={[s.headerAiBtnText, { color: colors.greenText }]}>My Post</Text>
+-          </Pressable>
+-          <Pressable onPress={aiMatching} style={[s.headerAiBtn, { backgroundColor: colors.brandTint, borderColor: `${colors.brand}55` }]}>
+-            <Search size={13} color={colors.brand} />
+-            <Text style={[s.headerAiBtnText, { color: colors.brand }]}>Matching</Text>
++          <Pressable onPress={() => setShowAiMenu(v => !v)} style={s.headerAiDots}>
++            <MoreVertical size={18} color={colors.ink} />
+           </Pressable>
+-          {aiActive && (
+-            <Pressable onPress={() => setShowAiMenu(v => !v)} style={s.headerAiDots}>
+-              <MoreVertical size={18} color={colors.ink} />
+-            </Pressable>
+-          )}
+         </View>
+       )}
+ 
+       {/* AI 3-dot menu (Disappearing / End / Exit) appears when AI is active */}
+       {headerless && aiAllowed && aiActive && showAiMenu && (
+         <>
+@@ -3652,20 +3665,20 @@ const s = StyleSheet.create({
+   primaryBtnText: { color: '#fff', fontWeight: '800', fontSize: 13 },
+ 
+   threadHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 11, backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.line, zIndex: 20 },
+   threadAvatar: { width: 36, height: 36, borderRadius: 18, backgroundColor: colors.brandTint, alignItems: 'center', justifyContent: 'center' },
+   threadTitle: { fontSize: 14.5, fontWeight: '800', color: colors.ink, letterSpacing: -0.2 },
+   threadSub: { fontSize: 10.5, color: colors.muted, marginTop: 1 },
+-  // AI action row in the group header (Post ┬╖ Matching ┬╖ 3-dot)
++  // AI 3-dot row in the group header. `headerAiBtn` / `headerAiBtnText` (the
++  // rounded pill used for the old Post ┬╖ Matching buttons) were dropped with
++  // those buttons ΓÇö the hub's tab row renders both as plain tabs now.
+   headerAiRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+-  headerAiBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 9, paddingVertical: 6, borderRadius: 16, borderWidth: 1 },
+-  headerAiBtnText: { fontSize: 11, fontWeight: '800' },
+   headerAiDots: { padding: 4 },
+-  // Standalone AI action row used in headerless mode (the AI Leads hub supplies
+-  // its own navigation above). Same button styling as the in-header row, so the
+-  // two placements look identical.
++  // Standalone AI row used in headerless mode (the AI Leads hub supplies its own
++  // navigation above). It used to hold the Post / Matching pills as well; now it
++  // only carries the 3-dot, whose dropdown is anchored to this component.
+   aiActionBar: {
+     flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 6,
+     paddingHorizontal: 14, paddingVertical: 8,
+     backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.line,
+     zIndex: 20,
+   },
