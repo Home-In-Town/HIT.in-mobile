@@ -32,3 +32,6 @@ yarn-error.*
 
 # typescript
 *.tsbuildinfo
+
+# Workflow agent working notes (plans, reviews, build logs) — not application code.
+.agents/
