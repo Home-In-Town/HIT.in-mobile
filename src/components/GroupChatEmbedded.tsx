@@ -495,6 +495,31 @@ function PostCard({ item, posted, cooldownLeftMs, posting, onPost, onView }: {
   );
 }
 
+/**
+ * Adapts a builder card's thin OwnerPortfolioProject to the InventoryCard shape
+ * handlePropertyViewDetails already accepts as its fallback.
+ *
+ * Needed because the card's Details now goes through a project fetch instead of
+ * building a sheet synchronously: with no fallback, a deleted or unpublished
+ * project — or just an offline device — opened NO sheet at all, only a "Could not
+ * load property details" toast. That is the same dead-button behaviour
+ * ("card pr click kiya to detail nahi dhikhti") this change set out to remove, so
+ * the card's own data stands in whenever the fetch cannot answer.
+ *
+ * priceRange is in LAKHS on InventoryCard (the inventory form's unit) while
+ * startingPrice is in rupees, hence the divide.
+ */
+const portfolioFallback = (p: OwnerPortfolioProject): InventoryCard => ({
+  projectName: p.name,
+  area: p.location,
+  city: p.city,
+  propertyType: p.propertyType,
+  possessionStatus: p.projectStatus,
+  carpetAreaRange: p.carpetAreaRange,
+  bhkOptions: p.bhkOptions,
+  priceRange: p.startingPrice ? { min: p.startingPrice / 100000 } : undefined,
+});
+
 // ── Builder property card ──
 // Shown as a horizontal strip inside a company group: the properties that
 // builder has published. Three actions, because they answer different questions —
@@ -506,10 +531,12 @@ function PostCard({ item, posted, cooldownLeftMs, posting, onPost, onView }: {
 // name did nothing, which read as "card pr click kiya to detail nahi dhikhti".
 // `bp.actions` is deliberately left OUTSIDE that Pressable — nesting the two
 // buttons inside a pressable parent swallows their own taps.
-const BuilderPropertyCard = React.memo(function BuilderPropertyCard({ project, opening, sharing, onDetails, onOpenGroup, onShare }: {
+const BuilderPropertyCard = React.memo(function BuilderPropertyCard({ project, opening, sharing, loadingDetails, onDetails, onOpenGroup, onShare }: {
   project: OwnerPortfolioProject;
   opening: boolean;
   sharing: boolean;
+  /** Details is awaiting the project fetch for THIS card — see onDetails below. */
+  loadingDetails: boolean;
   onDetails: (project: OwnerPortfolioProject) => void;
   onOpenGroup: (project: OwnerPortfolioProject) => void;
   onShare: (project: OwnerPortfolioProject) => void;
@@ -546,14 +573,26 @@ const BuilderPropertyCard = React.memo(function BuilderPropertyCard({ project, o
       </Pressable>
 
       <View style={bp.actions}>
+        {/* Spinner while the project loads. Details used to build its sheet from
+            data already in hand, so it opened instantly; it now fetches the full
+            project, and without this the first tap per card left the press-down
+            opacity as the only sign anything was happening for a whole round-trip.
+            Same one-id-in-state pattern as `sharing`. */}
         <Pressable
           onPress={() => onDetails(project)}
-          style={[bp.btn, bp.btnGhost]}
+          disabled={loadingDetails}
+          style={[bp.btn, bp.btnGhost, loadingDetails && { opacity: 0.6 }]}
           accessibilityRole="button"
           accessibilityLabel={`Details of ${project.name}`}
         >
-          <Eye size={11} color={colors.brand} />
-          <Text style={[bp.btnText, { color: colors.brand }]} numberOfLines={1}>Details</Text>
+          {loadingDetails
+            ? <ActivityIndicator size="small" color={colors.brand} />
+            : (
+              <>
+                <Eye size={11} color={colors.brand} />
+                <Text style={[bp.btnText, { color: colors.brand }]} numberOfLines={1}>Details</Text>
+              </>
+            )}
         </Pressable>
         <Pressable
           onPress={() => onOpenGroup(project)}
@@ -757,6 +796,10 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   // brochureUrl and mints a tracked token), but a builder card only carries the
   // thin OwnerPortfolioProject — hence the fetch in handleShareProject.
   const [shareProject, setShareProject] = useState<Project | null>(null);
+  // Which builder card is waiting on its project fetch for Details. The card used
+  // to open its sheet from portfolio data already in memory, so there was nothing
+  // to indicate; now it fetches, and a tap with no feedback reads as a dead card.
+  const [detailsId, setDetailsId] = useState<string | null>(null);
   const [sharingId, setSharingId] = useState<string | null>(null);
   // WhatsApp-style group info, opened by tapping the thread header. Exit / Delete
   // Group live in here now (they used to be in the 3-dot menu).
@@ -923,6 +966,10 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
       setActiveRoom(null);
       setMessages([]);
       setShowRoomMenu(false);
+      // Group info has to close too. It only cleared showRoomMenu before, so the
+      // sheet unmounted with the thread while its flag stayed true — and then
+      // re-mounted already visible over the next room the user opened.
+      setShowGroupInfo(false);
       toast.show(data.message || 'This group was deleted', 'info');
     });
     return unsub;
@@ -1666,11 +1713,16 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
         };
       };
       const money = (v: any) => (v ? `₹${Number(v).toLocaleString('en-IN')}` : '');
+      // These three are stored as enum slugs ('ready-to-move', 'under-construction',
+      // 'construction_linked'), and printing them verbatim put storage values in
+      // front of the user. Same normalisation sheetFromCard already applies to
+      // possessionStatus, so the two paths read alike.
+      const label = (v: any) => (v ? String(v).replace(/[-_]/g, ' ') : '');
 
       const overview = rows();
       overview.push('Property Type', p.propertyType || p.type);
-      overview.push('Status', p.projectStatus);
-      overview.push('Category', p.category);
+      overview.push('Status', label(p.projectStatus));
+      overview.push('Category', label(p.category));
       overview.push('RERA', p.reraApproved ? 'Approved' : '');
       overview.push('RERA Number', p.reraNumber);
       overview.push('Gated Community', p.gatedCommunity ? 'Yes' : '');
@@ -1680,7 +1732,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
       pricing.push('Starting Price', p.startingPrice ? fmtPrice(p.startingPrice) : '');
       pricing.push('Total Price Range', p.totalPriceRange);
       pricing.push('Price per sq.ft', p.pricePerSqFt ? money(p.pricePerSqFt) : '');
-      pricing.push('Payment Plan', p.paymentPlan);
+      pricing.push('Payment Plan', label(p.paymentPlan));
       pricing.push('GST', p.gstPercentage != null ? `${p.gstPercentage}%` : '');
       pricing.push('Stamp Duty', p.stampDutyPercentage != null ? `${p.stampDutyPercentage}%` : '');
       pricing.push('Registration', money(p.registrationCharges));
@@ -1781,6 +1833,27 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
       setSharingId(null);
     }
   }, [sharingId, toast]);
+
+  /**
+   * Details / card-body tap on a builder property card.
+   *
+   * Wraps handlePropertyViewDetails for two reasons the inventory cards do not
+   * have. First, it marks the card pending while the project fetch runs — the old
+   * builder handler opened its sheet synchronously from portfolio data, so there
+   * was nothing to wait for and no spinner was needed. Second, it hands over a
+   * fallback built from the card's own data, so a deleted / unpublished project or
+   * a dropped connection still opens a sheet instead of only raising a toast,
+   * which is the "ALWAYS open something" contract the handler documents.
+   */
+  const handleBuilderCardDetails = useCallback(async (p: OwnerPortfolioProject) => {
+    if (detailsId) return;
+    setDetailsId(p.id);
+    try {
+      await handlePropertyViewDetails(p.id, portfolioFallback(p));
+    } finally {
+      setDetailsId(null);
+    }
+  }, [detailsId, handlePropertyViewDetails]);
 
   /** "View Details" on an AI match card — reuses the property detail sheet. */
   const handleViewMatchedProject = useCallback((projectId: string, projectName?: string) => {
@@ -2464,22 +2537,13 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
           </View>
         )}
 
-        {/* Area / builder groups have no project banner, so their media menu lives
-            in the thread header. Project groups use the dots on the blue banner.
-            Now gated on hasProjectMedia as well: once Exit / Delete moved into
-            group info, this menu had nothing left for a group with no linked
-            project, so the dots opened an empty sheet. */}
-        {!activeRoom.isUniversal && !proj && hasProjectMedia && (
-          <Pressable
-            onPress={() => setShowRoomMenu(v => !v)}
-            style={s.headerAiDots}
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel="Group options"
-          >
-            <MoreVertical size={18} color={colors.ink} />
-          </Pressable>
-        )}
+        {/* There is deliberately no group 3-dot in the thread header any more.
+            It used to carry Exit / Delete Group for builder and area rooms; those
+            moved into the group-info sheet, and the only items left (Share link /
+            PDF / QR / Gallery) all act on a linked project, which builder and area
+            rooms do not have — so the button could only ever open an empty sheet.
+            Project rooms still reach those items from the dots on the blue banner
+            below, which drive the same showRoomMenu state. */}
 
         {/* AI 3-dot dropdown (End Chat / Exit Chat) */}
         {aiActive && showAiMenu && (
@@ -2501,9 +2565,10 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
           </>
         )}
 
-        {/* Project-media menu. The media actions used to sit behind a nested
-            "Project media" item, so the first tap showed only two options and
-            the download actions needed a second hop.
+        {/* Project-media menu, opened only by the banner dots now that the header
+            dots are gone. The media actions used to sit behind a nested "Project
+            media" item, so the first tap showed only two options and the download
+            actions needed a second hop.
             Exit Group / Delete Group used to be here too. They now live ONLY in
             the group-info sheet, so each action exists in exactly one place
             instead of the menu and the sheet both offering it. */}
@@ -2652,14 +2717,17 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                   the inventory cards use. It used to call a local compact handler
                   that built a four-field `compact: true` sheet — and because the
                   media block is gated on !compact, the gallery, videos, brochure
-                  and layout of a builder's own property never rendered. */}
+                  and layout of a builder's own property never rendered.
+                  handleBuilderCardDetails is the wrapper that adds the pending flag
+                  and the card-data fallback that path needs. */}
               {builderProjects.map(project => (
                 <BuilderPropertyCard
                   key={project.id}
                   project={project}
                   opening={joiningId === project.id}
                   sharing={sharingId === project.id}
-                  onDetails={(p) => handlePropertyViewDetails(p.id)}
+                  loadingDetails={detailsId === project.id}
+                  onDetails={handleBuilderCardDetails}
                   onOpenGroup={handleOpenProjectGroup}
                   onShare={(p) => handleShareProject(p.id)}
                 />

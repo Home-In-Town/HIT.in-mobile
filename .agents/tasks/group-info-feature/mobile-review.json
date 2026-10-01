@@ -1,0 +1,69 @@
+{
+  "verdict": "CHANGES_REQUESTED",
+  "findings": [
+    {
+      "id": "M1",
+      "blocking": true,
+      "confidence": "confirmed",
+      "title": "Builder-card Details opens nothing when the project fetch fails",
+      "file": "src/components/GroupChatEmbedded.tsx",
+      "detail": "The strip call site passes `onDetails={(p) => handlePropertyViewDetails(p.id)}` with no `fallback`, so a deleted/unpublished project or an offline device lands in the `else toast.show('Could not load property details')` branch and no sheet opens. That contradicts the handler's own documented contract ('View Details must ALWAYS open something') and re-creates the exact symptom the user reported ('card pr click kiya to detail nahi dhikhti'). The previous compact handler always opened from portfolio data already in hand.",
+      "fix": "Give the builder path a fallback sheet built from the OwnerPortfolioProject the card already holds (adapt it to the sheetFromCard shape, or add a second fallback branch that takes an OwnerPortfolioProject) so the card tap always opens something."
+    },
+    {
+      "id": "M2",
+      "blocking": true,
+      "confidence": "confirmed",
+      "title": "No pending feedback while the card tap awaits getById",
+      "file": "src/components/GroupChatEmbedded.tsx",
+      "detail": "handlePropertyViewDetails awaits projectsApiExtended.getById before setViewProperty. The card tap is the call that populates the 60 s cache, so the first tap per project pays a full Cloud Run round-trip with nothing on screen after the finger lifts (only the press-down opacity). Open Group on the same card already shows a spinner, and Share uses sharingId for exactly this.",
+      "fix": "Add a per-card pending flag (same pattern as sharing/sharingId) or an immediate loading state in the detail sheet."
+    },
+    {
+      "id": "M3",
+      "blocking": false,
+      "confidence": "confirmed",
+      "title": "Header 3-dot gate is tautologically false, leaving unreachable code",
+      "file": "src/components/GroupChatEmbedded.tsx",
+      "detail": "`{!activeRoom.isUniversal && !proj && hasProjectMedia && ...}` can never be true because hasProjectMedia is derived from proj (`!!(proj?.slug || proj?.id || proj?._id)`). Decision 6's user-visible goal (never an empty menu) is met, but the Pressable now ships permanently unreachable behind a comment that reads as a live condition.",
+      "fix": "Delete the header dots button outright, the same standard applied to handleBuilderProjectDetails, instead of gating it on a condition that cannot hold."
+    },
+    {
+      "id": "M4",
+      "blocking": false,
+      "confidence": "confirmed",
+      "title": "showGroupInfo survives a remote group delete",
+      "file": "src/components/GroupChatEmbedded.tsx",
+      "detail": "The socket onGroupDeleted handler (L919-927) clears activeRoom, messages and showRoomMenu but not showGroupInfo. The sheet unmounts with the thread, yet the flag stays true, so the group-info sheet re-mounts visible the next time any room is opened.",
+      "fix": "Add setShowGroupInfo(false) beside setShowRoomMenu(false) in that handler."
+    },
+    {
+      "id": "M5",
+      "blocking": false,
+      "confidence": "possible",
+      "title": "Share from inside the detail sheet stacks two React Native Modals",
+      "file": "src/components/GroupChatEmbedded.tsx",
+      "detail": "ShareModal is itself a Modal (ShareActions.tsx L215-227) mounted as a sibling while the detail Modal is still visible, so Android is asked to present a second dialog window over a live one. Needs a device check: if the share sheet appears blank or behind the detail sheet, close the detail sheet in the same handler.",
+      "fix": "Verify on device (A-9 check 3); if it fails, setViewProperty(null) before setShareProject."
+    },
+    {
+      "id": "M6",
+      "blocking": false,
+      "confidence": "confirmed",
+      "title": "New Status / Category / Payment Plan rows show raw enum values",
+      "file": "src/components/GroupChatEmbedded.tsx",
+      "detail": "overview.push('Status', p.projectStatus) prints storage values such as 'ready-to-move' / 'under-construction' verbatim, while the same file already normalises this class of value (`String(inv.possessionStatus).replace(/[-_]/g, ' ')` in sheetFromCard).",
+      "fix": "Apply the same hyphen/underscore normalisation to Status, Category and Payment Plan."
+    },
+    {
+      "id": "M7",
+      "blocking": false,
+      "confidence": "confirmed",
+      "title": "A-9 runtime verification still open",
+      "file": "n/a",
+      "detail": "tsc is recorded clean (twice, exit 0) and the two required greps pass, but no release build, no install on ebbbfc95, and nothing visual confirmed. adb screenshots are black on this device, so the five on-device checks (card-body tap, section list with no dashes, Share from card and sheet, group info with Exit/Delete and the 3-dot no longer offering them, 'N members / M projects / Verified') need the user's eyes.",
+      "fix": "Run A-9 and have the user confirm the five points."
+    }
+  ],
+  "reviewDoc": "c:\\Users\\Pranay Bhujade\\Downloads\\HIT\\HIT_Mobile\\.agents\\tasks\\group-info-feature\\mobile-review.md"
+}

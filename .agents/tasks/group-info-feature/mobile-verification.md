@@ -1,11 +1,69 @@
 # Mobile phase — verification note
 
-Iteration: 1 (no `mobile-review.json` was present, so this was a from-scratch implementation of
+Iteration: **2** — `mobile-review.json` was present with verdict `CHANGES_REQUESTED`, so this pass
+fixed its findings on top of commit `550d5e3`. Iteration 1's record is kept below, unchanged, under
+"Iteration 1".
+
+A-9 (gradle release build + device install) was **deliberately NOT run** in either iteration — per
+the step brief that happens in the dedicated verification step after the loop.
+
+## Iteration 2 — review findings and what was done
+
+| Finding | Status | Change |
+| --- | --- | --- |
+| **M1** builder-card Details opens nothing when the project fetch fails (blocking) | fixed | New module-level `portfolioFallback(p: OwnerPortfolioProject): InventoryCard` adapter next to `BuilderPropertyCard`, passed as the `fallback` arg, so a deleted / unpublished project or an offline device falls through to `sheetFromCard` instead of the bare toast. The "must ALWAYS open something" contract now holds on the builder path too. |
+| **M2** no pending feedback while the card tap awaits `getById` (blocking) | fixed | New `detailsId` state + `handleBuilderCardDetails` wrapper (guards on `detailsId`, sets/clears it around the await), new `loadingDetails` prop on `BuilderPropertyCard`, and the Details button renders an `ActivityIndicator` in place of the eye+label while pending — the same one-id-in-state pattern as `sharing` / `sharingId`. |
+| **M3** header 3-dot gate is tautologically false | fixed | The header `Group options` `Pressable` is **deleted outright**, same standard as `handleBuilderProjectDetails`. Replaced by a comment stating what it used to carry and that project rooms reach the media items from the banner dots, which drive the same `showRoomMenu` state. The `showRoomMenu` block's comment now says it is opened only by the banner dots. |
+| **M4** `showGroupInfo` survives a remote group delete | fixed | `setShowGroupInfo(false)` added beside `setShowRoomMenu(false)` in the `socket.onGroupDeleted` handler, with a comment naming the old symptom (sheet re-mounting visible over the next room). |
+| **M5** share from inside the detail sheet stacks two RN Modals (non-blocking, `possible`) | **deferred to the device step, no code change** | The review's own fix is conditional on a device check ("Verify on device (A-9 check 3); if it fails, `setViewProperty(null)` before `setShareProject`"). Closing the detail sheet unconditionally is a user-visible behaviour change, so it was not made speculatively. **Action for the verification step:** tap Share inside the detail sheet on `ebbbfc95`; if the share sheet comes up blank or behind the detail sheet, add `setViewProperty(null)` in the sheet's Share handler. |
+| **M6** raw enum values in Status / Category / Payment Plan | fixed | New `label()` helper in `handlePropertyViewDetails` applying `String(v).replace(/[-_]/g, ' ')` — the same normalisation `sheetFromCard` already applies to `possessionStatus` — to `projectStatus`, `category` and `paymentPlan`. |
+| **M7** A-9 runtime verification still open | **out of scope for this loop** | No gradle build, no install, nothing visual. The five on-device checks remain for the dedicated verification step (list repeated at the bottom of this note). |
+
+### What was run in iteration 2
+
+```powershell
+cd "c:\Users\Pranay Bhujade\Downloads\HIT\HIT_Mobile"; npx tsc --noEmit; "exit=$LASTEXITCODE"
+```
+
+**Result: clean.** No diagnostics printed, `exit=0`.
+
+Supporting greps (all on `src/components/GroupChatEmbedded.tsx`):
+
+- `handleBuilderProjectDetails` → **0 matches** (still gone).
+- `onPress={handleLeave}` / `onPress={handleDelete}` → exactly one each, both in the group-info sheet
+  footer (L3253 / L3259). No second leave/delete path.
+- `accessibilityLabel="Group options"` → **1 match**, the banner dots (`colors.blueText`) at L2684.
+  The header dots are gone, so no unreachable gate ships.
+- `className=` / `tw(` / `styled(` → **0 matches**. No NativeWind.
+
+### Files changed in iteration 2
+
+Only `src/components/GroupChatEmbedded.tsx`. `src/lib/api.ts` needed nothing — the `fallback`
+parameter already accepted an `InventoryCard`, so M1 was solved by adapting the card's data rather
+than widening any signature (which would have broken `MessageBubble`'s
+`onPropertyViewDetails: (projectId: string, fallback?: InventoryCard) => void` prop type, since a
+function with more parameters is not assignable to one with fewer).
+
+### Still open after iteration 2 — needs the phone
+
+1. tapping the card **body** opens the detail sheet (not just the Details button);
+2. the sheet shows Overview / Pricing & Charges / Configuration / Amenities / Media / Contact with no
+   `—` rows, Status/Category read as words not slugs, and gallery + brochure open;
+3. Share works from the card **and** from inside the sheet — this is the M5 check;
+4. tapping the group header opens group info with admins, members and Exit/Delete at the bottom, and
+   builder / area rooms no longer show a group 3-dot in the header at all;
+5. the open builder header reads `N members · M projects · Verified`.
+
+adb screenshots come back fully black on this phone and a locked screen swallows `input tap`, so none
+of the five may be claimed from a screenshot.
+
+---
+
+## Iteration 1
+
+Iteration 1 (no `mobile-review.json` was present, so this was a from-scratch implementation of
 Phase A, items A-1 … A-8, built on top of the uncommitted baseline diff — nothing in
 `app/(dashboard)/lead-matching.tsx` or `src/components/GroupChatEmbedded.tsx` was reverted).
-
-A-9 (gradle release build + device install) was **deliberately NOT run** here — per the step brief
-that happens in the dedicated verification step after the loop.
 
 ## What was run
 
