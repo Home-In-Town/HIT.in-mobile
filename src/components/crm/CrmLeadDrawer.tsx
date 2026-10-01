@@ -59,22 +59,42 @@ export default function CrmLeadDrawer({ leadId, onClose }: Props) {
   const toast = useToast();
   const [lead, setLead] = useState<CrmLead | null>(null);
   const [journey, setJourney] = useState<any>(null);
+  const [journeyLoading, setJourneyLoading] = useState(false);
+  // Whether the user has asked for the journey yet. Separate from `journey`
+  // itself so a load that returns nothing still shows a result, not the button.
+  const [journeyRequested, setJourneyRequested] = useState(false);
   const [loading, setLoading] = useState(false);
   const [advancingStage, setAdvancingStage] = useState(false);
   const [activeJourneyStage, setActiveJourneyStage] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!leadId) { setLead(null); setJourney(null); return; }
+    // Reset the lazy journey state along with the lead, otherwise the previous
+    // lead's journey would stay on screen under the next lead's name.
+    setJourney(null);
+    setJourneyRequested(false);
+    setJourneyLoading(false);
+    if (!leadId) { setLead(null); return; }
     setLoading(true);
-    Promise.all([
-      crmBridgeApi.getLeadById(leadId).catch(() => null),
-      crmBridgeApi.getJourney(leadId).catch(() => null),
-    ]).then(([l, j]) => {
-      setLead(l);
-      setJourney(j);
-      if (j?.currentStage) setActiveJourneyStage(j.currentStage);
-    }).finally(() => setLoading(false));
+    // Only the lead itself. This used to be a Promise.all that also pulled the
+    // journey, so every single lead open cost TWO requests — the bulk of the
+    // 1 Oct 429 burst — even though the journey is only ever looked at
+    // deliberately. It now loads on tap instead (see loadJourney).
+    crmBridgeApi.getLeadById(leadId)
+      .catch(() => null)
+      .then((l) => setLead(l))
+      .finally(() => setLoading(false));
   }, [leadId]);
+
+  const loadJourney = async () => {
+    if (!leadId || journeyLoading) return;
+    setJourneyRequested(true);
+    setJourneyLoading(true);
+    const j = await crmBridgeApi.getJourney(leadId).catch(() => null);
+    setJourney(j);
+    // Same seeding the old effect did, just moved to where the fetch now lives.
+    if (j?.currentStage) setActiveJourneyStage(j.currentStage);
+    setJourneyLoading(false);
+  };
 
   const handleAdvance = async (stage: string) => {
     if (!leadId || advancingStage) return;
@@ -182,11 +202,23 @@ export default function CrmLeadDrawer({ leadId, onClose }: Props) {
               </View>
             </View>
 
-            {/* Journey Timeline */}
-            {journey && (
-              <View style={s.card}>
-                <Text style={s.cardTitle}>Sales Journey</Text>
+            {/* Journey Timeline — collapsed until the user asks for it */}
+            <View style={s.card}>
+              <Text style={s.cardTitle}>Sales Journey</Text>
 
+              {!journeyRequested ? (
+                <Pressable style={s.journeyToggle} onPress={loadJourney}>
+                  <Text style={s.journeyToggleText}>View sales journey</Text>
+                  <ChevronRight size={16} color={colors.brand} />
+                </Pressable>
+              ) : journeyLoading ? (
+                <ActivityIndicator color={colors.brand} />
+              ) : !journey ? (
+                <Text style={{ color: colors.muted, fontSize: 12, textAlign: 'center', paddingVertical: 12 }}>
+                  Could not load the sales journey.
+                </Text>
+              ) : (
+                <>
                 {/* Stage pipeline */}
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
                   <View style={s.stagePipeline}>
@@ -234,8 +266,9 @@ export default function CrmLeadDrawer({ leadId, onClose }: Props) {
                     No journey entries yet
                   </Text>
                 )}
-              </View>
-            )}
+                </>
+              )}
+            </View>
 
             {/* Activity */}
             <View style={s.card}>
@@ -292,6 +325,12 @@ const s = StyleSheet.create({
   breakdownLabel: { fontSize: 10, color: colors.muted2, fontWeight: '600' },
   breakdownBarRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   breakdownVal: { fontSize: 10, fontWeight: '600', color: colors.ink, minWidth: 20 },
+  journeyToggle: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingVertical: 10, paddingHorizontal: 12, borderRadius: 10,
+    backgroundColor: colors.slateBg, borderWidth: 1, borderColor: colors.slateBorder,
+  },
+  journeyToggleText: { fontSize: 12, fontWeight: '700', color: colors.brand },
   stagePipeline: { flexDirection: 'row', gap: 6, paddingBottom: 4 },
   stageBtn: {
     paddingHorizontal: 10, paddingVertical: 7, borderRadius: 8,

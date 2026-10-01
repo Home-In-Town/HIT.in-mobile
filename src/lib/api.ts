@@ -23,6 +23,12 @@ export class ApiError extends Error {
    * lead cannot be qualified yet.
    */
   data?: any;
+  /**
+   * How long the caller should wait before retrying, in seconds. Only set on a
+   * 429 — read from the server's Retry-After header so a screen can say "try
+   * again in 45 seconds" instead of just failing.
+   */
+  retryAfterSeconds?: number;
 
   constructor(message: string | null | undefined, status: number, body?: any) {
     super(message ?? 'Unknown error');
@@ -42,6 +48,36 @@ async function authHeaders(extra?: Record<string, string>): Promise<Record<strin
   return headers;
 }
 
+// Fallback wait used when a 429 arrives with no usable hint at all. One minute
+// is the shortest window the backend limiters use, so it never under-promises.
+const RATE_LIMIT_FALLBACK_SECONDS = 60;
+
+// express-rate-limit sends Retry-After in SECONDS (measured against the live
+// backend: 'retry-after: 60'), and with standardHeaders 'draft-7' it also sends
+// a combined 'ratelimit: limit=1, remaining=0, reset=60' whose reset is seconds
+// too. Prefer Retry-After, fall back to that reset hint, then to a constant, so
+// a 429 can always name a wait.
+function parseRetryAfterSeconds(response: Response): number {
+  const header = response.headers.get('Retry-After');
+  const parsed = header ? parseInt(header, 10) : NaN;
+  if (Number.isFinite(parsed) && parsed > 0) return parsed;
+
+  const reset = /reset\s*=\s*(\d+)/i.exec(response.headers.get('RateLimit') || '');
+  const resetSeconds = reset ? parseInt(reset[1], 10) : NaN;
+  if (Number.isFinite(resetSeconds) && resetSeconds > 0) return resetSeconds;
+
+  return RATE_LIMIT_FALLBACK_SECONDS;
+}
+
+// Phrase a wait the way a person would say it. The general limiter's window is
+// 15 minutes, and printing a bare "in 900 seconds" reads like a bug, so
+// anything longer than a minute and a half is rounded to minutes.
+function describeWait(seconds: number): string {
+  if (seconds <= 90) return `in ${seconds} second${seconds === 1 ? '' : 's'}`;
+  const minutes = Math.round(seconds / 60);
+  return minutes <= 1 ? 'in about a minute' : `in about ${minutes} minutes`;
+}
+
 async function handleResponse<T>(response: Response): Promise<T> {
   let body: any = null;
   try {
@@ -51,6 +87,27 @@ async function handleResponse<T>(response: Response): Promise<T> {
   }
 
   if (!response.ok) {
+    // Rate limiting gets its own path. Previously a 429 fell through to the
+    // generic throw below, so it was indistinguishable from any other failure:
+    // a call site could not tell "wait a moment" from "this is broken", and the
+    // user only saw the server's bare sentence with no idea retrying would work.
+    if (response.status === 429) {
+      const retryAfterSeconds = parseRetryAfterSeconds(response);
+      const err = new ApiError(
+        `Too many requests. Please try again ${describeWait(retryAfterSeconds)}.`,
+        429,
+        body,
+      );
+      // The limiter's body is { error: 'Too many requests, please try again later.' },
+      // so the inherited `code = body.error` would be that whole human sentence.
+      // Force a stable code for 429 ONLY — every other status still takes code
+      // from body.error, so checks like err.code === 'INCOMPLETE_REQUIREMENTS'
+      // keep working untouched.
+      err.code = 'RATE_LIMITED';
+      err.retryAfterSeconds = retryAfterSeconds;
+      throw err;
+    }
+
     const message =
       typeof body?.message === 'string'
         ? body.message
@@ -158,13 +215,34 @@ export const authApi = {
     await tokenStorage.clear();
   },
 
-  // Session check — sends token, falls back to /users/me
-  async getSession(): Promise<{ authenticated: boolean; user: AuthUser | null }> {
+  // Session check — sends token, falls back to /users/me.
+  // `rateLimited` means "we could not ask, try again later" — NOT "logged out".
+  async getSession(): Promise<{
+    authenticated: boolean;
+    user: AuthUser | null;
+    rateLimited?: boolean;
+    retryAfterSeconds?: number;
+  }> {
     const token = await tokenStorage.get();
     if (!token) return { authenticated: false, user: null };
     try {
       const response = await fetch(`${API_URL}/auth/session`, { headers: await authHeaders() });
       if (!response.ok) {
+        // A 429 means "ask again later", not "you are logged out". The old code
+        // treated ANY !response.ok as a dead session: it fired a SECOND request
+        // at /users/me — extra load on an already-exhausted bucket — and then
+        // returned authenticated: false, which checkAuth turned into status
+        // 'unauthenticated' and _layout.tsx turned into router.replace('/login').
+        // That was the forced-logout symptom of the 429 bursts. Bail out before
+        // the fallback and hand the wait back to the caller.
+        if (response.status === 429) {
+          return {
+            authenticated: false,
+            user: null,
+            rateLimited: true,
+            retryAfterSeconds: parseRetryAfterSeconds(response),
+          };
+        }
         // Fallback: try /users/me
         const meRes = await fetch(`${API_URL}/users/me`, { headers: await authHeaders() });
         if (!meRes.ok) return { authenticated: false, user: null };
