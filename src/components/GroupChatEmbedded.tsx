@@ -23,9 +23,10 @@ import {
   Users, Plus, Globe, ChevronLeft, Send, X, MoreVertical, Building2,
   Link as LinkIcon, FileText, QrCode, Image as ImageIcon, LogOut, Trash2,
   Search, MapPin, Check, Camera, Paperclip, Sparkles, ChevronDown, ChevronUp, Clock,
-  Phone, Eye, UserPlus, BadgeCheck,
+  Phone, Eye, UserPlus, BadgeCheck, Share2, MessageCircle,
 } from 'lucide-react-native';
-import { groupChatApi, shareApi, mediaApi, leadMatchingApi, projectsApiExtended, GroupRoom, GroupMessage, InventoryCard, OwnerPortfolioProject } from '../lib/api';
+import { groupChatApi, shareApi, mediaApi, leadMatchingApi, projectsApiExtended, GroupRoom, GroupMessage, InventoryCard, OwnerPortfolioProject, Project, GroupMedia, GroupLink } from '../lib/api';
+import { ShareModal } from './ShareActions';
 import AiAssistant, { AiAssistantApi, AiPostDraft, InventoryMatchCard, aiOwnsInput } from './AiAssistant';
 import { postedListStorage, disappearStorage } from '../lib/storage';
 import { useAuth } from '../lib/authContext';
@@ -95,8 +96,17 @@ function roomLines(room: GroupRoom): { primary: string; secondary: string } {
 
   if (room.roomType === 'builder') {
     const who = room.builder?.role === 'agent' ? 'Agent' : 'Builder';
+    // "N projects" answers the first thing a user asks of a company row — how
+    // much inventory is in there. The number is supplied by the server on the
+    // room (one aggregation for the whole list); this component must NOT fetch a
+    // portfolio per row. Until the server sends the field it is undefined and the
+    // segment is simply absent, so this renders correctly before and after that
+    // backend change.
+    const projectText = typeof room.projectCount === 'number' && room.projectCount > 0
+      ? `${room.projectCount} project${room.projectCount !== 1 ? 's' : ''}`
+      : '';
     return {
-      primary: [memberText, room.builder?.isVerified ? 'Verified' : ''].filter(Boolean).join(' · '),
+      primary: [memberText, projectText, room.builder?.isVerified ? 'Verified' : ''].filter(Boolean).join(' · '),
       secondary: `${who} · Tap to see their properties`,
     };
   }
@@ -487,13 +497,22 @@ function PostCard({ item, posted, cooldownLeftMs, posting, onPost, onView }: {
 
 // ── Builder property card ──
 // Shown as a horizontal strip inside a company group: the properties that
-// builder has published. Two actions, because they answer different questions —
-// Details is "what is this property", Open Group is "take me to its discussion".
-const BuilderPropertyCard = React.memo(function BuilderPropertyCard({ project, opening, onDetails, onOpenGroup }: {
+// builder has published. Three actions, because they answer different questions —
+// Details is "what is this property", Open Group is "take me to its discussion",
+// Share is "send this to a client".
+//
+// The cover + body are now a Pressable that opens the SAME detail view as the
+// Details button. Before this, the card body was inert: tapping the photo or the
+// name did nothing, which read as "card pr click kiya to detail nahi dhikhti".
+// `bp.actions` is deliberately left OUTSIDE that Pressable — nesting the two
+// buttons inside a pressable parent swallows their own taps.
+const BuilderPropertyCard = React.memo(function BuilderPropertyCard({ project, opening, sharing, onDetails, onOpenGroup, onShare }: {
   project: OwnerPortfolioProject;
   opening: boolean;
+  sharing: boolean;
   onDetails: (project: OwnerPortfolioProject) => void;
   onOpenGroup: (project: OwnerPortfolioProject) => void;
+  onShare: (project: OwnerPortfolioProject) => void;
 }) {
   const where = [project.location, project.city].filter(Boolean).join(', ');
   const price = project.startingPrice ? fmtPrice(project.startingPrice) : '';
@@ -501,23 +520,30 @@ const BuilderPropertyCard = React.memo(function BuilderPropertyCard({ project, o
 
   return (
     <View style={bp.card}>
-      {project.coverImage ? (
-        <Image source={{ uri: project.coverImage }} style={bp.cover} resizeMode="cover" />
-      ) : (
-        <View style={[bp.cover, bp.coverFallback]}>
-          <Building2 size={18} color={colors.greenText} />
-        </View>
-      )}
-
-      <View style={bp.body}>
-        <Text style={bp.name} numberOfLines={1}>{project.name}</Text>
-        {!!where && <Text style={bp.meta} numberOfLines={1}>📍 {where}</Text>}
-        {!!(price || bhk) && (
-          <Text style={bp.price} numberOfLines={1}>
-            {[price, bhk].filter(Boolean).join(' · ')}
-          </Text>
+      <Pressable
+        onPress={() => onDetails(project)}
+        style={({ pressed }) => [pressed && { opacity: 0.7 }]}
+        accessibilityRole="button"
+        accessibilityLabel={`Details of ${project.name}`}
+      >
+        {project.coverImage ? (
+          <Image source={{ uri: project.coverImage }} style={bp.cover} resizeMode="cover" />
+        ) : (
+          <View style={[bp.cover, bp.coverFallback]}>
+            <Building2 size={18} color={colors.greenText} />
+          </View>
         )}
-      </View>
+
+        <View style={bp.body}>
+          <Text style={bp.name} numberOfLines={1}>{project.name}</Text>
+          {!!where && <Text style={bp.meta} numberOfLines={1}>📍 {where}</Text>}
+          {!!(price || bhk) && (
+            <Text style={bp.price} numberOfLines={1}>
+              {[price, bhk].filter(Boolean).join(' · ')}
+            </Text>
+          )}
+        </View>
+      </Pressable>
 
       <View style={bp.actions}>
         <Pressable
@@ -544,6 +570,20 @@ const BuilderPropertyCard = React.memo(function BuilderPropertyCard({ project, o
                 <Text style={[bp.btnText, { color: '#fff' }]} numberOfLines={1}>Open Group</Text>
               </>
             )}
+        </Pressable>
+        {/* Icon only, fixed width: the card is 186 dp wide and the two labelled
+            buttons already run at 9 px text, so a third labelled button clipped.
+            The accessibilityLabel carries the meaning instead. */}
+        <Pressable
+          onPress={() => onShare(project)}
+          disabled={sharing}
+          style={[bp.btnIcon, sharing && { opacity: 0.6 }]}
+          accessibilityRole="button"
+          accessibilityLabel={`Share ${project.name}`}
+        >
+          {sharing
+            ? <ActivityIndicator size="small" color={colors.brand} />
+            : <Share2 size={12} color={colors.brand} />}
         </Pressable>
       </View>
     </View>
@@ -631,12 +671,15 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   // AI Lead Matching section (no separate room-list step).
   autoOpenUniversal?: boolean;
   hideThreadBack?: boolean;
-  // When true, the whole thread header (avatar, member count, My Post / Matching
-  // buttons) is hidden — used when the parent (AI Leads hub) provides its own
-  // sub-row of Groups · Chats · My Post · Matching above this component.
+  // When true, the whole thread header (avatar, member count) is hidden — used
+  // when the parent (AI Leads hub) provides its own single sub-row of
+  // Groups · Chats · My Post · Matching above this component. In that mode only
+  // the AI 3-dot remains here; the My Post / Matching buttons that used to sit in
+  // this component's own row are rendered by the hub instead.
   headerless?: boolean;
   // Exposes the post/matching triggers to the parent so its sub-row can drive
-  // them. Called once the component is ready.
+  // them. In headerless mode this is the ONLY way those two actions are reachable
+  // — nothing in this component renders them any more. Called once ready.
   onActionsReady?: (actions: {
     post: () => void;
     matching: () => void;
@@ -710,6 +753,16 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   // switching groups never shows the previous builder's inventory.
   const [builderProjects, setBuilderProjects] = useState<OwnerPortfolioProject[]>([]);
   const [loadingBuilderProjects, setLoadingBuilderProjects] = useState(false);
+  // Share sheet. ShareModal needs a real `Project` (it reads id / name / slug /
+  // brochureUrl and mints a tracked token), but a builder card only carries the
+  // thin OwnerPortfolioProject — hence the fetch in handleShareProject.
+  const [shareProject, setShareProject] = useState<Project | null>(null);
+  const [sharingId, setSharingId] = useState<string | null>(null);
+  // WhatsApp-style group info, opened by tapping the thread header. Exit / Delete
+  // Group live in here now (they used to be in the 3-dot menu).
+  const [showGroupInfo, setShowGroupInfo] = useState(false);
+  const [groupMedia, setGroupMedia] = useState<{ media: GroupMedia[]; links: GroupLink[] } | null>(null);
+  const [loadingGroupMedia, setLoadingGroupMedia] = useState(false);
   // Matching results state
   const [showMatching, setShowMatching] = useState(false);
   const [matchingResults, setMatchingResults] = useState<any[]>([]);
@@ -928,7 +981,35 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     if (activeRoom) socket.leaveGroup(activeRoom.id);
     setActiveRoom(null);
     setShowRoomMenu(false);
+    // Group info describes the room being left — leaving it open over the room
+    // list would show a sheet whose Exit/Delete actions no longer have a target.
+    setShowGroupInfo(false);
   };
+
+  /**
+   * Media & Links for the group-info sheet, loaded only when that sheet is
+   * actually opened. Deliberately NOT loaded on room open: the Groups list and
+   * thread must not get slower for a section most taps never reach.
+   *
+   * The endpoint lands in the backend phase of this feature, so a failure here is
+   * expected on the current server and is treated as "no media yet" — an empty
+   * section, never an error toast. TODO(backend phase): once
+   * GET /group-chat/rooms/:roomId/media ships, this starts returning real data
+   * with no client change.
+   */
+  useEffect(() => {
+    if (!showGroupInfo || !activeRoom?.id) return;
+    let cancelled = false;
+    setLoadingGroupMedia(true);
+    groupChatApi.getRoomMedia(activeRoom.id)
+      .then(res => { if (!cancelled) setGroupMedia({ media: res.media, links: res.links }); })
+      .catch(() => { if (!cancelled) setGroupMedia({ media: [], links: [] }); })
+      .finally(() => { if (!cancelled) setLoadingGroupMedia(false); });
+    return () => { cancelled = true; };
+  }, [showGroupInfo, activeRoom?.id]);
+
+  // A different room's media must never show under this room's name.
+  useEffect(() => { setGroupMedia(null); }, [activeRoom?.id]);
 
   // When used as the AI Lead Matching section, auto-open the Universal room so
   // the group chat shows directly (no room-list step). Runs once after rooms load.
@@ -1290,7 +1371,12 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     }
   }, []);
 
-  // ── AI action handlers (used by the group header buttons/menu) ──
+  // ── AI action handlers ──
+  // Reached only from the AI Leads hub's tab row, through the triggers this
+  // component publishes via onActionsReady. They used to also be wired to My Post
+  // / Matching pills rendered by this component; those moved into the hub's single
+  // tab row, but the handlers themselves are unchanged. (The AI 3-dot menu is NOT
+  // another entry point — it only offers Disappearing messages / End / Exit Chat.)
   // Post = show ALL properties the user has posted so far, plus (if present) the
   // current AI-collected draft as a postable card.
   const doPost = async () => {
@@ -1560,21 +1646,81 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
 
     try {
       const p = await projectsApiExtended.getById(projectId);
-      const area = p.carpetAreaRange || '';
       const cover = typeof p.coverImage === 'string' ? p.coverImage : p.coverImage?.url;
+
+      // The sheet used to show ONE flat list of ~6 fields, two of which printed
+      // '—' when empty (Property Type, Status) — so a detail view of a fully
+      // filled property hid almost everything the builder had entered, and a
+      // sparse one was full of dashes. Now the full project is grouped into
+      // labelled sections and every field is dropped when empty, so what shows
+      // is exactly what exists. Only this path sets `sections`; the other
+      // viewProperty callers keep their flat `fields` and are untouched.
+      const rows = () => {
+        const out: { label: string; value: string }[] = [];
+        return {
+          out,
+          push(label: string, value: any) {
+            if (value === null || value === undefined || value === '') return;
+            out.push({ label, value: String(value) });
+          },
+        };
+      };
+      const money = (v: any) => (v ? `₹${Number(v).toLocaleString('en-IN')}` : '');
+
+      const overview = rows();
+      overview.push('Property Type', p.propertyType || p.type);
+      overview.push('Status', p.projectStatus);
+      overview.push('Category', p.category);
+      overview.push('RERA', p.reraApproved ? 'Approved' : '');
+      overview.push('RERA Number', p.reraNumber);
+      overview.push('Gated Community', p.gatedCommunity ? 'Yes' : '');
+      overview.push('Builder', p.owner?.companyName || p.owner?.name);
+
+      const pricing = rows();
+      pricing.push('Starting Price', p.startingPrice ? fmtPrice(p.startingPrice) : '');
+      pricing.push('Total Price Range', p.totalPriceRange);
+      pricing.push('Price per sq.ft', p.pricePerSqFt ? money(p.pricePerSqFt) : '');
+      pricing.push('Payment Plan', p.paymentPlan);
+      pricing.push('GST', p.gstPercentage != null ? `${p.gstPercentage}%` : '');
+      pricing.push('Stamp Duty', p.stampDutyPercentage != null ? `${p.stampDutyPercentage}%` : '');
+      pricing.push('Registration', money(p.registrationCharges));
+      pricing.push('Maintenance', p.maintenanceCharges);
+      pricing.push('Other Charges', p.otherCharges);
+      pricing.push('Bank Loan', p.bankLoanAvailable ? 'Available' : '');
+
+      const config = rows();
+      config.push('Configuration', p.bhkOptions?.length ? p.bhkOptions.join(' / ') : '');
+      config.push('Carpet Area', p.carpetAreaRange);
+      config.push('Floor Range', p.floorRange);
+      config.push('Plot Size', p.plotSizeRange);
+      config.push('Facing', p.facingOptions?.length ? p.facingOptions.join(', ') : '');
+
+      const amenities = rows();
+      amenities.push('Amenities', p.amenities?.length ? p.amenities.join(', ') : '');
+
+      const contact = rows();
+      contact.push('Call', p.cta?.callNumber);
+      contact.push('WhatsApp', p.cta?.whatsappNumber);
+      contact.push('Enquiry', p.cta?.buttonText);
+
+      const sections = [
+        { title: 'Overview', fields: overview.out },
+        { title: 'Pricing & Charges', fields: pricing.out },
+        { title: 'Configuration', fields: config.out },
+        { title: 'Amenities', fields: amenities.out },
+        { title: 'Contact', fields: contact.out },
+      ].filter(sec => sec.fields.length > 0);
+
       setViewProperty({
         title: p.name || fallback?.projectName || 'Property',
         subtitle: [p.location, p.city].filter(Boolean).join(', '),
         price: fmtPrice(p.startingPrice),
         image: cover || '',
-        fields: [
-          { label: 'Property Type', value: p.propertyType || p.type || '—' },
-          ...(p.bhkOptions?.length ? [{ label: 'Configuration', value: p.bhkOptions.join(' / ') }] : []),
-          ...(area ? [{ label: 'Area', value: area }] : []),
-          { label: 'Status', value: p.projectStatus || '—' },
-          ...(p.reraNumber ? [{ label: 'RERA', value: p.reraNumber }] : []),
-          { label: 'Bank Loan', value: p.bankLoanAvailable ? 'Available' : 'Not specified' },
-        ],
+        sections,
+        // Lets the sheet offer Share for a real project. Absent on every other
+        // caller's sheet, so no Share button appears where there is nothing to share.
+        shareProjectId: p.id,
+        slug: p.slug,
         galleryImages: mediaUrls((p as any).galleryImages),
         videos: mediaUrls((p as any).videos),
         layoutImage: oneUrl((p as any).layoutImage),
@@ -1616,24 +1762,25 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   }, []);
 
   /**
-   * "Details" on a builder's property card. Built from the portfolio data the
-   * strip already holds, so it opens with no extra request.
+   * Share a property (from a builder card, or from inside the detail sheet).
+   *
+   * A fetch is needed because the card only holds an OwnerPortfolioProject,
+   * while ShareModal works on a real `Project` — it reads slug / brochureUrl and
+   * mints a tracked share token. `getById` is behind a 60 s cache with in-flight
+   * de-duping and the card's own tap already warmed it, so this is normally free.
+   * Nothing here string-builds a URL: ShareActions derives it.
    */
-  const handleBuilderProjectDetails = useCallback((project: OwnerPortfolioProject) => {
-    setViewProperty({
-      compact: true,
-      title: project.name,
-      subtitle: [project.location, project.city].filter(Boolean).join(', '),
-      price: project.startingPrice ? fmtPrice(project.startingPrice) : '',
-      image: project.coverImage,
-      fields: [
-        ...(project.propertyType ? [{ label: 'Property Type', value: project.propertyType }] : []),
-        ...(project.bhkOptions?.length ? [{ label: 'Configuration', value: project.bhkOptions.join(' / ') }] : []),
-        ...(project.carpetAreaRange ? [{ label: 'Area', value: project.carpetAreaRange }] : []),
-        ...(project.projectStatus ? [{ label: 'Status', value: project.projectStatus }] : []),
-      ],
-    });
-  }, []);
+  const handleShareProject = useCallback(async (projectId: string) => {
+    if (!projectId || sharingId) return;
+    setSharingId(projectId);
+    try {
+      setShareProject(await projectsApiExtended.getById(projectId));
+    } catch {
+      toast.show('Could not load this property to share', 'error');
+    } finally {
+      setSharingId(null);
+    }
+  }, [sharingId, toast]);
 
   /** "View Details" on an AI match card — reuses the property detail sheet. */
   const handleViewMatchedProject = useCallback((projectId: string, projectName?: string) => {
@@ -1762,6 +1909,42 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
       await Linking.openURL(telUrl);
     } catch {
       toast.show('Could not open the dialer on this device', 'error');
+    }
+  }, [toast]);
+
+  /**
+   * Call / WhatsApp a member from group info.
+   *
+   * Only ever invoked when the member actually carries a phone. The privacy rule
+   * (phone is sent for builder and project rooms only, stripped for universal and
+   * area) is enforced on the SERVER — hiding the number in this component alone
+   * would still ship every universal member's number over the wire. So do not
+   * "simplify" this into a client-side room-type check: it is a render-if-present
+   * check on purpose.
+   *
+   * The dialer is opened without a canOpenURL gate for the reason documented on
+   * handlePropertyCall: Android does not always report tel: as openable, and
+   * refusing on that basis is what made Call look dead.
+   */
+  const handleMemberCall = useCallback(async (phone?: string) => {
+    const number = String(phone || '').replace(/[^0-9+]/g, '');
+    if (!number) { toast.show('No number available for this member', 'error'); return; }
+    try {
+      await Linking.openURL(`tel:${number}`);
+    } catch {
+      toast.show('Could not open the dialer on this device', 'error');
+    }
+  }, [toast]);
+
+  const handleMemberWhatsApp = useCallback(async (phone?: string) => {
+    const digits = String(phone || '').replace(/[^0-9]/g, '');
+    if (!digits) { toast.show('No number available for this member', 'error'); return; }
+    // Same normalisation as the AI match card: a bare 10-digit Indian number gets
+    // the 91 country code, anything longer is assumed to already carry one.
+    try {
+      await Linking.openURL(`https://wa.me/${digits.length === 10 ? `91${digits}` : digits}`);
+    } catch {
+      toast.show('WhatsApp is not available on this device', 'error');
     }
   }, [toast]);
 
@@ -1956,6 +2139,9 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
 
   const handleLeave = () => {
     setShowRoomMenu(false);
+    // Both actions are now reached from group info, so that sheet has to come
+    // down before the confirm alert — otherwise the alert sits behind the modal.
+    setShowGroupInfo(false);
     if (!activeRoom) return;
     Alert.alert('Exit group?', `Exit "${roomDisplayName(activeRoom)}"?`, [
       { text: 'Cancel', style: 'cancel' },
@@ -1974,6 +2160,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
 
   const handleDelete = () => {
     setShowRoomMenu(false);
+    setShowGroupInfo(false);
     if (!activeRoom) return;
     Alert.alert('Delete group?', `This will close "${roomDisplayName(activeRoom)}" for everyone.`, [
       { text: 'Cancel', style: 'cancel' },
@@ -2190,6 +2377,15 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     const memberText = `${activeRoom.members.length} member${activeRoom.members.length !== 1 ? 's' : ''}`;
     const joined = newJoinCount > 0 ? `+${newJoinCount} new` : '';
 
+    // Builder rooms also report how much inventory the company has, reading e.g.
+    // "1 member · 18 projects · Verified". No request: builderProjects is already
+    // loaded for the strip below. Rendered only when non-empty, because the array
+    // is [] while the portfolio is still loading and a "0 projects" that flips to
+    // "18 projects" a moment later is worse than no segment at all.
+    const projectText = activeRoom.roomType === 'builder' && builderProjects.length > 0
+      ? `${builderProjects.length} project${builderProjects.length !== 1 ? 's' : ''}`
+      : '';
+
     let context = '';
     if (activeRoom.roomType === 'builder') {
       context = activeRoom.builder?.isVerified
@@ -2201,41 +2397,63 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
       context = activeRoom.area?.location || activeRoom.area?.city || 'Group';
     }
 
-    return [memberText, joined, context].filter(Boolean).join(' · ');
+    return [memberText, projectText, joined, context].filter(Boolean).join(' · ');
   })();
   // Share link / PDF / QR / Gallery all act on the linked project, so they are
   // only offered when the group actually has one (area groups do not).
   const hasProjectMedia = !!(proj?.slug || proj?.id || proj?._id);
+  // Group info exists for every real group. Area rooms are included because
+  // Exit Group moved into this sheet — leaving them out would strand area members
+  // with no way to leave, since their 3-dot no longer carries it.
+  const canOpenGroupInfo = !activeRoom.isUniversal;
+  const infoMembers = activeRoom.members || [];
+  const infoAdmins = infoMembers.filter(m => m.role === 'admin');
   return (
     <KeyboardAvoidingView style={{ flex: 1, paddingTop: topInset }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      {/* Thread header — hidden entirely in headerless mode (the AI Leads hub
-          provides its own Groups · Chats · My Post · Matching sub-row instead). */}
+      {/* Thread header — hidden entirely in headerless mode, where the AI Leads
+          hub supplies the single Groups · Chats · My Post · Matching tab row
+          instead (it used to supply only Groups · Chats). */}
       {!headerless && (
       <View style={s.threadHeader}>
         {!hideThreadBack && (
           <Pressable onPress={closeRoom} style={{ padding: 4 }}><ChevronLeft size={22} color={colors.ink} /></Pressable>
         )}
-        {/* Universal room gets the globe symbol (matches the room list) so this
-            header reads as "the shared room", not a repeat of the tab name. */}
-        <View style={[s.threadAvatar, activeRoom.isUniversal && { backgroundColor: colors.brand }]}>
-          <Text style={{ fontSize: 15 }}>
-            {activeRoom.isUniversal ? '🌐' : (ROOM_ICON[activeRoom.roomType] || '💬')}
-          </Text>
-        </View>
-        {/* The universal room keeps membership stats as its title — the tab above
-            already names it, so repeating "AI Lead Matching" here said nothing.
-            Every other group is a NAMED thing (a company, a property, an area),
-            so the name leads and the membership count moves to the subtitle. */}
-        <View style={{ flex: 1 }}>
-          <Text style={s.threadTitle} numberOfLines={1}>
-            {activeRoom.isUniversal
-              ? `${activeRoom.members.length} members`
-              : roomDisplayName(activeRoom)}
-          </Text>
-          <Text style={s.threadSub} numberOfLines={1}>
-            {threadSubtitle}
-          </Text>
-        </View>
+        {/* Avatar + title are one tap target that opens group info, the way
+            WhatsApp does it. They used to be inert Views, so there was no way to
+            see members, admins or shared media at all. The back chevron and the
+            3-dots stay OUTSIDE this Pressable so they keep their own taps.
+            The universal room is deliberately NOT pressable: it has no owner, no
+            Exit (canLeave === false), a member list that grows with every signup,
+            and member numbers that must never be shown there. */}
+        <Pressable
+          onPress={canOpenGroupInfo ? () => setShowGroupInfo(true) : undefined}
+          disabled={!canOpenGroupInfo}
+          style={s.threadIdentity}
+          accessibilityRole="button"
+          accessibilityLabel="Group info"
+        >
+          {/* Universal room gets the globe symbol (matches the room list) so this
+              header reads as "the shared room", not a repeat of the tab name. */}
+          <View style={[s.threadAvatar, activeRoom.isUniversal && { backgroundColor: colors.brand }]}>
+            <Text style={{ fontSize: 15 }}>
+              {activeRoom.isUniversal ? '🌐' : (ROOM_ICON[activeRoom.roomType] || '💬')}
+            </Text>
+          </View>
+          {/* The universal room keeps membership stats as its title — the tab above
+              already names it, so repeating "AI Lead Matching" here said nothing.
+              Every other group is a NAMED thing (a company, a property, an area),
+              so the name leads and the membership count moves to the subtitle. */}
+          <View style={{ flex: 1 }}>
+            <Text style={s.threadTitle} numberOfLines={1}>
+              {activeRoom.isUniversal
+                ? `${activeRoom.members.length} members`
+                : roomDisplayName(activeRoom)}
+            </Text>
+            <Text style={s.threadSub} numberOfLines={1}>
+              {threadSubtitle}
+            </Text>
+          </View>
+        </Pressable>
 
         {/* AI 3-dot menu in the header (only visible when AI mode is active) */}
         {aiAllowed && aiActive && (
@@ -2246,9 +2464,12 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
           </View>
         )}
 
-        {/* Area groups have no project banner, so their lifecycle menu lives in
-            the thread header. Project groups use the dots on the blue banner. */}
-        {!activeRoom.isUniversal && !proj && (
+        {/* Area / builder groups have no project banner, so their media menu lives
+            in the thread header. Project groups use the dots on the blue banner.
+            Now gated on hasProjectMedia as well: once Exit / Delete moved into
+            group info, this menu had nothing left for a group with no linked
+            project, so the dots opened an empty sheet. */}
+        {!activeRoom.isUniversal && !proj && hasProjectMedia && (
           <Pressable
             onPress={() => setShowRoomMenu(v => !v)}
             style={s.headerAiDots}
@@ -2280,9 +2501,12 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
           </>
         )}
 
-        {/* Single group menu. The media actions used to sit behind a nested
+        {/* Project-media menu. The media actions used to sit behind a nested
             "Project media" item, so the first tap showed only two options and
-            the download actions needed a second hop. */}
+            the download actions needed a second hop.
+            Exit Group / Delete Group used to be here too. They now live ONLY in
+            the group-info sheet, so each action exists in exactly one place
+            instead of the menu and the sheet both offering it. */}
         {showRoomMenu && (
           <View style={s.menu}>
             {hasProjectMedia && (
@@ -2301,37 +2525,32 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                 </Pressable>
               </>
             )}
-            {canLeave && (
-              <Pressable style={s.menuItem} onPress={handleLeave}>
-                <LogOut size={15} color={colors.muted2} /><Text style={s.menuText}>Exit Group</Text>
-              </Pressable>
-            )}
-            {canDelete && (
-              <Pressable style={s.menuItem} onPress={handleDelete}>
-                <Trash2 size={15} color={colors.red} /><Text style={[s.menuText, { color: colors.red }]}>Delete Group</Text>
-              </Pressable>
-            )}
           </View>
         )}
       </View>
       )}
 
-      {/* Headerless mode: Action buttons row below the tabs */}
-      {headerless && aiAllowed && (
+      {/* Headerless mode: AI 3-dot row below the hub's tab row.
+          This row used to also carry the "My Post" and "Matching" pills (filled
+          green / orange-bordered). They now live at the right-hand end of the
+          hub's single sub-row, alongside the Groups · Chats tabs and keeping this
+          exact pill styling, because the user asked for all four controls on one
+          line — keeping them here as well would have shown each action twice.
+          aiPost / aiMatching are untouched; the hub calls them through
+          onActionsReady. Only the 3-dot menu stays, because its dropdown
+          is anchored inside this component, so the row is now rendered only when
+          AI mode is actually active (it was `headerless && aiAllowed` before,
+          which kept an empty bar on screen once the pills were gone).
+          Known consequence: the whole ~42px bar now mounts/unmounts with AI mode
+          and shifts the thread down/up, where before the bar was stable and only
+          the 3-dot inside it toggled. Accepted over painting an empty white strip.
+          `aiAllowed` is kept for readability even though aiActive = aiMode &&
+          aiAllowed already implies it. */}
+      {headerless && aiAllowed && aiActive && (
         <View style={s.aiActionBar}>
-          <Pressable onPress={aiPost} style={[s.headerAiBtn, { backgroundColor: '#F0FDF4', borderColor: colors.greenBorder }]}>
-            <Building2 size={13} color={colors.greenText} />
-            <Text style={[s.headerAiBtnText, { color: colors.greenText }]}>My Post</Text>
+          <Pressable onPress={() => setShowAiMenu(v => !v)} style={s.headerAiDots}>
+            <MoreVertical size={18} color={colors.ink} />
           </Pressable>
-          <Pressable onPress={aiMatching} style={[s.headerAiBtn, { backgroundColor: colors.brandTint, borderColor: `${colors.brand}55` }]}>
-            <Search size={13} color={colors.brand} />
-            <Text style={[s.headerAiBtnText, { color: colors.brand }]}>Matching</Text>
-          </Pressable>
-          {aiActive && (
-            <Pressable onPress={() => setShowAiMenu(v => !v)} style={s.headerAiDots}>
-              <MoreVertical size={18} color={colors.ink} />
-            </Pressable>
-          )}
         </View>
       )}
 
@@ -2429,13 +2648,20 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={bp.stripRow}
             >
+              {/* Details now goes through handlePropertyViewDetails, the SAME path
+                  the inventory cards use. It used to call a local compact handler
+                  that built a four-field `compact: true` sheet — and because the
+                  media block is gated on !compact, the gallery, videos, brochure
+                  and layout of a builder's own property never rendered. */}
               {builderProjects.map(project => (
                 <BuilderPropertyCard
                   key={project.id}
                   project={project}
                   opening={joiningId === project.id}
-                  onDetails={handleBuilderProjectDetails}
+                  sharing={sharingId === project.id}
+                  onDetails={(p) => handlePropertyViewDetails(p.id)}
                   onOpenGroup={handleOpenProjectGroup}
+                  onShare={(p) => handleShareProject(p.id)}
                 />
               ))}
             </ScrollView>
@@ -2683,6 +2909,23 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                 {viewProperty?.subtitle ? <Text style={pd.headSub} numberOfLines={1}>📍 {viewProperty.subtitle}</Text> : null}
               </View>
               {viewProperty?.price ? <Text style={pd.cardPrice}>{viewProperty.price}</Text> : null}
+              {/* Share is offered only when the sheet was built from a real
+                  project. Card-only fallbacks and lead/match sheets have nothing
+                  shareable, so no button appears there. */}
+              {!!viewProperty?.shareProjectId && (
+                <Pressable
+                  onPress={() => handleShareProject(viewProperty.shareProjectId)}
+                  disabled={sharingId === viewProperty.shareProjectId}
+                  style={[pd.shareBtn, sharingId === viewProperty.shareProjectId && { opacity: 0.6 }]}
+                  hitSlop={6}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Share ${viewProperty?.title || 'property'}`}
+                >
+                  {sharingId === viewProperty.shareProjectId
+                    ? <ActivityIndicator size="small" color={colors.brand} />
+                    : <Share2 size={16} color={colors.brand} />}
+                </Pressable>
+              )}
               <Pressable onPress={() => setViewProperty(null)} hitSlop={8}><X size={20} color={colors.ink} /></Pressable>
             </View>
 
@@ -2691,19 +2934,48 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                 <Image source={{ uri: viewProperty.image }} style={pd.detailHero} resizeMode="cover" />
               )}
 
-              <View style={pd.detailList}>
-                {(viewProperty?.fields || []).map((f: any, i: number) => (
-                  <View key={i} style={pd.detailRow}>
-                    <Text style={pd.detailLabel}>{f.label}</Text>
-                    <Text style={pd.detailValue} numberOfLines={3}>{f.value}</Text>
+              {/* Two shapes, deliberately: `sections` is the full-project detail
+                  view (Overview / Pricing / Configuration / Amenities / Contact),
+                  `fields` is the single flat list every other caller still builds
+                  (Preview Info, lead cards, match cards, the draft post card).
+                  Adding a shape instead of changing one kept those six callers
+                  untouched. */}
+              {Array.isArray(viewProperty?.sections) && viewProperty.sections.length > 0 ? (
+                viewProperty.sections.map((sec: any, si: number) => (
+                  <View key={`${sec.title}-${si}`} style={pd.section}>
+                    <Text style={pd.sectionTitle}>{sec.title}</Text>
+                    <View style={pd.detailList}>
+                      {sec.fields.map((f: any, i: number) => (
+                        <View key={i} style={pd.detailRow}>
+                          <Text style={pd.detailLabel}>{f.label}</Text>
+                          <Text style={pd.detailValue} numberOfLines={4}>{f.value}</Text>
+                        </View>
+                      ))}
+                    </View>
                   </View>
-                ))}
-              </View>
+                ))
+              ) : (
+                <View style={pd.detailList}>
+                  {(viewProperty?.fields || []).map((f: any, i: number) => (
+                    <View key={i} style={pd.detailRow}>
+                      <Text style={pd.detailLabel}>{f.label}</Text>
+                      <Text style={pd.detailValue} numberOfLines={3}>{f.value}</Text>
+                    </View>
+                  ))}
+                </View>
+              )}
 
               {/* Preview Info is deliberately short: basics only, no media. */}
               {!viewProperty?.compact && (viewProperty?.galleryImages?.length > 0 || viewProperty?.videos?.length > 0 || viewProperty?.brochureUrl || viewProperty?.layoutImage) && (
                 <View style={pd.mediaSection}>
-                  <Text style={pd.mediaTitle}>Media</Text>
+                  {/* Count in the heading, so a 20-photo gallery reads as one even
+                      before the user scrolls the thumbnail strip sideways. */}
+                  <Text style={pd.mediaTitle}>
+                    {['Media',
+                      viewProperty?.galleryImages?.length ? `${viewProperty.galleryImages.length} photos` : '',
+                      viewProperty?.videos?.length ? `${viewProperty.videos.length} videos` : '',
+                    ].filter(Boolean).join(' · ')}
+                  </Text>
 
                   {viewProperty?.galleryImages?.length > 0 && (
                     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
@@ -2727,8 +2999,11 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                       </Pressable>
                     ))}
                     {viewProperty?.brochureUrl && (
-                      <Pressable style={pd.mediaBtn} onPress={() => Linking.openURL(viewProperty.brochureUrl)}>
-                        <FileText size={13} color={colors.brand} /><Text style={pd.mediaBtnText}>Brochure</Text>
+                      <Pressable
+                        style={pd.mediaBtn}
+                        onPress={() => Linking.openURL(viewProperty.brochureUrl).catch(() => toast.show('Could not open the brochure', 'error'))}
+                      >
+                        <FileText size={13} color={colors.brand} /><Text style={pd.mediaBtnText}>Brochure PDF</Text>
                       </Pressable>
                     )}
                   </View>
@@ -2738,6 +3013,197 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
           </Pressable>
         </Pressable>
       </Modal>
+
+      {/* ── Group info (WhatsApp-style) ──
+          Opened by tapping the thread header. Before this there was no way to see
+          who is in a group, who runs it, or what has been shared in it — and Exit
+          Group / Delete Group were buried in the 3-dot menu, which is where the
+          user did not expect them. Both actions live here now, and ONLY here.
+
+          The root scroller is a FlatList over the members, with everything above
+          them in ListHeaderComponent and the group actions in ListFooterComponent.
+          A .map() of members inside a ScrollView would render every row of a large
+          group up front; nesting a FlatList inside a ScrollView would warn and
+          defeat virtualization outright. ── */}
+      <Modal visible={showGroupInfo} transparent animationType="slide" onRequestClose={() => setShowGroupInfo(false)}>
+        <Pressable style={pd.overlay} onPress={() => setShowGroupInfo(false)}>
+          <Pressable style={pd.sheet} onPress={() => {}}>
+            <View style={pd.head}>
+              <Users size={18} color={colors.brand} />
+              <View style={{ flex: 1 }}>
+                <Text style={pd.headTitle}>Group info</Text>
+                <Text style={pd.headSub} numberOfLines={1}>{roomDisplayName(activeRoom)}</Text>
+              </View>
+              <Pressable onPress={() => setShowGroupInfo(false)} hitSlop={8}><X size={20} color={colors.ink} /></Pressable>
+            </View>
+
+            <FlatList
+              // flexShrink (not a percentage maxHeight): pd.sheet is already
+              // capped at 88% of the overlay, and RN children default to
+              // flexShrink: 0 — without this the list would size to ALL its rows
+              // and get clipped by the sheet instead of scrolling inside it.
+              style={{ flexShrink: 1 }}
+              data={infoMembers}
+              keyExtractor={(m, i) => `${m.user.id || 'member'}-${i}`}
+              contentContainerStyle={{ paddingBottom: 12 }}
+              showsVerticalScrollIndicator
+              ListHeaderComponent={(
+                <View style={gi.header}>
+                  <View style={gi.avatar}>
+                    <Text style={{ fontSize: 30 }}>{ROOM_ICON[activeRoom.roomType] || '💬'}</Text>
+                  </View>
+                  <View style={gi.nameRow}>
+                    <Text style={gi.name} numberOfLines={2}>{roomDisplayName(activeRoom)}</Text>
+                    {/* Green stays the verification colour everywhere in the app. */}
+                    {activeRoom.builder?.isVerified && <BadgeCheck size={16} color={colors.greenText} />}
+                  </View>
+                  <Text style={gi.counts}>
+                    {[
+                      `${infoMembers.length} member${infoMembers.length !== 1 ? 's' : ''}`,
+                      // Builder rooms only: a project room IS one property, so
+                      // "18 projects" there would be nonsense.
+                      activeRoom.roomType === 'builder' && builderProjects.length > 0
+                        ? `${builderProjects.length} project${builderProjects.length !== 1 ? 's' : ''}`
+                        : '',
+                      activeRoom.builder?.isVerified ? 'Verified' : '',
+                    ].filter(Boolean).join(' · ')}
+                  </Text>
+
+                  {infoAdmins.length > 0 && (
+                    <View style={gi.block}>
+                      <Text style={gi.blockTitle}>{infoAdmins.length === 1 ? 'Admin' : 'Admins'}</Text>
+                      {infoAdmins.map((m, i) => (
+                        <Text key={`${m.user.id || 'admin'}-${i}`} style={gi.adminLine} numberOfLines={1}>
+                          {m.user.name || 'Member'}
+                          {m.user.companyName ? ` · ${m.user.companyName}` : ''}
+                        </Text>
+                      ))}
+                    </View>
+                  )}
+
+                  {/* Media & Links. The endpoint ships in the backend phase, so a
+                      failure resolves to an empty list — this section is never an
+                      error, and it never invents data it does not have. */}
+                  <View style={gi.block}>
+                    <Text style={gi.blockTitle}>Media & Links</Text>
+                    {loadingGroupMedia ? (
+                      <ActivityIndicator color={colors.brand} style={{ alignSelf: 'flex-start', paddingVertical: 6 }} />
+                    ) : !groupMedia || (groupMedia.media.length === 0 && groupMedia.links.length === 0) ? (
+                      <Text style={gi.emptyText}>Nothing shared in this group yet.</Text>
+                    ) : (
+                      <>
+                        {groupMedia.media.length > 0 && (
+                          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+                            {groupMedia.media.map(item => (
+                              item.messageType === 'image' ? (
+                                <Pressable key={item.id} onPress={() => Linking.openURL(item.url).catch(() => {})}>
+                                  <Image source={{ uri: item.url }} style={pd.mediaThumb} resizeMode="cover" />
+                                </Pressable>
+                              ) : (
+                                <Pressable key={item.id} style={pd.mediaBtn} onPress={() => Linking.openURL(item.url).catch(() => {})}>
+                                  <FileText size={13} color={colors.brand} />
+                                  <Text style={pd.mediaBtnText} numberOfLines={1}>{item.name || 'Document'}</Text>
+                                </Pressable>
+                              )
+                            ))}
+                          </ScrollView>
+                        )}
+                        {groupMedia.links.length > 0 && (
+                          <View style={gi.linkList}>
+                            {groupMedia.links.map(link => (
+                              <Pressable key={link.id} onPress={() => Linking.openURL(link.url).catch(() => {})}>
+                                <Text style={gi.linkText} numberOfLines={1}>{link.url}</Text>
+                              </Pressable>
+                            ))}
+                          </View>
+                        )}
+                      </>
+                    )}
+                  </View>
+
+                  <Text style={gi.blockTitle}>
+                    {infoMembers.length === 1 ? 'Member' : 'Members'}
+                  </Text>
+                </View>
+              )}
+              renderItem={({ item: m }) => {
+                const isMe = !!user?.id && m.user.id === user.id;
+                const phone = m.user.phone;
+                return (
+                  <View style={gi.memberRow}>
+                    <View style={gi.memberAvatar}>
+                      <Text style={gi.memberInitial}>{(m.user.name || '?').charAt(0).toUpperCase()}</Text>
+                    </View>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={gi.memberName} numberOfLines={1}>
+                        {m.user.name || 'Member'}{isMe ? ' (You)' : ''}
+                      </Text>
+                      <Text style={gi.memberMeta} numberOfLines={1}>
+                        {[m.user.role, m.user.companyName].filter(Boolean).join(' · ')}
+                      </Text>
+                    </View>
+                    {m.role === 'admin' && (
+                      <View style={gi.adminPill}><Text style={gi.adminPillText}>Admin</Text></View>
+                    )}
+                    {/* Call / WhatsApp appear only when the server actually sent a
+                        number for this member — it strips phone outside builder and
+                        project rooms. Never gate these on roomType here instead:
+                        that would hide the UI while still shipping the numbers. */}
+                    {!!phone && !isMe && (
+                      <>
+                        <Pressable
+                          onPress={() => handleMemberCall(phone)}
+                          style={gi.contactBtn}
+                          hitSlop={6}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Call ${m.user.name || 'member'}`}
+                        >
+                          <Phone size={13} color={colors.brand} />
+                        </Pressable>
+                        <Pressable
+                          onPress={() => handleMemberWhatsApp(phone)}
+                          style={[gi.contactBtn, gi.contactBtnWa]}
+                          hitSlop={6}
+                          accessibilityRole="button"
+                          accessibilityLabel={`WhatsApp ${m.user.name || 'member'}`}
+                        >
+                          <MessageCircle size={13} color={colors.greenText} />
+                        </Pressable>
+                      </>
+                    )}
+                  </View>
+                );
+              }}
+              ListEmptyComponent={<Text style={gi.emptyText}>No members to show.</Text>}
+              ListFooterComponent={(
+                // Exactly the same canLeave / canDelete derivations the 3-dot menu
+                // used, and the same handleLeave / handleDelete. Moving where an
+                // action lives must not change who is allowed to perform it.
+                (canLeave || canDelete) ? (
+                  <View style={gi.actions}>
+                    {canLeave && (
+                      <Pressable style={gi.actionRow} onPress={handleLeave} accessibilityRole="button">
+                        <LogOut size={16} color={colors.muted2} />
+                        <Text style={gi.actionText}>Exit Group</Text>
+                      </Pressable>
+                    )}
+                    {canDelete && (
+                      <Pressable style={gi.actionRow} onPress={handleDelete} accessibilityRole="button">
+                        <Trash2 size={16} color={colors.red} />
+                        <Text style={[gi.actionText, { color: colors.red }]}>Delete Group</Text>
+                      </Pressable>
+                    )}
+                  </View>
+                ) : null
+              )}
+            />
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Share sheet (tracked link, QR, brochure) for a builder's property —
+          opened from the card's Share icon or the detail sheet's Share button. */}
+      {shareProject && <ShareModal project={shareProject} onClose={() => setShareProject(null)} />}
 
       {/* ── Disappearing messages options (WhatsApp-style) ── */}
       <Modal visible={showDisappear} transparent animationType="slide" onRequestClose={() => setShowDisappear(false)}>
@@ -3652,17 +4118,20 @@ const s = StyleSheet.create({
   primaryBtnText: { color: '#fff', fontWeight: '800', fontSize: 13 },
 
   threadHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 11, backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.line, zIndex: 20 },
+  // Avatar + title/subtitle as ONE tap target that opens group info. It carries
+  // the row layout the header itself used to provide for these two children.
+  threadIdentity: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 10 },
   threadAvatar: { width: 36, height: 36, borderRadius: 18, backgroundColor: colors.brandTint, alignItems: 'center', justifyContent: 'center' },
   threadTitle: { fontSize: 14.5, fontWeight: '800', color: colors.ink, letterSpacing: -0.2 },
   threadSub: { fontSize: 10.5, color: colors.muted, marginTop: 1 },
-  // AI action row in the group header (Post · Matching · 3-dot)
+  // AI 3-dot row in the group header. `headerAiBtn` / `headerAiBtnText` (the
+  // rounded pill used for the old Post · Matching buttons) were dropped with
+  // those buttons — the hub's tab row renders both as plain tabs now.
   headerAiRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  headerAiBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 9, paddingVertical: 6, borderRadius: 16, borderWidth: 1 },
-  headerAiBtnText: { fontSize: 11, fontWeight: '800' },
   headerAiDots: { padding: 4 },
-  // Standalone AI action row used in headerless mode (the AI Leads hub supplies
-  // its own navigation above). Same button styling as the in-header row, so the
-  // two placements look identical.
+  // Standalone AI row used in headerless mode (the AI Leads hub supplies its own
+  // navigation above). It used to hold the Post / Matching pills as well; now it
+  // only carries the 3-dot, whose dropdown is anchored to this component.
   aiActionBar: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 6,
     paddingHorizontal: 14, paddingVertical: 8,
@@ -3818,6 +4287,18 @@ const bp = StyleSheet.create({
   btnGhost: { backgroundColor: colors.white, borderWidth: 1, borderColor: `${colors.brand}55` },
   btnSolid: { backgroundColor: colors.brand },
   btnText: { fontSize: 9, fontWeight: '800' },
+  // Fixed width, no flex: the two labelled buttons keep their share of the 186 dp
+  // card and this one takes only what an icon needs, so nothing clips.
+  btnIcon: {
+    width: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 7,
+    borderRadius: 8,
+    backgroundColor: colors.white,
+    borderWidth: 1,
+    borderColor: `${colors.brand}55`,
+  },
 });
 
 const ip = StyleSheet.create({
@@ -3852,6 +4333,11 @@ const pd = StyleSheet.create({
   detailLabel: { fontSize: 11, fontWeight: '700', color: colors.muted2 },
   detailValue: { fontSize: 12, fontWeight: '700', color: colors.ink, flexShrink: 1, textAlign: 'right' },
   detailHero: { width: '100%', height: 170, borderRadius: 14, backgroundColor: colors.line },
+  // Labelled group of fields in the full-project detail view. Same weight/size
+  // family as mediaTitle, so Overview / Pricing / Media read as one hierarchy.
+  section: { gap: 6 },
+  sectionTitle: { fontSize: 12, fontWeight: '800', color: colors.ink },
+  shareBtn: { padding: 7, borderRadius: 9, backgroundColor: colors.brandTint, borderWidth: 1, borderColor: `${colors.brand}33` },
   mediaSection: { gap: 8, borderTopWidth: 1, borderTopColor: colors.line, paddingTop: 10 },
   mediaTitle: { fontSize: 12, fontWeight: '800', color: colors.ink },
   mediaThumb: { width: 100, height: 72, borderRadius: 10, backgroundColor: colors.line },
@@ -3872,6 +4358,34 @@ const pd = StyleSheet.create({
   badge: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 8 },
   badgeText: { fontSize: 8.5, fontWeight: '800', letterSpacing: 0.3 },
   empty: { fontSize: 12, color: colors.muted2, textAlign: 'center', paddingVertical: 28, paddingHorizontal: 10, lineHeight: 18 },
+});
+
+// Group info sheet — avatar / counts / admins / media / member rows / actions.
+// Plain StyleSheet with theme tokens only (NativeWind crashes production builds).
+const gi = StyleSheet.create({
+  header: { gap: 10, paddingBottom: 6 },
+  avatar: { alignSelf: 'center', width: 72, height: 72, borderRadius: 36, backgroundColor: colors.brandTint, alignItems: 'center', justifyContent: 'center' },
+  nameRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
+  name: { fontSize: 16, fontWeight: '800', color: colors.ink, textAlign: 'center', flexShrink: 1 },
+  counts: { fontSize: 11.5, color: colors.muted2, textAlign: 'center', fontWeight: '700' },
+  block: { gap: 6, borderTopWidth: 1, borderTopColor: colors.line, paddingTop: 10 },
+  blockTitle: { fontSize: 10, fontWeight: '800', color: colors.muted, letterSpacing: 0.4, textTransform: 'uppercase' },
+  adminLine: { fontSize: 12.5, fontWeight: '700', color: colors.ink },
+  emptyText: { fontSize: 11.5, color: colors.muted, paddingVertical: 4 },
+  linkList: { gap: 5 },
+  linkText: { fontSize: 11.5, fontWeight: '700', color: colors.brand },
+  memberRow: { flexDirection: 'row', alignItems: 'center', gap: 9, paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: colors.line },
+  memberAvatar: { width: 34, height: 34, borderRadius: 17, backgroundColor: colors.brandTint, alignItems: 'center', justifyContent: 'center' },
+  memberInitial: { fontSize: 13, fontWeight: '800', color: colors.brand },
+  memberName: { fontSize: 13, fontWeight: '800', color: colors.ink },
+  memberMeta: { fontSize: 10.5, color: colors.muted2, textTransform: 'capitalize' },
+  adminPill: { backgroundColor: colors.brandTint, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 },
+  adminPillText: { fontSize: 9, fontWeight: '800', color: colors.brand, letterSpacing: 0.2 },
+  contactBtn: { width: 30, height: 30, borderRadius: 9, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.brandTint, borderWidth: 1, borderColor: `${colors.brand}33` },
+  contactBtnWa: { backgroundColor: colors.greenBg, borderColor: colors.greenBorder },
+  actions: { paddingTop: 12, gap: 2 },
+  actionRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 12 },
+  actionText: { fontSize: 13, fontWeight: '800', color: colors.muted2 },
 });
 
 const cs = StyleSheet.create({

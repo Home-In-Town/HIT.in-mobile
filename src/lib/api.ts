@@ -1460,7 +1460,21 @@ export interface GroupRoom {
   };
   area?: { city: string; location: string };
   createdBy?: { id: string; name?: string };
-  members: Array<{ user: { id: string; name: string; role: string; companyName?: string }; role: string; joinedAt?: string }>;
+  /**
+   * Builder rooms only — how many PUBLISHED projects that builder has. Supplied
+   * by the server from a single aggregation over the whole room list, never a
+   * count per room (that would be an N+1 on a list that routinely holds dozens
+   * of groups). Optional because the server field lands in the backend phase:
+   * until then the client simply omits the segment that renders it.
+   */
+  projectCount?: number;
+  /**
+   * `phone` is only sent for rooms where the member list is a contact list —
+   * builder and project groups. The server strips it everywhere else (universal
+   * and area rooms), so the client must treat it as "may be absent" and only
+   * render Call / WhatsApp when it is actually present.
+   */
+  members: Array<{ user: { id: string; name: string; role: string; companyName?: string; phone?: string }; role: string; joinedAt?: string }>;
   description: string;
   isUniversal?: boolean;
   canLeave?: boolean;
@@ -1565,7 +1579,9 @@ function transformGroupRoom(raw: any): GroupRoom {
         : { id: String(raw.createdBy) })
       : undefined,
     members: (raw?.members || []).map((m: any) => ({
-      user: { id: String(m?.user?._id || m?.user?.id || ''), name: m?.user?.name || '', role: m?.user?.role || '', companyName: m?.user?.companyName || '' },
+      // phone is left undefined when the server did not send one, so a member row
+      // can distinguish "no number available" from an empty string.
+      user: { id: String(m?.user?._id || m?.user?.id || ''), name: m?.user?.name || '', role: m?.user?.role || '', companyName: m?.user?.companyName || '', phone: m?.user?.phone || undefined },
       role: m?.role || 'member',
       joinedAt: m?.joinedAt,
     })),
@@ -1575,7 +1591,34 @@ function transformGroupRoom(raw: any): GroupRoom {
     isAutoCreated: !!raw?.isAutoCreated,
     lastActivity: raw?.lastActivity || raw?.updatedAt || '',
     unreadCount: Number(raw?.unreadCount) || 0,
+    // undefined (not 0) when the server has not sent the field, so the UI can
+    // omit the segment entirely instead of rendering a misleading "0 projects".
+    projectCount: Number(raw?.projectCount) || undefined,
   };
+}
+
+/**
+ * One photo / document shared in a group. Returned by the room-media endpoint,
+ * which the group-info sheet reads — the thread itself still renders media from
+ * the message list.
+ */
+export interface GroupMedia {
+  id: string;
+  messageType: 'image' | 'file';
+  url: string;
+  name?: string;
+  mimeType?: string;
+  size?: number;
+  createdAt: string;
+  sender?: { id: string; name: string; role?: string };
+}
+
+/** A link someone pasted into a group's chat. */
+export interface GroupLink {
+  id: string;
+  url: string;
+  createdAt: string;
+  sender?: { id: string; name: string; role?: string };
 }
 
 export const groupChatApi = {
@@ -1640,6 +1683,46 @@ export const groupChatApi = {
       matchResults: m.matchResults,
       createdAt: m.createdAt || '',
     }));
+  },
+  /**
+   * Photos / documents / links shared in a room, for the group-info sheet.
+   *
+   * The endpoint itself is added in the backend phase of this feature, so a 404
+   * here is expected on current production. Callers MUST treat any failure as
+   * "no media yet" (empty section) rather than surfacing an error — the sheet's
+   * other sections are useful on their own.
+   */
+  async getRoomMedia(roomId: string, params?: { page?: number; limit?: number }): Promise<{ media: GroupMedia[]; links: GroupLink[]; page: number; limit: number }> {
+    const q = new URLSearchParams();
+    if (params?.page) q.set('page', String(params.page));
+    if (params?.limit) q.set('limit', String(params.limit));
+    const r = await fetch(
+      `${API_URL}/group-chat/rooms/${encodeURIComponent(roomId)}/media${q.toString() ? `?${q.toString()}` : ''}`,
+      { headers: await authHeaders() },
+    );
+    const data = await handleResponse<{ media?: any[]; links?: any[]; page?: number; limit?: number }>(r);
+    const sender = (s: any) => (s ? { id: String(s._id || s.id || ''), name: s.name || '', role: s.role } : undefined);
+    return {
+      media: (data.media || []).map((m: any) => ({
+        id: String(m._id || m.id || ''),
+        messageType: m.messageType === 'file' ? 'file' : 'image',
+        url: m.attachment?.url || m.content || '',
+        name: m.attachment?.name,
+        mimeType: m.attachment?.mimeType,
+        size: m.attachment?.size,
+        createdAt: m.createdAt || '',
+        sender: sender(m.sender),
+      })),
+      links: (data.links || []).map((l: any) => ({
+        id: String(l._id || l.id || ''),
+        // The server sends the whole text message; the first URL in it is the link.
+        url: (String(l.content || '').match(/https?:\/\/\S+/i) || [''])[0],
+        createdAt: l.createdAt || '',
+        sender: sender(l.sender),
+      })),
+      page: Number(data.page) || 1,
+      limit: Number(data.limit) || 30,
+    };
   },
   async postMessage(roomId: string, data: {
     messageType: string;
