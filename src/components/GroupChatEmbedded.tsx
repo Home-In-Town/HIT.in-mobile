@@ -10,7 +10,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, FlatList, SectionList, Pressable, StyleSheet, ActivityIndicator,
-  TextInput, KeyboardAvoidingView, Platform, Modal, ScrollView, Switch, Alert, Share,
+  TextInput, KeyboardAvoidingView, Platform, Modal, ScrollView, Switch, Alert, Share, Animated,
 } from 'react-native';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
@@ -788,6 +788,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const [myProjects, setMyProjects] = useState<any[]>([]); // backend published projects (source of truth)
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [viewProperty, setViewProperty] = useState<any | null>(null); // View Property detail sheet
+  const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   // Properties of the builder whose company group is open. Loaded per room, so
   // switching groups never shows the previous builder's inventory.
   const [builderProjects, setBuilderProjects] = useState<OwnerPortfolioProject[]>([]);
@@ -1658,7 +1659,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
    * project — both used to only raise "not linked to a project", which read as a
    * dead button. The card's own data is a valid fallback detail view.
    */
-  const handlePropertyViewDetails = useCallback(async (projectId: string, fallback?: InventoryCard) => {
+  const handlePropertyViewDetails = useCallback(async (projectId: string, fallback?: InventoryCard, sourceMessageId?: string) => {
     const sheetFromCard = (inv?: InventoryCard) => {
       const price = inv?.priceRange?.min ? fmtPrice(inv.priceRange.min * 100000) : '';
       const bhk = inv?.bhkOptions?.filter(Boolean).join(' / ') || '';
@@ -1681,7 +1682,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
 
     if (!projectId) {
       if (!fallback) { toast.show('No details available for this card', 'error'); return; }
-      setViewProperty(sheetFromCard(fallback));
+      setViewProperty({ ...sheetFromCard(fallback), sourceMessageId });
       return;
     }
 
@@ -1777,11 +1778,12 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
         videos: mediaUrls((p as any).videos),
         layoutImage: oneUrl((p as any).layoutImage),
         brochureUrl: oneUrl((p as any).brochureUrl),
+        sourceMessageId,
       });
     } catch {
       // Project fetch failed (deleted / not visible) — still show the card data
       // rather than leaving the button looking broken.
-      if (fallback) setViewProperty(sheetFromCard(fallback));
+      if (fallback) setViewProperty({ ...sheetFromCard(fallback), sourceMessageId });
       else toast.show('Could not load property details', 'error');
     }
   }, [toast]);
@@ -2037,9 +2039,10 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
         onDeleteMessage={handleDeleteMessage}
         canModerate={canUploadMedia}
         projectId={(activeRoom?.project as any)?.id || (activeRoom?.project as any)?._id || ''}
+        highlighted={msg.id === highlightedMessageId}
       />
     ),
-    [user?.id, handleInterested, handlePropertyViewDetails, handlePropertyCall, handleJoinPropertyGroup, handlePreviewMatch, handleDeleteMessage, canUploadMedia, activeRoom?.project]
+    [user?.id, handleInterested, handlePropertyViewDetails, handlePropertyCall, handleJoinPropertyGroup, handlePreviewMatch, handleDeleteMessage, canUploadMedia, activeRoom?.project, highlightedMessageId]
   );
 
   // ── Project media menu ──
@@ -2751,6 +2754,12 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
             keyExtractor={m => m.id}
             contentContainerStyle={{ paddingHorizontal: 14, paddingVertical: 14, gap: 10 }}
             onContentSizeChange={() => flatRef.current?.scrollToEnd({ animated: false })}
+            onScrollToIndexFailed={(info) => {
+              flatRef.current?.scrollToOffset({
+                offset: info.averageItemLength * info.index,
+                animated: true,
+              });
+            }}
             renderItem={renderMessage}
           />
 
@@ -2967,8 +2976,42 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
       </Modal>
 
       {/* ── View Property detail sheet ── */}
-      <Modal visible={!!viewProperty} transparent animationType="slide" onRequestClose={() => setViewProperty(null)}>
-        <Pressable style={pd.overlay} onPress={() => setViewProperty(null)}>
+      <Modal visible={!!viewProperty} transparent animationType="slide" onRequestClose={() => {
+        const srcMsgId = viewProperty?.sourceMessageId;
+        setViewProperty(null);
+        if (srcMsgId) {
+          const idx = messages.findIndex(m => m.id === srcMsgId);
+          if (idx >= 0) {
+            setTimeout(() => {
+              flatRef.current?.scrollToIndex({
+                index: idx,
+                animated: true,
+                viewPosition: 0.5,
+              });
+              setHighlightedMessageId(srcMsgId);
+              setTimeout(() => setHighlightedMessageId(null), 2500);
+            }, 300);
+          }
+        }
+      }}>
+        <Pressable style={pd.overlay} onPress={() => {
+          const srcMsgId = viewProperty?.sourceMessageId;
+          setViewProperty(null);
+          if (srcMsgId) {
+            const idx = messages.findIndex(m => m.id === srcMsgId);
+            if (idx >= 0) {
+              setTimeout(() => {
+                flatRef.current?.scrollToIndex({
+                  index: idx,
+                  animated: true,
+                  viewPosition: 0.5,
+                });
+                setHighlightedMessageId(srcMsgId);
+                setTimeout(() => setHighlightedMessageId(null), 2500);
+              }, 300);
+            }
+          }
+        }}>
           <Pressable style={pd.sheet} onPress={() => {}}>
             <View style={pd.head}>
               <View style={pd.cardIcon}><Building2 size={22} color={colors.brand} /></View>
@@ -2994,7 +3037,24 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                     : <Share2 size={16} color={colors.brand} />}
                 </Pressable>
               )}
-              <Pressable onPress={() => setViewProperty(null)} hitSlop={8}><X size={20} color={colors.ink} /></Pressable>
+              <Pressable onPress={() => {
+                const srcMsgId = viewProperty?.sourceMessageId;
+                setViewProperty(null);
+                if (srcMsgId) {
+                  const idx = messages.findIndex(m => m.id === srcMsgId);
+                  if (idx >= 0) {
+                    setTimeout(() => {
+                      flatRef.current?.scrollToIndex({
+                        index: idx,
+                        animated: true,
+                        viewPosition: 0.5,
+                      });
+                      setHighlightedMessageId(srcMsgId);
+                      setTimeout(() => setHighlightedMessageId(null), 2500);
+                    }, 300);
+                  }
+                }
+              }} hitSlop={8}><X size={20} color={colors.ink} /></Pressable>
             </View>
 
             <ScrollView style={{ maxHeight: 520 }} contentContainerStyle={{ paddingBottom: 6, gap: 12 }} showsVerticalScrollIndicator={false}>
@@ -3813,12 +3873,12 @@ const GroupMatchCard = React.memo(function GroupMatchCard({
 // Memoised: without this, every keystroke in the composer (whose state lives in
 // GroupChatEmbedded) re-rendered every visible bubble in the thread.
 const MessageBubble = React.memo(function MessageBubble({ 
-  msg, meId, onInterested, onPropertyViewDetails, onPropertyCall, onJoinPropertyGroup, onPreviewMatch, onDeleteMessage, canModerate, projectId 
+  msg, meId, onInterested, onPropertyViewDetails, onPropertyCall, onJoinPropertyGroup, onPreviewMatch, onDeleteMessage, canModerate, projectId, highlighted 
 }: {
   msg: GroupMessage; 
   meId: string; 
   onInterested: (projectId: string, messageId: string) => void;
-  onPropertyViewDetails: (projectId: string, fallback?: InventoryCard) => void;
+  onPropertyViewDetails: (projectId: string, fallback?: InventoryCard, sourceMessageId?: string) => void;
   onPropertyCall: (projectId: string, fallbackNumber?: string, posterPhone?: string) => void;
   onJoinPropertyGroup: (projectId: string) => void;
   onPreviewMatch: (match: any) => void;
@@ -3826,6 +3886,7 @@ const MessageBubble = React.memo(function MessageBubble({
   /** True when this user may remove other people's media in this room. */
   canModerate: boolean;
   projectId: string;
+  highlighted: boolean;
 }) {
   const isMe = msg.sender.id === meId;
 
@@ -3875,6 +3936,24 @@ const MessageBubble = React.memo(function MessageBubble({
     const senderName = msg.sender.name || 'Unknown';
     const isVerified = msg.sender.isVerified === true ||
       msg.sender.verificationStatus?.builder === 'verified';
+
+    // Highlight animation for auto-scroll-to-message
+    const highlightAnim = useRef(new Animated.Value(0)).current;
+
+    useEffect(() => {
+      if (highlighted) {
+        Animated.sequence([
+          Animated.timing(highlightAnim, { toValue: 1, duration: 300, useNativeDriver: false }),
+          Animated.timing(highlightAnim, { toValue: 1, duration: 1900, useNativeDriver: false }),
+          Animated.timing(highlightAnim, { toValue: 0, duration: 300, useNativeDriver: false }),
+        ]).start();
+      }
+    }, [highlighted, highlightAnim]);
+
+    const bgColor = highlightAnim.interpolate({
+      inputRange: [0, 1],
+      outputRange: ['rgba(254, 243, 199, 0)', 'rgba(254, 243, 199, 1)'],
+    });
 
     // Actions must use the card's stable project id. Falling back to the active
     // room project made every universal-room card use an empty id, and made every
@@ -3927,7 +4006,7 @@ const MessageBubble = React.memo(function MessageBubble({
 
     return (
       <View style={[mbs.cardWrap, { alignSelf: 'flex-start' }]}>
-        <View style={mbs.propertyCard}>
+        <Animated.View style={[mbs.propertyCard, { backgroundColor: bgColor }]}>
           {/* Top strip: label + who posted it */}
           <View style={mbs.propertyHeaderRow}>
             <View style={mbs.propertyLabelPill}>
@@ -3992,16 +4071,73 @@ const MessageBubble = React.memo(function MessageBubble({
           <CardActions
             tone="brand"
             actions={[
-              { key: 'details', label: 'View Details', icon: 'details', ghost: true, onPress: () => onPropertyViewDetails(cardProjectId, inv) },
+              { key: 'details', label: 'View Details', icon: 'details', ghost: true, onPress: () => onPropertyViewDetails(cardProjectId, inv, msg.id) },
               { key: 'join', label: 'Join Group', icon: 'join', onPress: () => onJoinPropertyGroup(cardProjectId) },
               { key: 'call', label: 'Call', icon: 'call', onPress: () => onPropertyCall(cardProjectId, inv.callNumber, msg.sender.phone) },
             ]}
           />
 
+          {/* Quick action buttons */}
+          <View style={mbs.propertyActions}>
+            {(inv.callNumber || msg.sender.phone) && (
+              <Pressable
+                style={mbs.propertyActionBtn}
+                onPress={() => onPropertyCall(cardProjectId, inv.callNumber, msg.sender.phone)}
+                accessibilityLabel="Call"
+              >
+                <Phone size={13} color={colors.brand} />
+              </Pressable>
+            )}
+            {(inv.callNumber || msg.sender.phone) && (
+              <Pressable
+                style={mbs.propertyActionBtn}
+                onPress={() => {
+                  const phone = inv.callNumber || msg.sender.phone || '';
+                  if (phone) Linking.openURL(`whatsapp://send?phone=${phone.replace(/\D/g, '')}`).catch(() => {});
+                }}
+                accessibilityLabel="WhatsApp"
+              >
+                <MessageCircle size={13} color={colors.greenText} />
+              </Pressable>
+            )}
+            {cardProjectId && (
+              <Pressable
+                style={mbs.propertyActionBtn}
+                onPress={() => {
+                  const projObj = typeof projectRef === 'object' && projectRef ? projectRef : undefined;
+                  if (projObj && (projObj as any).latitude && (projObj as any).longitude) {
+                    Linking.openURL(`https://www.google.com/maps?q=${(projObj as any).latitude},${(projObj as any).longitude}`).catch(() => {});
+                  } else {
+                    const query = encodeURIComponent(`${title} ${location}`.trim());
+                    Linking.openURL(`https://www.google.com/maps/search/${query}`).catch(() => {});
+                  }
+                }}
+                accessibilityLabel="Location"
+              >
+                <MapPin size={13} color={colors.blueText} />
+              </Pressable>
+            )}
+            {cardProjectId && (
+              <Pressable
+                style={mbs.propertyActionBtn}
+                onPress={async () => {
+                  try {
+                    await Share.share({
+                      message: `Check out this property: ${title}\n${location}\n${priceText}`,
+                    });
+                  } catch {}
+                }}
+                accessibilityLabel="Share"
+              >
+                <Share2 size={13} color={colors.slateText} />
+              </Pressable>
+            )}
+          </View>
+
           {!!messageClock(msg.createdAt) && (
             <Text style={mbs.propertyTime}>{messageClock(msg.createdAt)}</Text>
           )}
-        </View>
+        </Animated.View>
       </View>
     );
   }
@@ -4636,6 +4772,28 @@ const mbs = StyleSheet.create({
     fontSize: 9.5,
     fontWeight: '800',
     textAlign: 'center',
+  },
+  // Quick action buttons — icon-only row below inventory card content
+  propertyActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: colors.line,
+    marginTop: 8,
+  },
+  propertyActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 8,
+    backgroundColor: colors.cream,
+    borderWidth: 1,
+    borderColor: colors.line,
   },
   propertyTime: {
     alignSelf: 'flex-end',
