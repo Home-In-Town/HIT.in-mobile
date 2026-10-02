@@ -2070,10 +2070,9 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
         canModerate={canUploadMedia}
         projectId={(activeRoom?.project as any)?.id || (activeRoom?.project as any)?._id || ''}
         highlighted={msg.id === highlightedMessageId}
-        toast={toast}
       />
     ),
-    [user?.id, handleInterested, handlePropertyViewDetails, handlePropertyCall, handleJoinPropertyGroup, handlePreviewMatch, handleDeleteMessage, canUploadMedia, activeRoom?.project, highlightedMessageId, toast]
+    [user?.id, handleInterested, handlePropertyViewDetails, handlePropertyCall, handleJoinPropertyGroup, handlePreviewMatch, handleDeleteMessage, canUploadMedia, activeRoom?.project, highlightedMessageId]
   );
 
   // ── Project media menu ──
@@ -3857,7 +3856,7 @@ const GroupMatchCard = React.memo(function GroupMatchCard({
 // Memoised: without this, every keystroke in the composer (whose state lives in
 // GroupChatEmbedded) re-rendered every visible bubble in the thread.
 const MessageBubble = React.memo(function MessageBubble({ 
-  msg, meId, onInterested, onPropertyViewDetails, onPropertyCall, onJoinPropertyGroup, onPreviewMatch, onDeleteMessage, canModerate, projectId, highlighted, toast 
+  msg, meId, onInterested, onPropertyViewDetails, onPropertyCall, onJoinPropertyGroup, onPreviewMatch, onDeleteMessage, canModerate, projectId, highlighted 
 }: {
   msg: GroupMessage; 
   meId: string; 
@@ -3871,8 +3870,12 @@ const MessageBubble = React.memo(function MessageBubble({
   canModerate: boolean;
   projectId: string;
   highlighted: boolean;
-  toast: { show: (message: string, type: 'success' | 'error' | 'info') => void };
 }) {
+  // Toast context moved inside MessageBubble to avoid breaking memo on every
+  // parent render. The ToastProvider returns { show, success, error } where
+  // each method is stable (useCallback), but the wrapper object is created
+  // fresh each render, so passing it as a prop broke memoization.
+  const toast = useToast();
   const isMe = msg.sender.id === meId;
 
   if (msg.messageType === 'system') {
@@ -3933,6 +3936,9 @@ const MessageBubble = React.memo(function MessageBubble({
     const highlightAnim = highlightAnimRef.current;
 
     useEffect(() => {
+      // Only animate when highlighted becomes true. Without this guard, the
+      // animation would restart whenever highlighted changed (even false→false),
+      // or if a different message was highlighted mid-animation, causing a flash.
       if (highlighted) {
         Animated.sequence([
           Animated.timing(highlightAnim, { toValue: 1, duration: 300, useNativeDriver: false }),
@@ -4086,7 +4092,13 @@ const MessageBubble = React.memo(function MessageBubble({
                 onPress={() => {
                   const phone = inv.callNumber || msg.sender.phone || '';
                   if (phone) {
-                    Linking.openURL(`whatsapp://send?phone=${phone.replace(/\D/g, '')}`).catch(() => {
+                    // Normalize phone: add +91 prefix for Indian 10-digit mobiles
+                    // starting with 6-9. Numbers already prefixed remain unchanged.
+                    const cleaned = phone.replace(/\D/g, '');
+                    const normalized = (cleaned.length === 10 && /^[6-9]/.test(cleaned))
+                      ? `91${cleaned}`
+                      : cleaned;
+                    Linking.openURL(`whatsapp://send?phone=${normalized}`).catch(() => {
                       toast.show('WhatsApp nahi khul saka. Check karein ki app installed hai.', 'error');
                     });
                   }
@@ -4100,13 +4112,16 @@ const MessageBubble = React.memo(function MessageBubble({
                 Fallback Google Maps search was unreliable and could show wrong
                 locations, so button is hidden when projObj has no lat/lng. */}
             {(() => {
-              const projObj = typeof projectRef === 'object' && projectRef ? projectRef : undefined;
-              const hasCoords = projObj && (projObj as any).latitude && (projObj as any).longitude;
+              // Type-safe coordinate check. The Project type from api.ts defines
+              // latitude/longitude, so no `as any` bypass is needed. This ensures
+              // compile-time safety if the schema changes.
+              const proj = (typeof projectRef === 'object' && projectRef) ? projectRef as Project : undefined;
+              const hasCoords = proj?.latitude && proj?.longitude;
               return hasCoords ? (
                 <Pressable
                   style={mbs.propertyActionBtn}
                   onPress={() => {
-                    Linking.openURL(`https://www.google.com/maps?q=${(projObj as any).latitude},${(projObj as any).longitude}`).catch(() => {
+                    Linking.openURL(`https://www.google.com/maps?q=${proj.latitude},${proj.longitude}`).catch(() => {
                       toast.show('Maps nahi khul saka.', 'error');
                     });
                   }}
