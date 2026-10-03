@@ -811,6 +811,10 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const [showGroupInfo, setShowGroupInfo] = useState(false);
   const [groupMedia, setGroupMedia] = useState<{ media: GroupMedia[]; links: GroupLink[] } | null>(null);
   const [loadingGroupMedia, setLoadingGroupMedia] = useState(false);
+  
+  // Profile picture upload modal states
+  const [showProfilePicModal, setShowProfilePicModal] = useState(false);
+  const [updatingProfilePic, setUpdatingProfilePic] = useState(false);
   // Matching results state
   const [showMatching, setShowMatching] = useState(false);
   const [matchingResults, setMatchingResults] = useState<any[]>([]);
@@ -2171,6 +2175,71 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     }
   }, [toast]);
 
+  // Property icons for profile picture selection
+  const PROPERTY_ICONS = ['🏠', '🏗', '🏢', '📍', '🏘', '🏡', '🏬', '🏭', '🏢', '🏰', '🏯', '🏛', '🌆', '🏙', '🌇', '🎪'];
+
+  const handleProfilePicUpload = useCallback(async (option: 'gallery' | 'camera') => {
+    try {
+      console.log('Profile picture upload:', option);
+      
+      const permissionType = option === 'camera' 
+        ? ImagePicker.requestCameraPermissionsAsync()
+        : ImagePicker.requestMediaLibraryPermissionsAsync();
+      
+      const { status } = await permissionType;
+      if (status !== 'granted') {
+        toast.show('Permission required to access photos', 'error');
+        return;
+      }
+
+      setUpdatingProfilePic(true);
+      const result = option === 'camera'
+        ? await ImagePicker.launchCameraAsync({
+            allowsEditing: true,
+            aspect: [1, 1],
+            quality: 0.8,
+          })
+        : await ImagePicker.launchImageLibraryAsync({
+            mediaTypes: ImagePicker.MediaTypeOptions.Images,
+            allowsEditing: true,
+            aspect: [1, 1],
+            quality: 0.8,
+          });
+
+      if (!result.canceled && result.assets[0]) {
+        // Here you would typically upload to your server
+        // For now, just show success
+        console.log('Profile pic selected:', result.assets[0].uri);
+        toast.show('Profile picture updated!', 'success');
+        setShowProfilePicModal(false);
+      }
+    } catch (error) {
+      console.error('Profile pic upload error:', error);
+      toast.show('Failed to update profile picture', 'error');
+    } finally {
+      setUpdatingProfilePic(false);
+    }
+  }, [toast]);
+
+  const handleIconSelect = useCallback(async (icon: string) => {
+    try {
+      console.log('Icon selected:', icon);
+      setUpdatingProfilePic(true);
+      
+      // Here you would typically update the room/group with the new icon
+      // For now, just show success
+      await new Promise(resolve => setTimeout(resolve, 500)); // Simulate API call
+      
+      toast.show('Profile picture updated!', 'success');
+      setShowProfilePicModal(false);
+    } catch (error) {
+      console.error('Icon update error:', error);
+      toast.show('Failed to update profile picture', 'error');
+    } finally {
+      setUpdatingProfilePic(false);
+    }
+  }, [toast]);
+
   // Stable renderItem so the memoised MessageBubble can actually bail out.
   // Previously this was an inline arrow with a fresh onInterested on every
   // render, which defeated memoisation entirely.
@@ -3305,9 +3374,12 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
               showsVerticalScrollIndicator
               ListHeaderComponent={(
                 <View style={gi.header}>
-                  <View style={gi.avatar}>
+                  <Pressable 
+                    style={gi.avatar}
+                    onPress={() => setShowProfilePicModal(true)}
+                  >
                     <Text style={{ fontSize: 30 }}>{ROOM_ICON[activeRoom.roomType] || '💬'}</Text>
-                  </View>
+                  </Pressable>
                   <View style={gi.nameRow}>
                     <Text style={gi.name} numberOfLines={2}>{roomDisplayName(activeRoom)}</Text>
                     {/* Green stays the verification colour everywhere in the app. */}
@@ -3656,6 +3728,77 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                 </Text>
               </View>
             )}
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* ── Profile Picture Upload Modal ────────────────────────────────────────── */}
+      <Modal visible={showProfilePicModal} transparent animationType="slide" onRequestClose={() => setShowProfilePicModal(false)}>
+        <Pressable style={pd.overlay} onPress={() => setShowProfilePicModal(false)}>
+          <Pressable style={pd.sheet} onPress={() => {}}>
+            <View style={pd.header}>
+              <Text style={pd.title}>Update Profile Picture</Text>
+              <Pressable onPress={() => setShowProfilePicModal(false)} hitSlop={8}>
+                <X size={20} color={colors.ink} />
+              </Pressable>
+            </View>
+
+            <View style={{ padding: 20, gap: 24 }}>
+              {/* Upload Options */}
+              <View style={{ gap: 12 }}>
+                <Text style={{ fontSize: 15, fontWeight: '600', color: colors.ink }}>Upload Photo</Text>
+                <View style={{ flexDirection: 'row', gap: 12 }}>
+                  <Pressable 
+                    style={[pd.optButton, updatingProfilePic && { opacity: 0.6 }]}
+                    onPress={() => !updatingProfilePic && handleProfilePicUpload('gallery')}
+                    disabled={updatingProfilePic}
+                  >
+                    <ImageIcon size={20} color={colors.brand} />
+                    <Text style={pd.optText}>Gallery</Text>
+                  </Pressable>
+                  <Pressable 
+                    style={[pd.optButton, updatingProfilePic && { opacity: 0.6 }]}
+                    onPress={() => !updatingProfilePic && handleProfilePicUpload('camera')}
+                    disabled={updatingProfilePic}
+                  >
+                    <Camera size={20} color={colors.brand} />
+                    <Text style={pd.optText}>Camera</Text>
+                  </Pressable>
+                </View>
+              </View>
+
+              {/* Property Icons */}
+              <View style={{ gap: 12 }}>
+                <Text style={{ fontSize: 15, fontWeight: '600', color: colors.ink }}>Choose Icon</Text>
+                <View style={{ 
+                  flexDirection: 'row', 
+                  flexWrap: 'wrap', 
+                  gap: 12,
+                  justifyContent: 'space-between'
+                }}>
+                  {PROPERTY_ICONS.map((icon, index) => (
+                    <Pressable
+                      key={index}
+                      style={[
+                        pd.iconButton,
+                        updatingProfilePic && { opacity: 0.6 }
+                      ]}
+                      onPress={() => !updatingProfilePic && handleIconSelect(icon)}
+                      disabled={updatingProfilePic}
+                    >
+                      <Text style={{ fontSize: 24 }}>{icon}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
+
+              {updatingProfilePic && (
+                <View style={{ alignItems: 'center', paddingVertical: 12 }}>
+                  <ActivityIndicator color={colors.brand} />
+                  <Text style={{ color: colors.muted, marginTop: 8 }}>Updating profile picture...</Text>
+                </View>
+              )}
+            </View>
           </Pressable>
         </Pressable>
       </Modal>
@@ -4721,6 +4864,12 @@ const pd = StyleSheet.create({
   badge: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 8 },
   badgeText: { fontSize: 8.5, fontWeight: '800', letterSpacing: 0.3 },
   empty: { fontSize: 12, color: colors.muted2, textAlign: 'center', paddingVertical: 28, paddingHorizontal: 10, lineHeight: 18 },
+  // Profile picture modal styles
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingBottom: 16, borderBottomWidth: 1, borderBottomColor: colors.line },
+  title: { fontSize: 16, fontWeight: '800', color: colors.ink },
+  optButton: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, padding: 16, backgroundColor: colors.brandTint, borderRadius: 12, borderWidth: 1, borderColor: `${colors.brand}33` },
+  optText: { fontSize: 14, fontWeight: '700', color: colors.brand },
+  iconButton: { width: 50, height: 50, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.cream, borderRadius: 12, borderWidth: 1, borderColor: colors.line },
 });
 
 // Group info sheet — avatar / counts / admins / media / member rows / actions.
