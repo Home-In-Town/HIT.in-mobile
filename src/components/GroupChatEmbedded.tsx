@@ -792,6 +792,10 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   // Properties of the builder whose company group is open. Loaded per room, so
   // switching groups never shows the previous builder's inventory.
   const [builderProjects, setBuilderProjects] = useState<OwnerPortfolioProject[]>([]);
+  const builderScrollRef = useRef<ScrollView>(null);
+  const autoScrollTimer = useRef<NodeJS.Timeout | null>(null);
+  const [autoScrollPaused, setAutoScrollPaused] = useState(false);
+  const currentCardIndex = useRef(0);
   const [loadingBuilderProjects, setLoadingBuilderProjects] = useState(false);
   // Share sheet. ShareModal needs a real `Project` (it reads id / name / slug /
   // brochureUrl and mints a tracked token), but a builder card only carries the
@@ -1024,6 +1028,54 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     finally { setLoadingMsgs(false); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [socket.joinGroup, socket.leaveGroup]);
+
+  /**
+   * Auto-scroll for builder property cards carousel.
+   * 
+   * Automatically scrolls to next card every 3.5 seconds when:
+   * - Builder projects are loaded (length > 0)
+   * - User is not actively touching/scrolling (autoScrollPaused = false)
+   * 
+   * Behavior:
+   * - Loops back to first card after reaching the end
+   * - Pauses when user manually scrolls (onTouchStart)
+   * - Resumes after 1 second of no touch (onTouchEnd)
+   * - Smooth animated transitions
+   */
+  useEffect(() => {
+    // Clear any existing timer on cleanup or when dependencies change
+    if (autoScrollTimer.current) {
+      clearInterval(autoScrollTimer.current);
+      autoScrollTimer.current = null;
+    }
+
+    // Only start auto-scroll if we have cards and auto-scroll is not paused
+    if (builderProjects.length > 1 && !autoScrollPaused && builderScrollRef.current) {
+      autoScrollTimer.current = setInterval(() => {
+        if (builderScrollRef.current && builderProjects.length > 0) {
+          // Move to next card, loop back to 0 if at end
+          currentCardIndex.current = (currentCardIndex.current + 1) % builderProjects.length;
+          
+          // Each card width: assume ~280px (card) + 12px (gap)
+          const cardWidth = 292;
+          const scrollX = currentCardIndex.current * cardWidth;
+          
+          builderScrollRef.current.scrollTo({
+            x: scrollX,
+            animated: true,
+          });
+        }
+      }, 3500); // 3.5 seconds per card
+    }
+
+    // Cleanup timer on unmount or dependencies change
+    return () => {
+      if (autoScrollTimer.current) {
+        clearInterval(autoScrollTimer.current);
+        autoScrollTimer.current = null;
+      }
+    };
+  }, [builderProjects.length, autoScrollPaused]);
 
   const closeRoom = () => {
     if (activeRoom) socket.leaveGroup(activeRoom.id);
@@ -2750,9 +2802,26 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
             <Text style={bp.stripEmpty}>No published properties yet.</Text>
           ) : (
             <ScrollView
+              ref={builderScrollRef}
               horizontal
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={bp.stripRow}
+              onTouchStart={() => {
+                // Pause auto-scroll when user touches
+                setAutoScrollPaused(true);
+              }}
+              onTouchEnd={() => {
+                // Resume auto-scroll 1 second after user releases touch
+                setTimeout(() => setAutoScrollPaused(false), 1000);
+              }}
+              onScrollBeginDrag={() => {
+                // Also pause on drag start (manual swipe)
+                setAutoScrollPaused(true);
+              }}
+              onScrollEndDrag={() => {
+                // Resume after drag ends
+                setTimeout(() => setAutoScrollPaused(false), 1000);
+              }}
             >
               {/* Details now goes through handlePropertyViewDetails, the SAME path
                   the inventory cards use. It used to call a local compact handler
