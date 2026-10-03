@@ -1043,6 +1043,12 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
    * - Smooth animated transitions
    */
   useEffect(() => {
+    console.log('[AUTO-SCROLL] Effect triggered:', {
+      projectsLength: builderProjects.length,
+      paused: autoScrollPaused,
+      hasRef: !!builderScrollRef.current,
+    });
+
     // Clear any existing timer on cleanup or when dependencies change
     if (autoScrollTimer.current) {
       clearInterval(autoScrollTimer.current);
@@ -1051,6 +1057,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
 
     // Only start auto-scroll if we have cards and auto-scroll is not paused
     if (builderProjects.length > 1 && !autoScrollPaused && builderScrollRef.current) {
+      console.log('[AUTO-SCROLL] Starting timer for', builderProjects.length, 'cards');
       autoScrollTimer.current = setInterval(() => {
         if (builderScrollRef.current && builderProjects.length > 0) {
           // Move to next card, loop back to 0 if at end
@@ -1060,17 +1067,22 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
           const cardWidth = 196;
           const scrollX = currentCardIndex.current * cardWidth;
           
+          console.log('[AUTO-SCROLL] Scrolling to card', currentCardIndex.current, 'at x:', scrollX);
+          
           builderScrollRef.current.scrollTo({
             x: scrollX,
             animated: true,
           });
         }
       }, 3500); // 3.5 seconds per card
+    } else {
+      console.log('[AUTO-SCROLL] Not starting - conditions not met');
     }
 
     // Cleanup timer on unmount or dependencies change
     return () => {
       if (autoScrollTimer.current) {
+        console.log('[AUTO-SCROLL] Cleaning up timer');
         clearInterval(autoScrollTimer.current);
         autoScrollTimer.current = null;
       }
@@ -2807,20 +2819,30 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={bp.stripRow}
               onTouchStart={() => {
+                console.log('[AUTO-SCROLL] Touch start - pausing');
                 // Pause auto-scroll when user touches
                 setAutoScrollPaused(true);
               }}
               onTouchEnd={() => {
+                console.log('[AUTO-SCROLL] Touch end - will resume in 1s');
                 // Resume auto-scroll 1 second after user releases touch
-                setTimeout(() => setAutoScrollPaused(false), 1000);
+                setTimeout(() => {
+                  console.log('[AUTO-SCROLL] Resuming after touch');
+                  setAutoScrollPaused(false);
+                }, 1000);
               }}
               onScrollBeginDrag={() => {
+                console.log('[AUTO-SCROLL] Drag begin - pausing');
                 // Also pause on drag start (manual swipe)
                 setAutoScrollPaused(true);
               }}
               onScrollEndDrag={() => {
+                console.log('[AUTO-SCROLL] Drag end - will resume in 1s');
                 // Resume after drag ends
-                setTimeout(() => setAutoScrollPaused(false), 1000);
+                setTimeout(() => {
+                  console.log('[AUTO-SCROLL] Resuming after drag');
+                  setAutoScrollPaused(false);
+                }, 1000);
               }}
             >
               {/* Details now goes through handlePropertyViewDetails, the SAME path
