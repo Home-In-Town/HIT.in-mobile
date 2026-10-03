@@ -17,6 +17,7 @@ import * as Sharing from 'expo-sharing';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Clipboard from 'expo-clipboard';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Image, Linking } from 'react-native';
 import QRCode from 'react-native-qrcode-svg';
 import {
@@ -35,6 +36,64 @@ import { useToast } from './Toast';
 import { colors } from '../theme';
 
 const ROOM_ICON: Record<string, string> = { project: '🏗', builder: '🏢', area: '📍', universal: '🌐' };
+
+// Profile picture storage helpers
+const PROFILE_STORAGE_KEY = 'room_profile_pictures';
+
+async function saveRoomProfilePicture(roomId: string, type: 'icon' | 'image', value: string) {
+  try {
+    const stored = await AsyncStorage.getItem(PROFILE_STORAGE_KEY);
+    const profiles = stored ? JSON.parse(stored) : {};
+    profiles[roomId] = { type, value };
+    await AsyncStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profiles));
+  } catch (error) {
+    console.error('Failed to save profile picture:', error);
+  }
+}
+
+async function loadRoomProfilePictures() {
+  try {
+    const stored = await AsyncStorage.getItem(PROFILE_STORAGE_KEY);
+    return stored ? JSON.parse(stored) : {};
+  } catch (error) {
+    console.error('Failed to load profile pictures:', error);
+    return {};
+  }
+}
+
+function getRoomProfilePicture(roomId: string, profilePictures: any): { type: 'icon' | 'image', value: string } | null {
+  return profilePictures[roomId] || null;
+}
+
+// Helper component to render room avatar with profile picture
+function RoomAvatar({ room, profilePictures, size = 17, style }: { 
+  room: any, 
+  profilePictures: any, 
+  size?: number, 
+  style?: any 
+}) {
+  const profile = getRoomProfilePicture(room.id, profilePictures);
+  
+  if (!room.isUniversal && profile) {
+    if (profile.type === 'image') {
+      return (
+        <Image 
+          source={{ uri: profile.value }} 
+          style={[{ width: size * 2.7, height: size * 2.7, borderRadius: (size * 2.7) / 2 }, style]} 
+          resizeMode="cover"
+        />
+      );
+    } else if (profile.type === 'icon') {
+      return <Text style={{ fontSize: size }}>{profile.value}</Text>;
+    }
+  }
+  
+  return (
+    <Text style={{ fontSize: size }}>
+      {room.isUniversal ? '🌐' : (ROOM_ICON[room.roomType] || '💬')}
+    </Text>
+  );
+}
 
 function timeStr(iso: string) {
   if (!iso) return '';
@@ -639,12 +698,13 @@ const RoomSeparator = () => (
   <View style={{ height: 1, backgroundColor: colors.line, marginLeft: 64 }} />
 );
 
-const GroupRow = React.memo(function GroupRow({ room, joined, joining, onPress, onJoin }: {
+const GroupRow = React.memo(function GroupRow({ room, joined, joining, onPress, onJoin, profilePictures }: {
   room: GroupRoom;
   joined: boolean;
   joining?: boolean;
   onPress?: (room: GroupRoom) => void;
   onJoin?: (room: GroupRoom) => void;
+  profilePictures?: any;
 }) {
   const { primary, secondary } = roomLines(room);
   const typeLabel = roomTypeLabel(room);
@@ -657,7 +717,7 @@ const GroupRow = React.memo(function GroupRow({ room, joined, joining, onPress, 
       style={[s.roomRow, room.isUniversal && s.roomRowPinned]}
     >
       <View style={[s.roomAvatar, room.isUniversal && { backgroundColor: colors.brand }]}>
-        <Text style={{ fontSize: 17 }}>{room.isUniversal ? '🌐' : (ROOM_ICON[room.roomType] || '💬')}</Text>
+        <RoomAvatar room={room} profilePictures={profilePictures || {}} />
       </View>
 
       <View style={{ flex: 1, minWidth: 0 }}>
@@ -815,6 +875,9 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   // Profile picture upload modal states
   const [showProfilePicModal, setShowProfilePicModal] = useState(false);
   const [updatingProfilePic, setUpdatingProfilePic] = useState(false);
+  const [customProfileIcon, setCustomProfileIcon] = useState<string | null>(null);
+  const [customProfileImage, setCustomProfileImage] = useState<string | null>(null);
+  const [allRoomProfiles, setAllRoomProfiles] = useState<any>({});
   // Matching results state
   const [showMatching, setShowMatching] = useState(false);
   const [matchingResults, setMatchingResults] = useState<any[]>([]);
@@ -883,6 +946,30 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const [invForm, setInvForm] = useState({ bhkOptions: '', min: '', max: '', area: '', city: '', possessionStatus: 'ready', bankLoanAvailable: false, commissionPercent: '2', description: '' });
 
   useEffect(() => { onRoomOpenChange?.(!!activeRoom); }, [activeRoom, onRoomOpenChange]);
+
+  // Load profile pictures from storage
+  useEffect(() => {
+    const loadProfiles = async () => {
+      const profiles = await loadRoomProfilePictures();
+      setAllRoomProfiles(profiles);
+      
+      // Set current room's profile picture if exists
+      if (activeRoom?.id && profiles[activeRoom.id]) {
+        const profile = profiles[activeRoom.id];
+        if (profile.type === 'icon') {
+          setCustomProfileIcon(profile.value);
+          setCustomProfileImage(null);
+        } else if (profile.type === 'image') {
+          setCustomProfileImage(profile.value);
+          setCustomProfileIcon(null);
+        }
+      } else {
+        setCustomProfileIcon(null);
+        setCustomProfileImage(null);
+      }
+    };
+    loadProfiles();
+  }, [activeRoom?.id]);
 
   // Sequence guard: a slow earlier response must not overwrite a newer one.
   const roomsSeqRef = useRef(0);
@@ -2195,21 +2282,31 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
       setUpdatingProfilePic(true);
       const result = option === 'camera'
         ? await ImagePicker.launchCameraAsync({
-            allowsEditing: true,
-            aspect: [1, 1],
+            allowsEditing: false, // Remove editor to avoid stuck issue
             quality: 0.8,
           })
         : await ImagePicker.launchImageLibraryAsync({
             mediaTypes: ImagePicker.MediaTypeOptions.Images,
-            allowsEditing: true,
-            aspect: [1, 1],
+            allowsEditing: false, // Remove editor to avoid stuck issue  
             quality: 0.8,
           });
 
       if (!result.canceled && result.assets[0]) {
-        // Here you would typically upload to your server
-        // For now, just show success
-        console.log('Profile pic selected:', result.assets[0].uri);
+        // Save the selected image URI for display
+        const imageUri = result.assets[0].uri;
+        console.log('Profile pic selected:', imageUri);
+        
+        // Clear icon and set image
+        setCustomProfileIcon(null);
+        setCustomProfileImage(imageUri);
+        
+        // Save to storage and update global state
+        if (activeRoom?.id) {
+          await saveRoomProfilePicture(activeRoom.id, 'image', imageUri);
+          const updatedProfiles = { ...allRoomProfiles, [activeRoom.id]: { type: 'image', value: imageUri } };
+          setAllRoomProfiles(updatedProfiles);
+        }
+        
         toast.show('Profile picture updated!', 'success');
         setShowProfilePicModal(false);
       }
@@ -2227,9 +2324,19 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
       setUpdatingProfilePic(true);
       
       // Here you would typically update the room/group with the new icon
-      // For now, just show success
+      // For now, just update local state to show the change
       await new Promise(resolve => setTimeout(resolve, 500)); // Simulate API call
       
+      // Clear image and set icon
+      setCustomProfileImage(null);
+      setCustomProfileIcon(icon); // Update local state to show new icon
+      
+      // Save to storage and update global state
+      if (activeRoom?.id) {
+        await saveRoomProfilePicture(activeRoom.id, 'icon', icon);
+        const updatedProfiles = { ...allRoomProfiles, [activeRoom.id]: { type: 'icon', value: icon } };
+        setAllRoomProfiles(updatedProfiles);
+      }
       toast.show('Profile picture updated!', 'success');
       setShowProfilePicModal(false);
     } catch (error) {
@@ -2495,9 +2602,10 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
         joining={joiningId === room.id}
         onPress={openRoom}
         onJoin={handleJoin}
+        profilePictures={allRoomProfiles}
       />
     ),
-    [joiningId, openRoom, handleJoin]
+    [joiningId, openRoom, handleJoin, allRoomProfiles]
   );
 
   const renderSectionHeader = useCallback(
@@ -2699,6 +2807,9 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   // Exit Group moved into this sheet — leaving them out would strand area members
   // with no way to leave, since their 3-dot no longer carries it.
   const canOpenGroupInfo = !activeRoom.isUniversal;
+  
+  // Allow profile pic modal in all rooms for testing
+  const canOpenProfilePic = true;
   const infoMembers = activeRoom.members || [];
   const infoAdmins = infoMembers.filter(m => m.role === 'admin');
   return (
@@ -2719,7 +2830,12 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
             Exit (canLeave === false), a member list that grows with every signup,
             and member numbers that must never be shown there. */}
         <Pressable
-          onPress={canOpenGroupInfo ? () => setShowGroupInfo(true) : undefined}
+          onPress={canOpenGroupInfo ? () => {
+            console.log('Group header tapped, opening info modal');
+            setShowGroupInfo(true);
+          } : () => {
+            console.log('Group header tapped but canOpenGroupInfo is false, activeRoom.isUniversal:', activeRoom.isUniversal);
+          }}
           disabled={!canOpenGroupInfo}
           style={s.threadIdentity}
           accessibilityRole="button"
@@ -2728,9 +2844,19 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
           {/* Universal room gets the globe symbol (matches the room list) so this
               header reads as "the shared room", not a repeat of the tab name. */}
           <View style={[s.threadAvatar, activeRoom.isUniversal && { backgroundColor: colors.brand }]}>
-            <Text style={{ fontSize: 15 }}>
-              {activeRoom.isUniversal ? '🌐' : (ROOM_ICON[activeRoom.roomType] || '💬')}
-            </Text>
+            {!activeRoom.isUniversal && customProfileImage ? (
+              <Image 
+                source={{ uri: customProfileImage }} 
+                style={{ width: 38, height: 38, borderRadius: 19 }} 
+                resizeMode="cover"
+              />
+            ) : (
+              <Text style={{ fontSize: 15 }}>
+                {activeRoom.isUniversal 
+                  ? '🌐' 
+                  : (customProfileIcon || ROOM_ICON[activeRoom.roomType] || '💬')}
+              </Text>
+            )}
           </View>
           {/* The universal room keeps membership stats as its title — the tab above
               already names it, so repeating "AI Lead Matching" here said nothing.
@@ -2756,6 +2882,22 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
             </Pressable>
           </View>
         )}
+
+        {/* Test Profile Pic Button - visible always for testing */}
+        <Pressable 
+          onPress={() => {
+            console.log('Test Profile Picture button tapped!');
+            setShowProfilePicModal(true);
+          }}
+          style={{
+            padding: 8,
+            backgroundColor: colors.brandTint,
+            borderRadius: 8,
+            marginLeft: 8,
+          }}
+        >
+          <Text style={{ fontSize: 12, color: colors.brand, fontWeight: '700' }}>📸 Test</Text>
+        </Pressable>
 
         {/* There is deliberately no group 3-dot in the thread header any more.
             It used to carry Exit / Delete Group for builder and area rooms; those
@@ -3376,9 +3518,22 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                 <View style={gi.header}>
                   <Pressable 
                     style={gi.avatar}
-                    onPress={() => setShowProfilePicModal(true)}
+                    onPress={() => {
+                      console.log('Profile picture tapped!');
+                      setShowProfilePicModal(true);
+                    }}
                   >
-                    <Text style={{ fontSize: 30 }}>{ROOM_ICON[activeRoom.roomType] || '💬'}</Text>
+                    {customProfileImage ? (
+                      <Image 
+                        source={{ uri: customProfileImage }} 
+                        style={{ width: 70, height: 70, borderRadius: 35 }} 
+                        resizeMode="cover"
+                      />
+                    ) : (
+                      <Text style={{ fontSize: 30 }}>
+                        {customProfileIcon || ROOM_ICON[activeRoom.roomType] || '💬'}
+                      </Text>
+                    )}
                   </Pressable>
                   <View style={gi.nameRow}>
                     <Text style={gi.name} numberOfLines={2}>{roomDisplayName(activeRoom)}</Text>
