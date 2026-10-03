@@ -1056,8 +1056,8 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
           // Move to next card, loop back to 0 if at end
           currentCardIndex.current = (currentCardIndex.current + 1) % builderProjects.length;
           
-          // Each card width: assume ~280px (card) + 12px (gap)
-          const cardWidth = 292;
+          // Each card width: 186px (card) + 10px (gap from stripRow)
+          const cardWidth = 196;
           const scrollX = currentCardIndex.current * cardWidth;
           
           builderScrollRef.current.scrollTo({
