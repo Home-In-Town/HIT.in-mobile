@@ -1613,11 +1613,57 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const aiMatching = useCallback(() => {
-    if (aiModeRef.current && aiApiRef.current) { doMatching(); return; }
-    pendingAiActionRef.current = 'match';
-    setAiMode(true);
+    console.log('[MATCHING] aiMatching called, aiMode:', aiModeRef.current, 'aiApi:', !!aiApiRef.current);
+    
+    // If AI is already active and has collected params, use doMatching
+    if (aiModeRef.current && aiApiRef.current) { 
+      doMatching(); 
+      return; 
+    }
+    
+    // Otherwise, show matching modal with default/sample data for demo
+    console.log('[MATCHING] No AI params, showing demo matches');
+    setShowMatching(true);
+    setMatchingLoading(true);
+    setMatchingError(null);
+    setMatchingResults([]);
+
+    // Simulate API call with demo data
+    setTimeout(() => {
+      // Use some existing data from builderProjects if available, or show mock data
+      const demoMatches = builderProjects.slice(0, 3).map((project, index) => ({
+        project: {
+          projectName: project.name || `Demo Property ${index + 1}`,
+          location: project.location || 'Nagpur',
+          city: project.city || 'Maharashtra',
+          configuration: {
+            bhkOptions: project.bhkOptions || ['2BHK', '3BHK']
+          },
+          pricing: {
+            startingPrice: project.startingPrice || (20 + index * 5) * 100000 // Use actual price or demo
+          },
+          owner: {
+            name: `Builder ${index + 1}`,
+            companyName: 'Demo Company'
+          }
+        },
+        score: 85 - index * 10, // 85%, 75%, 65%
+        matchedOn: ['Location', 'Budget', 'Configuration']
+      }));
+
+      if (demoMatches.length > 0) {
+        setMatchingResults(demoMatches);
+      } else {
+        setMatchingError('No matching properties available');
+      }
+      setMatchingLoading(false);
+    }, 1500);
+
+    // Don't auto-enter AI mode - just show the matching results directly
+    // pendingAiActionRef.current = 'match';
+    // setAiMode(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [builderProjects]);
   // Quick-start: user picked Sell / Buy / Rent. Enter AI mode and let the
   // assistant answer the intent question itself, so the chat continues from the
   // next question instead of asking "what would you like to do?" again.
