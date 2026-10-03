@@ -1837,20 +1837,17 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   }, [sharingId, toast]);
 
   /**
-   * Close property detail sheet and scroll back to the source message if present.
+   * Auto-scroll to source message when property detail sheet opens.
    * 
-   * Extracted from three duplicate blocks (onRequestClose, backdrop onPress, X
-   * button onPress) to DRY the scroll-back logic. Checks that flatRef and
-   * messages array are still valid before scrolling, and clears highlight after
-   * 2.5s. The 300ms delay allows the modal slide-out animation to finish before
-   * the scroll starts.
+   * Triggers when viewProperty changes from null to an object with sourceMessageId.
+   * The 300ms delay allows the modal slide-in animation to start before scrolling,
+   * so the scroll doesn't compete with the modal animation. Highlight fades after 2.5s.
    */
-  const handleClosePropertyDetail = useCallback(() => {
-    const srcMsgId = viewProperty?.sourceMessageId;
-    setViewProperty(null);
-    if (srcMsgId) {
+  useEffect(() => {
+    if (viewProperty?.sourceMessageId && messages.length > 0 && flatRef.current) {
+      const srcMsgId = viewProperty.sourceMessageId;
       const idx = messages.findIndex(m => m.id === srcMsgId);
-      if (idx >= 0 && idx < messages.length && flatRef.current) {
+      if (idx >= 0 && idx < messages.length) {
         setTimeout(() => {
           if (flatRef.current) {
             flatRef.current.scrollToIndex({
@@ -1864,7 +1861,18 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
         }, 300);
       }
     }
-  }, [viewProperty, messages]);
+  }, [viewProperty?.sourceMessageId, messages]);
+
+  /**
+   * Close property detail sheet.
+   * 
+   * Extracted from three duplicate blocks (onRequestClose, backdrop onPress, X
+   * button onPress). Auto-scroll now happens on sheet open (useEffect above),
+   * not on close.
+   */
+  const handleClosePropertyDetail = useCallback(() => {
+    setViewProperty(null);
+  }, []);
 
   /**
    * Details / card-body tap on a builder property card.
