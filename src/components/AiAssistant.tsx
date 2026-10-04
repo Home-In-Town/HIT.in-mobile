@@ -1866,6 +1866,83 @@ export type InventoryMatchCard = {
 /** How many project matches show before "View all". */
 const MATCH_PREVIEW_COUNT = 3;
 
+/**
+ * One project-match row: thumbnail (or a Building2 fallback), "Name - Locality"
+ * with a % score pill, the spec line, the builder line, a full-width brand
+ * Join Group and a WhatsApp button that only appears when a number was actually
+ * published.
+ *
+ * Extracted verbatim out of ResultsBubble's `shownMatches.map` so the Matching
+ * sheet in GroupChatEmbedded can render THIS card. That sheet used to draw its
+ * own lookalike (a local `mts` card) which had drifted away from this one — no
+ * cover image, no score pill, no Join Group — and was fed fabricated rows. There
+ * must be exactly one match card in the app. Pure extraction: the markup and the
+ * `rs` styles are byte-identical, so the AI Assist chat looks the same.
+ */
+export const MatchResultCard = React.memo(function MatchResultCard({ match: m, onJoinGroup }: {
+  match: MatchCard;
+  onJoinGroup?: (projectId: string) => void;
+}) {
+  const spec = [
+    (m.bhkOptions || []).filter(Boolean).join('/'),
+    m.projectStatus,
+    m.startingPrice ? fmtPrice(m.startingPrice) : '',
+  ].filter(Boolean).join(' · ');
+  // "Skyline - Besa": the locality belongs with the name, so the row reads
+  // as one identity instead of a name plus a separate pin line.
+  const where = m.location || m.city || '';
+  const title = where ? `${m.projectName || 'Project'} - ${where}` : (m.projectName || 'Project');
+  const phone = String(m.whatsappNumber || m.callNumber || '').replace(/[^0-9]/g, '');
+
+  return (
+    <View style={rs.matchCard}>
+      <View style={rs.matchTop}>
+        {m.coverImageUrl ? (
+          <Image source={{ uri: m.coverImageUrl }} style={rs.thumb} resizeMode="cover" />
+        ) : (
+          <View style={[rs.thumb, rs.thumbFallback]}>
+            <Building2 size={18} color={colors.brand} />
+          </View>
+        )}
+
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <View style={rs.titleRow}>
+            <Text style={rs.matchName} numberOfLines={1}>{title}</Text>
+            <View style={rs.scorePill}>
+              <Text style={rs.scorePillText}>{Math.round(m.score)}% Match</Text>
+            </View>
+          </View>
+          {!!spec && <Text style={rs.matchSpec} numberOfLines={1}>{spec}</Text>}
+          {!!(m.builderCompany || m.builderName) && (
+            <Text style={rs.matchBuilder} numberOfLines={1}>
+              {m.builderCompany || m.builderName}
+              {m.isVerifiedBuilder ? ' · Verified' : ''}
+            </Text>
+          )}
+        </View>
+      </View>
+
+      <View style={rs.actionRow}>
+        <Pressable onPress={() => onJoinGroup?.(m.projectId)} style={[rs.actionBtn, rs.actionBtnPrimary]}>
+          <UsersIcon size={13} color="#fff" />
+          <Text style={[rs.actionText, { color: '#fff' }]}>Join Group</Text>
+        </Pressable>
+        {/* Only offered when the builder actually published a number —
+            a WhatsApp button that opens nothing is worse than no button. */}
+        {!!phone && (
+          <Pressable
+            onPress={() => Linking.openURL(`https://wa.me/${phone.length === 10 ? `91${phone}` : phone}`).catch(() => {})}
+            style={[rs.actionBtn, rs.actionBtnWhatsapp]}
+          >
+            <MessageCircle size={13} color="#fff" />
+            <Text style={[rs.actionText, { color: '#fff' }]}>WhatsApp</Text>
+          </Pressable>
+        )}
+      </View>
+    </View>
+  );
+});
+
 const ResultsBubble = React.memo(function ResultsBubble({ msg, onViewProject, onViewInventoryMatch, onJoinProjectGroup }: {
   msg: Msg;
   onViewProject?: (projectId: string, projectName?: string) => void;
@@ -1908,66 +1985,9 @@ const ResultsBubble = React.memo(function ResultsBubble({ msg, onViewProject, on
           )}
         </View>
 
-        {shownMatches.map((m) => {
-          const spec = [
-            (m.bhkOptions || []).filter(Boolean).join('/'),
-            m.projectStatus,
-            m.startingPrice ? fmtPrice(m.startingPrice) : '',
-          ].filter(Boolean).join(' · ');
-          // "Skyline - Besa": the locality belongs with the name, so the row reads
-          // as one identity instead of a name plus a separate pin line.
-          const where = m.location || m.city || '';
-          const title = where ? `${m.projectName || 'Project'} - ${where}` : (m.projectName || 'Project');
-          const phone = String(m.whatsappNumber || m.callNumber || '').replace(/[^0-9]/g, '');
-
-          return (
-            <View key={m.projectId} style={rs.matchCard}>
-              <View style={rs.matchTop}>
-                {m.coverImageUrl ? (
-                  <Image source={{ uri: m.coverImageUrl }} style={rs.thumb} resizeMode="cover" />
-                ) : (
-                  <View style={[rs.thumb, rs.thumbFallback]}>
-                    <Building2 size={18} color={colors.brand} />
-                  </View>
-                )}
-
-                <View style={{ flex: 1, minWidth: 0 }}>
-                  <View style={rs.titleRow}>
-                    <Text style={rs.matchName} numberOfLines={1}>{title}</Text>
-                    <View style={rs.scorePill}>
-                      <Text style={rs.scorePillText}>{Math.round(m.score)}% Match</Text>
-                    </View>
-                  </View>
-                  {!!spec && <Text style={rs.matchSpec} numberOfLines={1}>{spec}</Text>}
-                  {!!(m.builderCompany || m.builderName) && (
-                    <Text style={rs.matchBuilder} numberOfLines={1}>
-                      {m.builderCompany || m.builderName}
-                      {m.isVerifiedBuilder ? ' · Verified' : ''}
-                    </Text>
-                  )}
-                </View>
-              </View>
-
-              <View style={rs.actionRow}>
-                <Pressable onPress={() => onJoinProjectGroup?.(m.projectId)} style={[rs.actionBtn, rs.actionBtnPrimary]}>
-                  <UsersIcon size={13} color="#fff" />
-                  <Text style={[rs.actionText, { color: '#fff' }]}>Join Group</Text>
-                </Pressable>
-                {/* Only offered when the builder actually published a number —
-                    a WhatsApp button that opens nothing is worse than no button. */}
-                {!!phone && (
-                  <Pressable
-                    onPress={() => Linking.openURL(`https://wa.me/${phone.length === 10 ? `91${phone}` : phone}`).catch(() => {})}
-                    style={[rs.actionBtn, rs.actionBtnWhatsapp]}
-                  >
-                    <MessageCircle size={13} color="#fff" />
-                    <Text style={[rs.actionText, { color: '#fff' }]}>WhatsApp</Text>
-                  </Pressable>
-                )}
-              </View>
-            </View>
-          );
-        })}
+        {shownMatches.map((m) => (
+          <MatchResultCard key={m.projectId} match={m} onJoinGroup={onJoinProjectGroup} />
+        ))}
 
         {/* Footer: what just happened, plus a way to see the rest when the list
             was trimmed. */}

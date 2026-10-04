@@ -26,9 +26,9 @@ import {
   Search, MapPin, Check, Camera, Paperclip, Sparkles, ChevronDown, ChevronUp, Clock,
   Phone, Eye, UserPlus, BadgeCheck, Share2, MessageCircle,
 } from 'lucide-react-native';
-import { groupChatApi, shareApi, mediaApi, leadMatchingApi, projectsApiExtended, GroupRoom, GroupMessage, InventoryCard, OwnerPortfolioProject, Project, GroupMedia, GroupLink } from '../lib/api';
+import { groupChatApi, shareApi, mediaApi, leadMatchingApi, projectsApiExtended, fetchPublicProjectsRaw, GroupRoom, GroupMessage, InventoryCard, OwnerPortfolioProject, Project, GroupMedia, GroupLink } from '../lib/api';
 import { ShareModal } from './ShareActions';
-import AiAssistant, { AiAssistantApi, AiPostDraft, InventoryMatchCard, aiOwnsInput } from './AiAssistant';
+import AiAssistant, { AiAssistantApi, AiPostDraft, InventoryMatchCard, MatchCard, MatchResultCard, aiOwnsInput } from './AiAssistant';
 import { postedListStorage, disappearStorage } from '../lib/storage';
 import { useAuth } from '../lib/authContext';
 import { useSocket } from '../hooks/useSocket';
@@ -37,32 +37,202 @@ import { colors } from '../theme';
 
 const ROOM_ICON: Record<string, string> = { project: '🏗', builder: '🏢', area: '📍', universal: '🌐' };
 
-// Profile picture storage helpers
+// Icon choices offered by the group profile-picture sheet. This used to be
+// declared inside the component body, so a brand-new array was built on every
+// single render of a 4000-line component for a value that never changes. It also
+// listed '🏢' twice (old indices 2 and 8), which drew the same office block in
+// two cells of the picker and made the grid look broken.
+const PROPERTY_ICONS = ['🏠', '🏗', '🏢', '📍', '🏘', '🏡', '🏬', '🏭', '🏰', '🏯', '🏛', '🌆', '🏙', '🌇', '🎪'];
+
+// ── Groups-pane filter chips ──────────────────────────────────────────────────
+//
+// The ONE place these three labels are written, so renaming a chip is a
+// one-word edit instead of a hunt through the render tree.
+//
+// Deliberately 'My Groups' and NOT 'Favourites': on the Project map the
+// Favourites chip already means "the user's OWN uploads" (filtered on
+// MapProperty.ownerId), so reusing the word here — where it would mean "groups I
+// have joined" — would make one label mean two different things in the same app.
+const GROUP_FILTERS: Array<{ key: Exclude<GroupFilterKey, null>; label: string }> = [
+  { key: 'mine', label: 'My Groups' },
+  { key: 'discover', label: 'Discover' },
+  { key: 'property', label: 'Property Groups' },
+];
+
+// Derived, never hand-written. The Property Groups section heading has to read
+// the same as the chip that opened it, and a second literal spelling of the same
+// label is exactly how a heading and its chip drift apart on a rename.
+const GROUP_FILTER_LABELS = GROUP_FILTERS.reduce(
+  (acc, f) => { acc[f.key] = f.label; return acc; },
+  {} as Record<Exclude<GroupFilterKey, null>, string>
+);
+
+// `null` is a real state, not a missing one: no chip active renders exactly the
+// three sections the pane showed before chips existed. There is no fourth "All"
+// chip to default to, and defaulting to any of the three would hide two of
+// today's sections and make the pane look emptier than it used to.
+type GroupFilterKey = 'mine' | 'discover' | 'property' | null;
+
+/**
+ * "This group cannot present a complete identity on its own row."
+ *
+ * companyName and isVerified are picked because they are exactly the two things
+ * a Groups row already renders — the company name IS the row's identity line and
+ * the green BadgeCheck IS its verification state — so "incomplete" here is
+ * something the user can see on the row, not something inferred behind it.
+ *
+ * The signals one would reach for first are simply NOT available client-side at
+ * this point in the render, which is why they are not used:
+ *   • businessLogoUrl / profilePictureUrl exist on models/User.js but no
+ *     group-chat populate ever selects them, so a "no logo" rule would need a
+ *     wider populate or a new endpoint — a backend change this task may not make.
+ *   • the builder's phone is not on room.builder at all; phone only arrives on
+ *     members[].user, and only for builder and project rooms, so a "no contact
+ *     number" rule has nothing to read either.
+ *   • verificationStatus.builder === 'verified' is semantically the truer test,
+ *     but it is not mapped into GroupRoom and it would disagree with the green
+ *     tick the row itself shows, which reads as a bug rather than a filter.
+ *
+ * Known breadth: isVerified defaults to false on the User model, so if most
+ * builders are unverified this half of the rule is wide. Narrowing it to
+ * companyName alone is a one-line edit — which is the whole reason the rule
+ * lives in a single named predicate instead of being inlined at the call site.
+ */
+function isOwnerProfileIncomplete(owner?: { companyName?: string; isVerified?: boolean } | null): boolean {
+  return !owner?.companyName?.trim() || owner?.isVerified !== true;
+}
+
+/**
+ * An "orphaned" property group: one the user would otherwise never find, because
+ * it is a lone property or its owner has no company identity to group it under.
+ *
+ * Builder rooms read room.projectCount, which the server's getRooms aggregation
+ * already supplies (builder rooms only). Project rooms have no count on their
+ * payload, so the caller passes a map derived from the shared /public/projects
+ * list. The two numbers agree by construction: ProjectRepository.getPublished()
+ * filters status:'published', which is the same filter the server aggregation
+ * counts on — this is not an approximation of the server's number, it is the
+ * same number computed from the other end.
+ *
+ * `publishedCountByOwner` being null (not yet loaded) or lacking the owner only
+ * drops the count half of the test; the profile half still decides, so the chip
+ * shows something useful instead of nothing while the fetch is in flight.
+ */
+function isOrphanedPropertyGroup(room: GroupRoom, publishedCountByOwner: Record<string, number> | null): boolean {
+  if (room.roomType === 'builder') {
+    return room.projectCount === 1 || isOwnerProfileIncomplete(room.builder);
+  }
+  if (room.roomType === 'project') {
+    const ownerId = room.project?.owner?.id || '';
+    return publishedCountByOwner?.[ownerId] === 1 || isOwnerProfileIncomplete(room.project?.owner);
+  }
+  // Area and universal rooms are not property groups in any sense, so they are
+  // never pulled in by this chip.
+  return false;
+}
+
+// Profile picture storage helpers.
+//
+// DELIBERATELY LOCAL-ONLY for now: the chosen picture lives in AsyncStorage on
+// this one device and is not sent to the server. Server-side persistence is a
+// pending product decision with the user, so do NOT "improve" this by adding an
+// API call or a HIT_Backend field until that decision is made. Consequence to be
+// aware of: the picture does not follow the user to another device and is lost on
+// uninstall.
 const PROFILE_STORAGE_KEY = 'room_profile_pictures';
 
-async function saveRoomProfilePicture(roomId: string, type: 'icon' | 'image', value: string) {
+// Directory the picked photos are copied into. The ImagePicker hands back a path
+// under the app's *cache* dir, which Android is free to purge and which does not
+// survive a reinstall — persisting that URI produced avatars that silently went
+// blank days later. documentDirectory survives app restarts and cache clears
+// (though not an uninstall, which is accepted while storage is local-only).
+const AVATAR_DIR = `${FileSystem.documentDirectory}group-avatars/`;
+
+type RoomProfile = { type: 'icon' | 'image'; value: string };
+
+/**
+ * The ONE canonical key for a room in the profile store, used on every read and
+ * every write. Every GroupRoom comes out of `transformGroupRoom` in lib/api.ts as
+ * `String(raw._id || raw.id || '')`, so list rows and the open room already agree
+ * on the string — but that fallback can yield `''`, and a bad call site could
+ * stringify an undefined id into the literal `'undefined'`. Either would make
+ * unrelated rooms share one bucket, so both are rejected here and the caller is
+ * expected to treat `null` as "no room to save against".
+ */
+function roomProfileKey(room?: { id?: string } | null): string | null {
+  const k = String(room?.id || '').trim();
+  return k && k !== 'undefined' && k !== 'null' ? k : null;
+}
+
+/**
+ * Persists one room's choice and returns the entry it replaced, so the caller can
+ * clean up a now-orphaned photo file. The previous entry is read back from
+ * storage rather than from React state on purpose: storage is the single source
+ * of truth here, and reading it avoids capturing `allRoomProfiles` in a closure —
+ * which is precisely how this feature broke in the first place.
+ */
+async function saveRoomProfilePicture(roomId: string, type: 'icon' | 'image', value: string): Promise<RoomProfile | null> {
   try {
     const stored = await AsyncStorage.getItem(PROFILE_STORAGE_KEY);
-    const profiles = stored ? JSON.parse(stored) : {};
+    const profiles: Record<string, RoomProfile> = stored ? JSON.parse(stored) : {};
+    const previous = profiles[roomId] || null;
     profiles[roomId] = { type, value };
     await AsyncStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profiles));
+    return previous;
   } catch (error) {
     console.error('Failed to save profile picture:', error);
+    return null;
   }
 }
 
-async function loadRoomProfilePictures() {
+/**
+ * Removes a replaced avatar file. Guarded on the AVATAR_DIR prefix for the same
+ * reason the R2 deletes elsewhere in this project are guarded on
+ * `groups/{roomId}/`: a stored value this feature did not write (a legacy picker
+ * cache path, anything else) must never be deleted by it. Best-effort — a failed
+ * delete only leaves a stray file behind.
+ */
+function discardReplacedAvatar(previous: RoomProfile | null, keep?: string) {
+  if (previous?.type !== 'image') return;
+  if (!previous.value?.startsWith(AVATAR_DIR) || previous.value === keep) return;
+  FileSystem.deleteAsync(previous.value, { idempotent: true }).catch(() => {});
+}
+
+async function loadRoomProfilePictures(): Promise<Record<string, RoomProfile>> {
   try {
     const stored = await AsyncStorage.getItem(PROFILE_STORAGE_KEY);
-    return stored ? JSON.parse(stored) : {};
+    const profiles: Record<string, RoomProfile> = stored ? JSON.parse(stored) : {};
+
+    // Prune entries whose image file is gone (uninstall/reinstall, or a legacy
+    // entry still pointing at the ImagePicker cache that Android has cleared).
+    // Without this an absent file renders as an empty circle forever, with no way
+    // back to the default icon.
+    let dropped = false;
+    for (const [key, profile] of Object.entries(profiles)) {
+      if (profile?.type !== 'image' || !profile.value?.startsWith('file://')) continue;
+      try {
+        const info = await FileSystem.getInfoAsync(profile.value);
+        if (!info.exists) { delete profiles[key]; dropped = true; }
+      } catch {
+        // A path we cannot even stat is no more usable than a missing one.
+        delete profiles[key];
+        dropped = true;
+      }
+    }
+    // Only write back when something actually changed — this runs on every room
+    // open and close.
+    if (dropped) await AsyncStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profiles));
+
+    return profiles;
   } catch (error) {
     console.error('Failed to load profile pictures:', error);
     return {};
   }
 }
 
-function getRoomProfilePicture(roomId: string, profilePictures: any): { type: 'icon' | 'image', value: string } | null {
-  return profilePictures[roomId] || null;
+function getRoomProfilePicture(room: any, profilePictures: any): RoomProfile | null {
+  const key = roomProfileKey(room);
+  return key ? (profilePictures?.[key] || null) : null;
 }
 
 // Helper component to render room avatar with profile picture
@@ -72,15 +242,22 @@ function RoomAvatar({ room, profilePictures, size = 17, style }: {
   size?: number, 
   style?: any 
 }) {
-  const profile = getRoomProfilePicture(room.id, profilePictures);
-  
+  const profile = getRoomProfilePicture(room, profilePictures);
+  // A stored path can outlive its file. `onError` is the only signal RN gives us
+  // at render time, so a failed load degrades to the room-type emoji instead of
+  // leaving a blank circle. Keyed off profile.value so picking a new picture
+  // clears a previous failure.
+  const [failed, setFailed] = useState(false);
+  useEffect(() => { setFailed(false); }, [profile?.value]);
+
   if (!room.isUniversal && profile) {
-    if (profile.type === 'image') {
+    if (profile.type === 'image' && !failed) {
       return (
         <Image 
           source={{ uri: profile.value }} 
           style={[{ width: size * 2.7, height: size * 2.7, borderRadius: (size * 2.7) / 2 }, style]} 
           resizeMode="cover"
+          onError={() => setFailed(true)}
         />
       );
     } else if (profile.type === 'icon') {
@@ -579,6 +756,46 @@ const portfolioFallback = (p: OwnerPortfolioProject): InventoryCard => ({
   priceRange: p.startingPrice ? { min: p.startingPrice / 100000 } : undefined,
 });
 
+// Geometry of the builder property strip, lifted out of the StyleSheet because
+// the auto-scroll stride is derived from it. The timer used to carry its own
+// hardcoded `const cardWidth = 196` (186 card + 10 gap) with no link back to
+// `bp.card` / `bp.stripRow`, so the two could silently disagree the moment either
+// style was touched. Now the styles and the stride math read the same constants
+// and the stride itself is derived from the ScrollView's MEASURED content width —
+// see cardStride() below.
+const CARD_GAP = 10;
+const STRIP_PADDING_H = 14;
+
+// How long each card holds still before the strip advances. The brief originally
+// asked for "3-4 seconds" and this was 3500 ms, the middle of that band — but on
+// the device that read as sluggish, so it is now 2000 ms. The number was once
+// hardcoded inside the setInterval call, where "make it faster" meant editing a
+// magic literal buried in the scroll maths. It lives here now so the pace is ONE
+// line to change, independently of the stride/wrap logic. Note what the number
+// does and does not control: it is the DWELL between ticks, not the glide. The
+// glide is `scrollTo({ animated: true })`, handed to the platform animator at a
+// fixed duration (~250 ms on Android) that this constant cannot influence — so
+// lowering this is the only lever on perceived pace, and dropping it much below
+// ~1500 ms would start cutting into the time needed to read a card's price.
+const BUILDER_STRIP_AUTOSCROLL_MS = 2000;
+
+/**
+ * One card plus one gap, in px — how far the carousel must travel per tick.
+ *
+ * Derived from what the ScrollView actually measured rather than from a hardcoded
+ * pixel guess: `contentWidth = 2*padding + n*cardWidth + (n-1)*gap`, so
+ * `cardWidth + gap = (contentWidth - 2*padding + gap) / n`. Measuring beats
+ * guessing here because the card is a fixed 186 dp today but nothing enforces
+ * that, and a stale stride desyncs the strip silently (it scrolls, just to the
+ * wrong place). Falls back to the literal 186 + gap only when the content has not
+ * been measured yet.
+ */
+function cardStride(contentWidth: number, count: number): number {
+  if (count < 1 || contentWidth <= 0) return 186 + CARD_GAP;
+  const measured = (contentWidth - 2 * STRIP_PADDING_H + CARD_GAP) / count;
+  return measured > 1 ? measured : 186 + CARD_GAP;
+}
+
 // ── Builder property card ──
 // Shown as a horizontal strip inside a company group: the properties that
 // builder has published. Three actions, because they answer different questions —
@@ -762,7 +979,7 @@ const GroupRow = React.memo(function GroupRow({ room, joined, joining, onPress, 
   );
 });
 
-export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, autoOpenUniversal = false, hideThreadBack = false, headerless = false, onActionsReady }: {
+export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, autoOpenUniversal = false, hideThreadBack = false, headerless = false, onActionsReady, onMatchCountChange, autoOpenProjectId, onAutoJoinFailed }: {
   onRoomOpenChange?: (open: boolean) => void;
   topInset?: number;
   // When true, the Universal ("AI Lead Matching") room opens automatically and
@@ -785,6 +1002,20 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     // Return to the default landing view (no AI conversation in progress).
     resetToLanding: () => void;
   }) => void;
+  // How many projects this user's own requirements currently match, reported
+  // upward so the hub can put a number on its Matching pill. `null` means "not
+  // known" (never loaded, or the request failed) — deliberately distinct from 0,
+  // because a failed load must not render as "you have no matches".
+  onMatchCountChange?: (n: number | null) => void;
+  // Open this property's group room immediately on mount, skipping the room
+  // list. Used by the Project-map card's Join Group button, which knows a project
+  // id and nothing else.
+  autoOpenProjectId?: string;
+  // Called when that autoOpenProjectId join FAILS. The host mounted this
+  // component for one specific room, so with no room there is nothing worth
+  // showing — the error toast has already been raised, and the host should get
+  // out of the way rather than fall back to this component's room list.
+  onAutoJoinFailed?: () => void;
 }) {
   const { user } = useAuth();
   const toast = useToast();
@@ -800,6 +1031,13 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const [creating, setCreating] = useState(false);
   const [roomForm, setRoomForm] = useState({ name: '', city: '', location: '' });
   const [search, setSearch] = useState('');
+  // Active filter chip under the search bar. null = no chip, which is the
+  // pre-chip behaviour (all three sections) — see GROUP_FILTERS above.
+  const [groupFilter, setGroupFilter] = useState<GroupFilterKey>(null);
+  // Published-project count per owner id, needed only to judge project rooms for
+  // the Property Groups chip. null means "never loaded"; {} means "we tried and
+  // failed", which is a different thing and must not retrigger the fetch.
+  const [publishedCountByOwner, setPublishedCountByOwner] = useState<Record<string, number> | null>(null);
   // Which discoverable room is mid-join (shows a spinner on its Join button).
   const [joiningId, setJoiningId] = useState<string | null>(null);
 
@@ -856,6 +1094,17 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const autoScrollTimer = useRef<NodeJS.Timeout | null>(null);
   const [autoScrollPaused, setAutoScrollPaused] = useState(false);
   const currentCardIndex = useRef(0);
+  // Measured geometry of the property strip. This is STATE, not a ref, on purpose:
+  // the auto-scroll effect used to start only `if (builderScrollRef.current)`, and
+  // reading a ref cannot schedule a re-run — see the effect's comment below. These
+  // two numbers come from onLayout / onContentSizeChange, which can only fire
+  // after the ScrollView exists, so writing them to state is the mount-proof
+  // signal the effect needs.
+  const [stripMetrics, setStripMetrics] = useState({ viewport: 0, content: 0 });
+  // Handle for the "resume ~1s after the finger lifts" timer. The previous code
+  // called a bare setTimeout in four inline handlers with no stored handle, so it
+  // could neither be cleared on unmount nor coalesced between rapid touches.
+  const resumeTimerRef = useRef<NodeJS.Timeout | null>(null);
   const [loadingBuilderProjects, setLoadingBuilderProjects] = useState(false);
   // Share sheet. ShareModal needs a real `Project` (it reads id / name / slug /
   // brochureUrl and mints a tracked token), but a builder card only carries the
@@ -877,10 +1126,13 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const [updatingProfilePic, setUpdatingProfilePic] = useState(false);
   const [customProfileIcon, setCustomProfileIcon] = useState<string | null>(null);
   const [customProfileImage, setCustomProfileImage] = useState<string | null>(null);
-  const [allRoomProfiles, setAllRoomProfiles] = useState<any>({});
-  // Matching results state
+  // Keyed by roomProfileKey(room) — the same key the write path uses.
+  const [allRoomProfiles, setAllRoomProfiles] = useState<Record<string, RoomProfile>>({});
+  // Matching results state. Typed as MatchCard[] now — it used to be `any[]`
+  // holding raw `{ project, score, matchedOn }` rows for a local lookalike card;
+  // it holds the shape the one shared MatchResultCard renders.
   const [showMatching, setShowMatching] = useState(false);
-  const [matchingResults, setMatchingResults] = useState<any[]>([]);
+  const [matchingResults, setMatchingResults] = useState<MatchCard[]>([]);
   const [matchingLoading, setMatchingLoading] = useState(false);
   const [matchingError, setMatchingError] = useState<string | null>(null);
   // Free-text lead detection (mirrors the website's extract → confirm → match).
@@ -889,8 +1141,11 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const [leadDetect, setLeadDetect] = useState<{ extraction: any; messageId?: string } | null>(null);
   const [confirmingLead, setConfirmingLead] = useState(false);
   const aiApiRef = useRef<AiAssistantApi | null>(null);
-  // Action to run once AI mode is activated from a header button (post/match).
-  const pendingAiActionRef = useRef<'post' | 'match' | null>(null);
+  // Action to run once AI mode is activated from a header button. Used to be
+  // 'post' | 'match'; 'match' was never actually queued (the line that set it was
+  // commented out) and Matching no longer enters AI mode at all, so only My Post
+  // defers through here now.
+  const pendingAiActionRef = useRef<'post' | null>(null);
   // Intent chosen from the Sell/Buy/Rent quick-start, applied once AI is ready.
   const pendingAiIntentRef = useRef<'sell' | 'buy' | 'rent' | null>(null);
   const flatRef = useRef<FlatList>(null);
@@ -900,10 +1155,19 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   // individual property or area group, where its greeting, intent chips and
   // My Post / Matching buttons make no sense.
   //
-  // `hideThreadBack` identifies the AI Leads hub pane (whose auto-opened room IS
-  // the universal room); `isUniversal` covers the room being opened directly from
-  // the Groups list.
-  const aiAllowed = !!activeRoom && (activeRoom.isUniversal || hideThreadBack);
+  // `autoOpenUniversal` identifies the AI Leads hub pane — the pane whose
+  // auto-opened room IS the universal room; `isUniversal` covers that same room
+  // being opened directly from the Groups list.
+  //
+  // This used to read `hideThreadBack` instead, which was true of the same single
+  // caller and so behaved identically. It stopped being safe when the Project
+  // map's Join Group started mounting this component in a modal with
+  // `hideThreadBack` (the modal owns the only back control) on an ordinary
+  // PROPERTY room: that would have made aiAllowed true there and rendered the
+  // Sell/Buy/Rent starter chips inside a property group — exactly what the note
+  // above says must never happen. `autoOpenUniversal` names the actual condition
+  // (the room really is the universal one) instead of a coincidence of chrome.
+  const aiAllowed = !!activeRoom && (activeRoom.isUniversal || autoOpenUniversal);
 
   // Use this — never raw `aiMode` — for anything in the render path. It prevents
   // a frame where the assistant UI paints over a property group before the
@@ -947,15 +1211,21 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
 
   useEffect(() => { onRoomOpenChange?.(!!activeRoom); }, [activeRoom, onRoomOpenChange]);
 
-  // Load profile pictures from storage
+  // Load profile pictures from storage. Re-runs whenever a room opens or closes
+  // (activeRoom?.id goes to undefined on close), so returning to the list always
+  // re-reads AsyncStorage and the rows reflect whatever was just saved.
   useEffect(() => {
     const loadProfiles = async () => {
       const profiles = await loadRoomProfilePictures();
       setAllRoomProfiles(profiles);
       
-      // Set current room's profile picture if exists
-      if (activeRoom?.id && profiles[activeRoom.id]) {
-        const profile = profiles[activeRoom.id];
+      // Set current room's profile picture if exists. Goes through the same
+      // canonical key helper as the write path — reading with a raw id here and
+      // writing with the helper elsewhere is exactly the kind of drift that would
+      // bring this bug back.
+      const activeKey = roomProfileKey(activeRoom);
+      if (activeKey && profiles[activeKey]) {
+        const profile = profiles[activeKey];
         if (profile.type === 'icon') {
           setCustomProfileIcon(profile.value);
           setCustomProfileImage(null);
@@ -996,6 +1266,42 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search]);
+
+  // Owner → published-project-count map, for the Property Groups chip only.
+  //
+  // Lazy on purpose: the Groups pane mounts every time the hub opens, and only
+  // the Property Groups chip ever needs this number, so paying for the request
+  // on mount would charge every user for a filter most of them never tap. It
+  // runs once — the `=== null` guard stops a second run when the chip is tapped
+  // again — and goes through fetchPublicProjectsRaw(), which already holds a
+  // shared 60 s cache over /public/projects. Do NOT add another fetch of that
+  // list; four screens used to request it independently and that is exactly the
+  // duplication the shared cache exists to prevent.
+  useEffect(() => {
+    if (groupFilter !== 'property' || publishedCountByOwner !== null) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const projects = await fetchPublicProjectsRaw();
+        const counts: Record<string, number> = {};
+        for (const p of projects || []) {
+          // owner arrives populated (an object with _id) from getPublished(), but
+          // a bare id string is still possible, so both shapes are normalised to
+          // the same string the room transform produces for project.owner.id.
+          const ownerId = String((p as any)?.owner?._id || (p as any)?.owner?.id || (p as any)?.owner || '');
+          if (!ownerId) continue;
+          counts[ownerId] = (counts[ownerId] || 0) + 1;
+        }
+        if (!cancelled) setPublishedCountByOwner(counts);
+      } catch {
+        // An empty map, not null: the chip then judges rooms on the profile half
+        // of the rule alone, which still surfaces something. Leaving it null
+        // would both show nothing and retry the failed request on every render.
+        if (!cancelled) setPublishedCountByOwner({});
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [groupFilter, publishedCountByOwner]);
 
   // Load the saved disappearing-messages setting once.
   useEffect(() => { disappearStorage.get().then(setDisappearMs); }, []);
@@ -1103,6 +1409,26 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     // A company group shows that builder's properties as cards. Reset first so
     // the previous builder's inventory is never visible while this one loads.
     setBuilderProjects([]);
+    // Reset the carousel too. `currentCardIndex` was never cleared here, so
+    // switching from a builder with 8 properties to one with 2 resumed the
+    // auto-scroll at index 5 and the strip sat parked past its own content. The
+    // measurements belong to the strip that is going away, so they go with it.
+    currentCardIndex.current = 0;
+    setStripMetrics({ viewport: 0, content: 0 });
+    // …and un-pause it. The pause flag was NOT reset here, and that made the
+    // pause permanent: tapping a property card's Open Group fires the strip's
+    // onTouchStart (the touch is a descendant of the ScrollView), so
+    // pauseAutoScroll sets autoScrollPaused = true and onTouchEnd arms the 1 s
+    // resume. The join lands inside that second and this reset changes the
+    // auto-scroll effect's deps — and an effect cleanup runs before every
+    // re-run, not only on unmount, so it cancelled the armed resume while the
+    // flag stayed true. canScroll was then false in every builder strip for the
+    // life of the component, since only another touch-release clears it.
+    if (resumeTimerRef.current) {
+      clearTimeout(resumeTimerRef.current);
+      resumeTimerRef.current = null;
+    }
+    setAutoScrollPaused(false);
     const builderId = room.roomType === 'builder' ? room.builder?.id : '';
     if (builderId) {
       setLoadingBuilderProjects(true);
@@ -1120,65 +1446,107 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [socket.joinGroup, socket.leaveGroup]);
 
+  // Pause / resume helpers for the property strip. Declared above the effect so
+  // the ScrollView's four touch handlers share ONE resume timer. Previously each
+  // of onTouchEnd / onScrollEndDrag called its own anonymous setTimeout with no
+  // stored handle, so two of them could race and neither could be cleared — a
+  // resume could fire after the thread had unmounted and call setState on a dead
+  // component.
+  const pauseAutoScroll = useCallback(() => {
+    if (resumeTimerRef.current) {
+      clearTimeout(resumeTimerRef.current);
+      resumeTimerRef.current = null;
+    }
+    setAutoScrollPaused(true);
+  }, []);
+  const scheduleResume = useCallback(() => {
+    if (resumeTimerRef.current) clearTimeout(resumeTimerRef.current);
+    resumeTimerRef.current = setTimeout(() => {
+      resumeTimerRef.current = null;
+      setAutoScrollPaused(false);
+    }, 1000);
+  }, []);
+
   /**
-   * Auto-scroll for builder property cards carousel.
-   * 
-   * Automatically scrolls to next card every 3.5 seconds when:
-   * - Builder projects are loaded (length > 0)
-   * - User is not actively touching/scrolling (autoScrollPaused = false)
-   * 
-   * Behavior:
-   * - Loops back to first card after reaching the end
-   * - Pauses when user manually scrolls (onTouchStart)
-   * - Resumes after 1 second of no touch (onTouchEnd)
-   * - Smooth animated transitions
+   * Auto-scroll for the builder property-card carousel: advance one card every
+   * BUILDER_STRIP_AUTOSCROLL_MS, pause while the user has a finger down, resume
+   * ~1 s after release, and loop back to the start at the end.
+   *
+   * The dwell used to be spelled "3.5 s" here in prose AND as a bare `3500` in
+   * the setInterval below, so the comment could go stale the moment the literal
+   * was tuned. Both now point at the one module-level constant.
+   *
+   * WHY THIS WAS REWRITTEN — two previous attempts never scrolled at all.
+   * The old effect's start condition was
+   * `builderProjects.length > 1 && !autoScrollPaused && builderScrollRef.current`.
+   * That last term is a REF, and reading a ref cannot schedule a re-run, so the
+   * effect only ever got the one pass its state deps gave it. And on that pass
+   * the ref was always null: `openRoom` resolves the portfolio with
+   * `.then(setBuilderProjects)` and `.finally(() => setLoadingBuilderProjects(false))`,
+   * which are two separate microtasks and therefore two separate React renders.
+   * On the first render `builderProjects.length` is already N (the dep changed, so
+   * the effect ran) but `loadingBuilderProjects` is still true, so the JSX below
+   * was still rendering the ActivityIndicator and the ScrollView did not exist.
+   * On the second render the ScrollView mounted and attached the ref — but no dep
+   * had changed, so the effect never ran again. No interval was ever created.
+   *
+   * The fix is to gate on STATE that can only be written after the ScrollView has
+   * laid out (`stripMetrics`, fed by onLayout / onContentSizeChange) and to read
+   * the ref inside the interval instead of gating on it. The per-tick distance
+   * also comes from that measurement now (cardStride) instead of the old
+   * hardcoded 196.
    */
   useEffect(() => {
-    console.log('[AUTO-SCROLL] Effect triggered:', {
-      projectsLength: builderProjects.length,
-      paused: autoScrollPaused,
-      hasRef: !!builderScrollRef.current,
-    });
-
-    // Clear any existing timer on cleanup or when dependencies change
     if (autoScrollTimer.current) {
       clearInterval(autoScrollTimer.current);
       autoScrollTimer.current = null;
     }
 
-    // Only start auto-scroll if we have cards and auto-scroll is not paused
-    if (builderProjects.length > 1 && !autoScrollPaused && builderScrollRef.current) {
-      console.log('[AUTO-SCROLL] Starting timer for', builderProjects.length, 'cards');
+    // `content > viewport` is both the "ScrollView has laid out" proof and the
+    // "there is actually somewhere to scroll" check — a strip whose cards all fit
+    // on screen must not twitch.
+    const canScroll =
+      builderProjects.length > 1 &&
+      !autoScrollPaused &&
+      stripMetrics.content > stripMetrics.viewport;
+
+    if (canScroll) {
       autoScrollTimer.current = setInterval(() => {
-        if (builderScrollRef.current && builderProjects.length > 0) {
-          // Move to next card, loop back to 0 if at end
-          currentCardIndex.current = (currentCardIndex.current + 1) % builderProjects.length;
-          
-          // Each card width: 186px (card) + 10px (gap from stripRow)
-          const cardWidth = 196;
-          const scrollX = currentCardIndex.current * cardWidth;
-          
-          console.log('[AUTO-SCROLL] Scrolling to card', currentCardIndex.current, 'at x:', scrollX);
-          
-          builderScrollRef.current.scrollTo({
-            x: scrollX,
-            animated: true,
-          });
-        }
-      }, 3500); // 3.5 seconds per card
-    } else {
-      console.log('[AUTO-SCROLL] Not starting - conditions not met');
+        const sv = builderScrollRef.current;
+        if (!sv) return;
+        const stride = cardStride(stripMetrics.content, builderProjects.length);
+        const maxOffset = Math.max(0, stripMetrics.content - stripMetrics.viewport);
+        // Wrap on real content width rather than on card count: `index % length`
+        // produced a final tick that asked for an offset the ScrollView clamped
+        // away, so the strip looked stuck for one beat before jumping back to 0.
+        //
+        // But wrapping the moment `next * stride` merely EXCEEDS maxOffset threw
+        // away the last bit of travel: 3×186dp cards in a 360dp viewport give
+        // content 606, maxOffset 246, stride 196 — the tick for the third card
+        // wants 392, overshoots, and used to jump straight home, so the offset
+        // that finally brings the last card fully into view was never reached.
+        // Now the target is CLAMPED to maxOffset (that end position gets its own
+        // beat) and we only loop once we are already sitting there.
+        const currentX = Math.min(currentCardIndex.current * stride, maxOffset);
+        const atEnd = currentX >= maxOffset - 1; // -1 absorbs sub-pixel layout
+        const next = atEnd ? 0 : currentCardIndex.current + 1;
+        const x = atEnd ? 0 : Math.min(next * stride, maxOffset);
+        currentCardIndex.current = next;
+        sv.scrollTo({ x, animated: true });
+      }, BUILDER_STRIP_AUTOSCROLL_MS);
     }
 
-    // Cleanup timer on unmount or dependencies change
     return () => {
       if (autoScrollTimer.current) {
-        console.log('[AUTO-SCROLL] Cleaning up timer');
         clearInterval(autoScrollTimer.current);
         autoScrollTimer.current = null;
       }
+      if (resumeTimerRef.current) {
+        clearTimeout(resumeTimerRef.current);
+        resumeTimerRef.current = null;
+      }
     };
-  }, [builderProjects.length, autoScrollPaused]);
+  }, [builderProjects.length, autoScrollPaused, stripMetrics.viewport, stripMetrics.content]);
 
   const closeRoom = () => {
     if (activeRoom) socket.leaveGroup(activeRoom.id);
@@ -1226,6 +1594,10 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoOpenUniversal, myRooms, loading, activeRoom]);
+
+  // (The match-count prefetch effect that used to sit here now lives directly
+  // below the loadMyMatches declaration — it calls that callback, and up here it
+  // referenced it ~400 lines before it was declared.)
 
   // Single composer handler: routes to AI when AI mode is on, else to the group.
   const handleComposerSend = () => {
@@ -1598,33 +1970,150 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     setExpandedId(null);
     setShowPost(true);
   };
-  const doMatching = async () => {
-    // Get the current AI-collected requirement params
-    const params = aiApiRef.current?.getCurrentParams?.();
-    if (!params || Object.keys(params).length === 0) {
-      toast.show('Please complete your requirement first', 'error');
-      return;
+  /**
+   * Every project the current user's own requirements have matched, flattened
+   * into the one real match card (MatchResultCard) and counted.
+   *
+   * WHY THIS REPLACED `doMatching`. The Matching pill used to call a `doMatching`
+   * that read `aiApiRef.current.getCurrentParams()` and bailed with
+   * "Please complete your requirement first" whenever no AI conversation was in
+   * progress — which is the state the pill is normally tapped in, so the pill
+   * showed a toast and no sheet. Its other branch fabricated rows from
+   * `builderProjects`, a list only ever populated for `roomType: 'builder'` rooms,
+   * while the pill only exists in the universal room — so that array was always
+   * empty and the sheet reliably ended on "No matching properties available"
+   * after a 1.5 s fake delay. Both branches are gone.
+   *
+   * `mineOnly: true` makes the server force `extractedBy = me`, so this is
+   * strictly the signed-in user's own leads, even for admin/captain. The endpoint
+   * populates each match's project, which is what the card needs. No backend
+   * change was required.
+   *
+   * `silent` skips opening the sheet and the spinner — that is the mount-time
+   * prefetch whose only job is to put a number on the pill.
+   */
+  const loadMyMatches = useCallback(async (opts?: { silent?: boolean }) => {
+    const silent = !!opts?.silent;
+    if (!silent) {
+      setShowMatching(true);
+      setMatchingLoading(true);
+      setMatchingError(null);
     }
-
-    setShowMatching(true);
-    setMatchingLoading(true);
-    setMatchingError(null);
-    setMatchingResults([]);
-
     try {
-      const result = await leadMatchingApi.matchRequirement(params);
-      if (result.detected && result.matches && result.matches.length > 0) {
-        setMatchingResults(result.matches);
-      } else {
-        setMatchingError('No matching properties found for your requirement');
+      // PAGE THROUGH, do not read one number off the envelope.
+      //
+      // This used to be a single `getLeads({ limit: 50 })` whose `pagination` was
+      // thrown away, so a user with 51+ leads silently had everything past the
+      // first page dropped and the pill under-reported — the bug only hid because
+      // small accounts never cross the page boundary.
+      //
+      // And `pagination.total` is NOT the pill's number: the endpoint counts
+      // LEADS (requirements the user recorded), while the pill counts the
+      // de-duplicated PROJECTS those leads matched. One lead can match twelve
+      // projects and twelve leads can match one, so the two figures are unrelated.
+      // That is why the fix is to fetch every page and feed the existing
+      // de-duplication the full list, rather than to read a field.
+      const LIMIT = 50;
+      // Hard stop at 20 pages / 1000 leads. A server that reports a bad `pages`
+      // (or starts ignoring `page`) would otherwise spin this loop forever on a
+      // screen the user is waiting on; truncating a 1000-lead account is the far
+      // less harmful failure.
+      const MAX_PAGES = 20;
+
+      const first = await leadMatchingApi.getLeads({ mineOnly: true, limit: LIMIT, page: 1 });
+      const leads = Array.isArray(first?.leads) ? [...first.leads] : [];
+
+      // Trust `pages` when the server sends it; derive it from total/limit only as
+      // a fallback, because an older deploy may send one and not the other.
+      const reportedPages = Number(first?.pagination?.pages);
+      const reportedTotal = Number(first?.pagination?.total);
+      const pageCount = Number.isFinite(reportedPages) && reportedPages > 0
+        ? reportedPages
+        : (Number.isFinite(reportedTotal) && reportedTotal > 0 ? Math.ceil(reportedTotal / LIMIT) : 1);
+
+      // Sequential, not Promise.all: this is a background prefetch competing with
+      // the room list and the thread for the same connection, and a user with
+      // hundreds of leads would otherwise fire a burst big enough to matter to the
+      // rate limiter.
+      for (let page = 2; page <= Math.min(pageCount, MAX_PAGES); page++) {
+        const next = await leadMatchingApi.getLeads({ mineOnly: true, limit: LIMIT, page });
+        const batch = Array.isArray(next?.leads) ? next.leads : [];
+        // An empty page means the list ran out earlier than `pages` claimed —
+        // stop rather than keep asking for pages that cannot exist.
+        if (batch.length === 0) break;
+        leads.push(...batch);
       }
-    } catch (err: any) {
-      console.error('Matching error:', err);
-      setMatchingError(err.message || 'Failed to find matches');
+
+      // One project can match several of this user's requirements (a 2BHK Besa
+      // lead and a 2BHK Nagpur lead both hit the same tower), so the flat list
+      // has duplicates. Counting them twice would inflate the pill's number and
+      // repeat the same card, so de-duplicate by projectId and keep the highest
+      // score — the strongest reason the project matched at all.
+      const byProject = new Map<string, MatchCard>();
+      for (const lead of leads) {
+        for (const m of (Array.isArray(lead?.matches) ? lead.matches : [])) {
+          const p = m?.project;
+          const projectId = String(p?._id || p?.id || '');
+          // A dangling populate (the project was deleted after the match was
+          // written) gives a row with no id and nothing to open. Drop it rather
+          // than rendering a card whose Join Group cannot work.
+          if (!projectId) continue;
+          const card: MatchCard = {
+            projectId,
+            projectName: p?.projectName || 'Property',
+            city: p?.city,
+            location: p?.location,
+            score: Number(m?.score || 0),
+            slug: p?.slug,
+            startingPrice: p?.pricing?.startingPrice,
+            bhkOptions: p?.configuration?.bhkOptions,
+            projectStatus: p?.projectStatus,
+          };
+          const existing = byProject.get(projectId);
+          if (!existing || card.score > existing.score) byProject.set(projectId, card);
+        }
+      }
+      const cards = Array.from(byProject.values()).sort((a, b) => b.score - a.score);
+
+      setMatchingResults(cards);
+      setMatchingError(null);
+      onMatchCountChange?.(cards.length);
+    } catch (e: any) {
+      // Only a THROWN request is an error. An empty list is a legitimate answer
+      // and gets the honest empty state in the sheet instead — showing an error
+      // for it would read as "something broke" when nothing did.
+      setMatchingResults([]);
+      if (!silent) setMatchingError(e?.message || 'Could not load your matches');
+      onMatchCountChange?.(null);
     } finally {
-      setMatchingLoading(false);
+      if (!silent) setMatchingLoading(false);
     }
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onMatchCountChange]);
+
+  // Prefetch the match count once, so the hub's Matching pill can carry a number
+  // before anyone taps it and the sheet then opens straight from state instead of
+  // showing a spinner. Only in headerless mode — that is the AI Leads hub pane,
+  // the one surface that renders the pill; the Groups pane has no pill and must
+  // not pay for this request. The ref guard keeps it to ONE request per mount:
+  // without it a failure would retry on every render.
+  //
+  // Declared HERE, immediately after loadMyMatches, deliberately: this effect
+  // used to sit ~400 lines above that declaration. It worked only because an
+  // effect body is a closure that runs after render, while the dep array is
+  // evaluated DURING render — so adding loadMyMatches to the deps, which is
+  // exactly what the suppressed exhaustive-deps rule asks for, would have thrown
+  // a temporal-dead-zone ReferenceError before the component could mount. With
+  // the declaration above it, the dep list below is now a safe thing to touch.
+  const matchCountLoadedRef = useRef(false);
+  useEffect(() => {
+    if (!headerless || !activeRoom || matchCountLoadedRef.current) return;
+    matchCountLoadedRef.current = true;
+    loadMyMatches({ silent: true });
+    // Intentionally not depending on loadMyMatches: the ref guard already makes
+    // this once-per-mount, so a new callback identity must not re-trigger it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [headerless, activeRoom]);
 
   // Expose post/matching to the parent hub (headerless mode) so its sub-row can
   // trigger them. aiPost/aiMatching are defined below; a stable wrapper is fine
@@ -1703,58 +2192,18 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     setAiMode(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  // Matching = show this user's real matches, always. It no longer gates on AI
+  // mode: the old version only worked mid-conversation (it needed params the
+  // assistant had collected) and otherwise fell through to fabricated rows built
+  // from `builderProjects`, which is permanently empty in the universal room
+  // where this pill lives — so the pill either toasted or showed an error sheet.
+  // The pill also no longer enters AI mode as a side effect; it is a read of
+  // existing data, not the start of a conversation. (The dep array was
+  // `[builderProjects]`, which changed identity on every portfolio load and
+  // needlessly re-fired the onActionsReady publish effect below.)
   const aiMatching = useCallback(() => {
-    console.log('[MATCHING] aiMatching called, aiMode:', aiModeRef.current, 'aiApi:', !!aiApiRef.current);
-    
-    // If AI is already active and has collected params, use doMatching
-    if (aiModeRef.current && aiApiRef.current) { 
-      doMatching(); 
-      return; 
-    }
-    
-    // Otherwise, show matching modal with default/sample data for demo
-    console.log('[MATCHING] No AI params, showing demo matches');
-    setShowMatching(true);
-    setMatchingLoading(true);
-    setMatchingError(null);
-    setMatchingResults([]);
-
-    // Simulate API call with demo data
-    setTimeout(() => {
-      // Use some existing data from builderProjects if available, or show mock data
-      const demoMatches = builderProjects.slice(0, 3).map((project, index) => ({
-        project: {
-          projectName: project.name || `Demo Property ${index + 1}`,
-          location: project.location || 'Nagpur',
-          city: project.city || 'Maharashtra',
-          configuration: {
-            bhkOptions: project.bhkOptions || ['2BHK', '3BHK']
-          },
-          pricing: {
-            startingPrice: project.startingPrice || (20 + index * 5) * 100000 // Use actual price or demo
-          },
-          owner: {
-            name: `Builder ${index + 1}`,
-            companyName: 'Demo Company'
-          }
-        },
-        score: 85 - index * 10, // 85%, 75%, 65%
-        matchedOn: ['Location', 'Budget', 'Configuration']
-      }));
-
-      if (demoMatches.length > 0) {
-        setMatchingResults(demoMatches);
-      } else {
-        setMatchingError('No matching properties available');
-      }
-      setMatchingLoading(false);
-    }, 1500);
-
-    // Don't auto-enter AI mode - just show the matching results directly
-    // pendingAiActionRef.current = 'match';
-    // setAiMode(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [builderProjects]);
+    loadMyMatches();
+  }, [loadMyMatches]);
   // Quick-start: user picked Sell / Buy / Rent. Enter AI mode and let the
   // assistant answer the intent question itself, so the chat continues from the
   // next question instead of asking "what would you like to do?" again.
@@ -1792,8 +2241,10 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     if (pendingAiActionRef.current) {
       const action = pendingAiActionRef.current;
       pendingAiActionRef.current = null;
+      // 'post' is the only action that still defers through here. The 'match'
+      // branch called doMatching, which is gone: Matching no longer enters AI
+      // mode, so nothing ever queues 'match' and the branch was dead code.
       if (action === 'post') doPost();
-      else if (action === 'match') doMatching();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [aiMode, aiReady]);
@@ -2128,12 +2579,20 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
    * backend resolves (or creates) that property's canonical group, adds the user
    * and returns the room, which we then open.
    */
-  const handleJoinPropertyGroup = useCallback(async (projectId: string) => {
+  /*
+   * Resolves to whether a room was actually opened. Callers that render this
+   * component ONLY to show that one room (the Project-map modal, via
+   * autoOpenProjectId) need to know a failure happened, because otherwise they
+   * sit there with activeRoom still null. Everything else ignores the result and
+   * keeps its old fire-and-forget behaviour — a function returning a promise is
+   * still assignable to the `(projectId: string) => void` props the cards use.
+   */
+  const handleJoinPropertyGroup = useCallback(async (projectId: string): Promise<boolean> => {
     if (!projectId) {
       toast.show('This card is not linked to a property group', 'error');
-      return;
+      return false;
     }
-    if (joiningId) return;
+    if (joiningId) return false;
     setJoiningId(projectId);
     try {
       const { room, joined } = await groupChatApi.joinProjectRoom(projectId);
@@ -2141,8 +2600,10 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
       setDiscoverRooms(prev => prev.filter(x => x.id !== room.id));
       toast.show(joined ? `Joined ${roomDisplayName(room)}` : `Opening ${roomDisplayName(room)}`, 'success');
       openRoom(room);
+      return true;
     } catch (e: any) {
       toast.show(e?.message || 'Could not join the property group', 'error');
+      return false;
     } finally {
       setJoiningId(null);
     }
@@ -2191,6 +2652,32 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const handleOpenProjectGroup = useCallback((project: OwnerPortfolioProject) => {
     handleJoinPropertyGroup(project.id);
   }, [handleJoinPropertyGroup]);
+
+  /**
+   * `autoOpenProjectId`: open one specific property's group straight away,
+   * skipping the room list. Modelled on the autoOpenUniversal effect above and
+   * declared here, below handleJoinPropertyGroup, because it delegates to it —
+   * so the Project map reuses the exact join path the inventory cards already
+   * use (POST /group-chat/projects/:projectId/join resolves-or-creates the
+   * canonical room, adds the user, returns it) with no new API surface.
+   *
+   * The ref guard is load-bearing: `handleJoinPropertyGroup` leaves `activeRoom`
+   * null when the join fails, so without it a failed join would retry on every
+   * render and spray toasts.
+   *
+   * And because activeRoom stays null on failure, the caller is TOLD about it.
+   * Previously a failed join just toasted and left this component rendering its
+   * own full room list — search bar, Groups/Chats, Discover rows — inside a modal
+   * captioned "Property Group", with no way back except the host's chevron. The
+   * host now closes itself instead (see onAutoJoinFailed).
+   */
+  const autoOpenedProjectRef = useRef(false);
+  useEffect(() => {
+    if (!autoOpenProjectId || autoOpenedProjectRef.current || activeRoom) return;
+    autoOpenedProjectRef.current = true;
+    handleJoinPropertyGroup(autoOpenProjectId).then(ok => { if (!ok) onAutoJoinFailed?.(); });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoOpenProjectId, activeRoom, handleJoinPropertyGroup]);
 
   /**
    * Call dials the person who POSTED the property first (sender phone, sent by
@@ -2262,13 +2749,31 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     }
   }, [toast]);
 
-  // Property icons for profile picture selection
-  const PROPERTY_ICONS = ['🏠', '🏗', '🏢', '📍', '🏘', '🏡', '🏬', '🏭', '🏢', '🏰', '🏯', '🏛', '🌆', '🏙', '🌇', '🎪'];
-
+  // Group profile picture — the write path.
+  //
+  // THE BUG THIS FIXES: both of these handlers used to declare `[toast]` as their
+  // only dependency. The component always mounts on the room LIST, where
+  // activeRoom is null, so the closure useCallback handed to the modal had
+  // captured activeRoom === null — the `if (activeRoom?.id)` guard was false and
+  // neither saveRoomProfilePicture() nor setAllRoomProfiles() ever ran. Nothing
+  // was ever written to AsyncStorage. What still worked through the stale closure
+  // were the useState setters (referentially stable), which is why the thread
+  // header and the group-info sheet showed the new picture while the list kept
+  // the default icon; and `toast.show('Profile picture updated!')` sat OUTSIDE
+  // the guard, so the app reported success on a save that never happened. That
+  // false success is what survived three rounds of fixes aimed at the read side.
+  //
+  // Two changes keep it fixed: activeRoom?.id is now a dependency, and the map is
+  // updated with a functional updater so `allRoomProfiles` is not captured at all
+  // (the old `{ ...allRoomProfiles }` spread could resurrect a stale snapshot and
+  // drop another room's entry).
   const handleProfilePicUpload = useCallback(async (option: 'gallery' | 'camera') => {
+    const key = roomProfileKey(activeRoom);
+    if (!key) {
+      toast.show('Open a group first', 'error');
+      return;
+    }
     try {
-      console.log('Profile picture upload:', option);
-      
       const permissionType = option === 'camera' 
         ? ImagePicker.requestCameraPermissionsAsync()
         : ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -2292,21 +2797,39 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
           });
 
       if (!result.canceled && result.assets[0]) {
-        // Save the selected image URI for display
         const imageUri = result.assets[0].uri;
-        console.log('Profile pic selected:', imageUri);
-        
+
+        // Copy the pick out of the picker's cache before anything is persisted.
+        // The URI handed back lives under .../cache/ImagePicker/, which Android
+        // purges at will and which does not survive a reinstall, so storing it
+        // produced avatars that went blank later with no explanation. The
+        // timestamp in the filename matters: reusing one filename lets RN's
+        // Image serve the previously cached bitmap, so a new photo would appear
+        // not to have changed.
+        let storedUri: string;
+        try {
+          await FileSystem.makeDirectoryAsync(AVATAR_DIR, { intermediates: true }); // idempotent
+          const ext = (imageUri.match(/\.(jpe?g|png|webp|heic)(?:\?|$)/i)?.[0] || '.jpg').toLowerCase();
+          storedUri = `${AVATAR_DIR}${key}-${Date.now()}${ext}`;
+          await FileSystem.copyAsync({ from: imageUri, to: storedUri });
+        } catch (copyError) {
+          // Persisting the cache URI as a fallback would just recreate the decay
+          // this copy exists to prevent, so nothing is saved at all.
+          console.error('Profile pic copy error:', copyError);
+          toast.show('Could not save that photo', 'error');
+          return;
+        }
+
         // Clear icon and set image
         setCustomProfileIcon(null);
-        setCustomProfileImage(imageUri);
-        
-        // Save to storage and update global state
-        if (activeRoom?.id) {
-          await saveRoomProfilePicture(activeRoom.id, 'image', imageUri);
-          const updatedProfiles = { ...allRoomProfiles, [activeRoom.id]: { type: 'image', value: imageUri } };
-          setAllRoomProfiles(updatedProfiles);
-        }
-        
+        setCustomProfileImage(storedUri);
+
+        const replaced = await saveRoomProfilePicture(key, 'image', storedUri);
+        discardReplacedAvatar(replaced, storedUri);
+        // Functional updater, so `allRoomProfiles` is never read from this
+        // closure and a stale snapshot can never drop another room's entry.
+        setAllRoomProfiles(prev => ({ ...prev, [key]: { type: 'image', value: storedUri } }));
+
         toast.show('Profile picture updated!', 'success');
         setShowProfilePicModal(false);
       }
@@ -2316,27 +2839,28 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     } finally {
       setUpdatingProfilePic(false);
     }
-  }, [toast]);
+  }, [toast, activeRoom?.id]);
 
   const handleIconSelect = useCallback(async (icon: string) => {
+    const key = roomProfileKey(activeRoom);
+    if (!key) {
+      toast.show('Open a group first', 'error');
+      return;
+    }
     try {
-      console.log('Icon selected:', icon);
       setUpdatingProfilePic(true);
-      
-      // Here you would typically update the room/group with the new icon
-      // For now, just update local state to show the change
-      await new Promise(resolve => setTimeout(resolve, 500)); // Simulate API call
-      
+      // There used to be an artificial 500ms sleep here commented "Simulate API
+      // call". There is no API call on this path — storage is local by design —
+      // so it only delayed a write that takes a millisecond.
+
       // Clear image and set icon
       setCustomProfileImage(null);
       setCustomProfileIcon(icon); // Update local state to show new icon
-      
-      // Save to storage and update global state
-      if (activeRoom?.id) {
-        await saveRoomProfilePicture(activeRoom.id, 'icon', icon);
-        const updatedProfiles = { ...allRoomProfiles, [activeRoom.id]: { type: 'icon', value: icon } };
-        setAllRoomProfiles(updatedProfiles);
-      }
+
+      const replaced = await saveRoomProfilePicture(key, 'icon', icon);
+      // Switching to an emoji orphans whatever photo this room had.
+      discardReplacedAvatar(replaced);
+      setAllRoomProfiles(prev => ({ ...prev, [key]: { type: 'icon', value: icon } }));
       toast.show('Profile picture updated!', 'success');
       setShowProfilePicModal(false);
     } catch (error) {
@@ -2345,7 +2869,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     } finally {
       setUpdatingProfilePic(false);
     }
-  }, [toast]);
+  }, [toast, activeRoom?.id]);
 
   // Stable renderItem so the memoised MessageBubble can actually bail out.
   // Previously this was an inline arrow with a fresh onInterested on every
@@ -2594,11 +3118,14 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
 
   // One stable renderItem for the whole SectionList. `section.joined` decides
   // which variant the row shows, so both sections share a single row component.
+  // The Property Groups section is the one place that mixes joined and joinable
+  // rows in a single heading, so it passes `joinedIds` and the row answers for
+  // itself; every other section leaves it undefined and keeps the flat flag.
   const renderGroupRow = useCallback(
-    ({ item: room, section }: { item: GroupRoom; section: { joined: boolean } }) => (
+    ({ item: room, section }: { item: GroupRoom; section: { joined: boolean; joinedIds?: Set<string> } }) => (
       <GroupRow
         room={room}
-        joined={section.joined}
+        joined={section.joinedIds ? section.joinedIds.has(room.id) : section.joined}
         joining={joiningId === room.id}
         onPress={openRoom}
         onJoin={handleJoin}
@@ -2664,63 +3191,161 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
       !r.isUniversal && !joinedIds.has(r.id) && r.roomType !== 'project'
     );
 
+    // Property Groups chip: the ONLY top-level path to a roomType 'project'
+    // room. Project rooms stay out of the unfiltered discoverList above — one
+    // builder can have eighteen properties and listing them all alongside their
+    // company group showed the same property twice — and that decision is NOT
+    // reversed here. This chip is an extra surface on top of it, and it admits a
+    // project room only when the room is ORPHANED: a lone published property, or
+    // an owner with no complete identity to group it under. Those are precisely
+    // the rooms that are otherwise unreachable, because a user who never opens
+    // the builder's group never sees them.
+    //
+    // Built from myRooms AND discoverRooms so a joined orphan and a joinable one
+    // sit in the same list. De-duplicated on id with the JOINED copy winning,
+    // because the joined row is the richer one: it carries joined: true (so the
+    // row renders Open rather than Join) and its unread badge.
+    const propertyGroups = (() => {
+      const byId = new Map<string, GroupRoom>();
+      for (const r of discoverRooms) {
+        if (r.isUniversal || joinedIds.has(r.id)) continue;
+        if (isOrphanedPropertyGroup(r, publishedCountByOwner)) byId.set(r.id, r);
+      }
+      for (const r of listRooms) {
+        if (isOrphanedPropertyGroup(r, publishedCountByOwner)) byId.set(r.id, r);
+      }
+      return Array.from(byId.values());
+    })();
+
     // ONE list for everything. Empty sections drop out, so a user with no area
     // groups simply never sees that heading.
-    const sections = [
-      { title: 'Builders', data: myBuilders, joined: true },
-      { title: 'Area Groups', data: myAreas, joined: true },
-      { title: 'Discover Groups', data: discoverList, joined: false },
-    ].filter(sec => sec.data.length > 0);
+    //
+    // The chip narrows this; no chip (groupFilter === null) is byte-for-byte the
+    // three sections this pane always showed.
+    const sections = (
+      groupFilter === 'mine'
+        ? [
+          { title: 'Builders', data: myBuilders, joined: true },
+          { title: 'Area Groups', data: myAreas, joined: true },
+        ]
+        : groupFilter === 'discover'
+          ? [{ title: 'Discover Groups', data: discoverList, joined: false }]
+          : groupFilter === 'property'
+            // One section, mixing joined and joinable rows. A section carries a
+            // single `joined` flag for all its rows, which would have forced a
+            // joined orphan to render a "Join" button it does not need — so this
+            // section also hands renderGroupRow the joined-id set and the row
+            // resolves its own state. `joined: false` only picks the heading's
+            // globe icon, which is right for a discovery surface.
+            ? [{ title: GROUP_FILTER_LABELS.property, data: propertyGroups, joined: false, joinedIds }]
+            : [
+              { title: 'Builders', data: myBuilders, joined: true },
+              { title: 'Area Groups', data: myAreas, joined: true },
+              { title: 'Discover Groups', data: discoverList, joined: false },
+            ]
+    ).filter(sec => sec.data.length > 0);
 
     const nothingToShow = sections.length === 0;
+
+    // An active chip with no matches must explain ITSELF. The empty state used to
+    // read "No groups yet" unconditionally, which under a chip was simply false —
+    // the user may have plenty of groups and just none of this kind.
+    const emptyLabel = search
+      ? `No groups match "${search}"`
+      : groupFilter === 'mine'
+        ? 'No groups you have joined yet'
+        : groupFilter === 'discover'
+          ? 'No new groups to discover'
+          : groupFilter === 'property'
+            ? 'No property groups to show'
+            : 'No groups yet';
+
+    const emptyHint = search
+      ? 'Try a different area or project name.'
+      : groupFilter === 'mine'
+        ? 'Join a group from Discover and it will show up here.'
+        : groupFilter === 'discover'
+          ? 'You have already joined every public group we can see.'
+          : groupFilter === 'property'
+            ? 'Single-property groups and groups from builders without a complete profile appear here.'
+            : 'Groups you join appear here, and public groups show up under Discover Groups.';
 
     return (
       <View style={{ flex: 1 }}>
         {/* Header: always-visible search + New. The search used to be a magnifier
             that expanded over the whole header, hiding the other actions while
             typing, and a globe opened a duplicate Discover sheet. */}
-        <View style={s.listHeader}>
-          <View style={s.searchInline}>
-            <Search size={15} color={colors.muted} />
-            <TextInput
-              value={search}
-              onChangeText={setSearch}
-              placeholder="Search groups…"
-              placeholderTextColor={colors.muted}
-              style={s.searchInput}
-              onSubmitEditing={() => loadRooms(search)}
-              returnKeyType="search"
-            />
-            {!!search && (
-              <Pressable onPress={() => setSearch('')} hitSlop={8} accessibilityLabel="Clear search">
-                <X size={16} color={colors.muted2} />
-              </Pressable>
-            )}
+        {/* The header used to BE the search + New row. It is now a column, so the
+            filter chips can sit directly under the search field where they read
+            as narrowing that search rather than as unrelated header actions. */}
+        <View style={s.listHeaderWrap}>
+          <View style={s.listHeader}>
+            <View style={s.searchInline}>
+              <Search size={15} color={colors.muted} />
+              <TextInput
+                value={search}
+                onChangeText={setSearch}
+                placeholder="Search groups…"
+                placeholderTextColor={colors.muted}
+                style={s.searchInput}
+                onSubmitEditing={() => loadRooms(search)}
+                returnKeyType="search"
+              />
+              {!!search && (
+                <Pressable onPress={() => setSearch('')} hitSlop={8} accessibilityLabel="Clear search">
+                  <X size={16} color={colors.muted2} />
+                </Pressable>
+              )}
+            </View>
+            <Pressable
+              onPress={() => setShowCreate(true)}
+              style={s.newBtn}
+              accessibilityRole="button"
+              accessibilityLabel="Create a new group"
+            >
+              <Plus size={14} color={colors.brand} />
+              <Text style={s.newBtnText}>New</Text>
+            </Pressable>
           </View>
-          <Pressable
-            onPress={() => setShowCreate(true)}
-            style={s.newBtn}
-            accessibilityRole="button"
-            accessibilityLabel="Create a new group"
+
+          {/* Single-select, and tapping the ACTIVE chip clears it. There is no
+              "All" chip to go back to, so the chip itself has to be the way out —
+              otherwise the first tap would be a one-way door. */}
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={s.filterBar}
+            contentContainerStyle={s.filterContent}
+            keyboardShouldPersistTaps="handled"
           >
-            <Plus size={14} color={colors.brand} />
-            <Text style={s.newBtnText}>New</Text>
-          </Pressable>
+            {GROUP_FILTERS.map(f => {
+              const active = groupFilter === f.key;
+              return (
+                <Pressable
+                  key={f.key}
+                  onPress={() => setGroupFilter(active ? null : f.key)}
+                  style={[s.filterPill, active && s.filterPillActive]}
+                  accessibilityRole="button"
+                  accessibilityLabel={active ? `${f.label} filter active, tap to clear` : `Filter by ${f.label}`}
+                >
+                  <Text style={[s.filterPillText, active && s.filterPillTextActive]}>{f.label}</Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
         </View>
 
         {loading ? <ActivityIndicator color={colors.brand} style={{ marginTop: 40 }} /> : (
           nothingToShow ? (
             <View style={s.empty}>
               <Users size={28} color={colors.muted} />
-              <Text style={s.emptyText}>
-                {search ? `No groups match "${search}"` : 'No groups yet'}
-              </Text>
-              <Text style={s.emptyHint}>
-                {search
-                  ? 'Try a different area or project name.'
-                  : 'Groups you join appear here, and public groups show up under Discover Groups.'}
-              </Text>
-              {!search && (
+              <Text style={s.emptyText}>{emptyLabel}</Text>
+              <Text style={s.emptyHint}>{emptyHint}</Text>
+              {/* Also hidden while a chip is active: Create only ever makes an
+                  AREA group, so offering it as the answer to "no property
+                  groups" would be a non-sequitur. The chip row stays on screen,
+                  so clearing the filter is the available next step. */}
+              {!search && !groupFilter && (
                 <Pressable onPress={() => setShowCreate(true)} style={s.joinBtn}>
                   <Text style={s.joinBtnText}>Create a group</Text>
                 </Pressable>
@@ -2807,9 +3432,6 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   // Exit Group moved into this sheet — leaving them out would strand area members
   // with no way to leave, since their 3-dot no longer carries it.
   const canOpenGroupInfo = !activeRoom.isUniversal;
-  
-  // Allow profile pic modal in all rooms for testing
-  const canOpenProfilePic = true;
   const infoMembers = activeRoom.members || [];
   const infoAdmins = infoMembers.filter(m => m.role === 'admin');
   return (
@@ -2830,12 +3452,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
             Exit (canLeave === false), a member list that grows with every signup,
             and member numbers that must never be shown there. */}
         <Pressable
-          onPress={canOpenGroupInfo ? () => {
-            console.log('Group header tapped, opening info modal');
-            setShowGroupInfo(true);
-          } : () => {
-            console.log('Group header tapped but canOpenGroupInfo is false, activeRoom.isUniversal:', activeRoom.isUniversal);
-          }}
+          onPress={canOpenGroupInfo ? () => setShowGroupInfo(true) : undefined}
           disabled={!canOpenGroupInfo}
           style={s.threadIdentity}
           accessibilityRole="button"
@@ -2883,21 +3500,11 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
           </View>
         )}
 
-        {/* Test Profile Pic Button - visible always for testing */}
-        <Pressable 
-          onPress={() => {
-            console.log('Test Profile Picture button tapped!');
-            setShowProfilePicModal(true);
-          }}
-          style={{
-            padding: 8,
-            backgroundColor: colors.brandTint,
-            borderRadius: 8,
-            marginLeft: 8,
-          }}
-        >
-          <Text style={{ fontSize: 12, color: colors.brand, fontWeight: '700' }}>📸 Test</Text>
-        </Pressable>
+        {/* The temporary orange "📸 Test" button that opened the profile-picture
+            sheet from here has been removed. It was debug scaffolding from when
+            the save path was broken; the real entry point is the WhatsApp-style
+            avatar tap inside the group-info sheet, reached by tapping this
+            header. */}
 
         {/* There is deliberately no group 3-dot in the thread header any more.
             It used to carry Exit / Delete Group for builder and area rooms; those
@@ -3075,31 +3682,37 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
               horizontal
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={bp.stripRow}
-              onTouchStart={() => {
-                console.log('[AUTO-SCROLL] Touch start - pausing');
-                // Pause auto-scroll when user touches
-                setAutoScrollPaused(true);
+              // These two feed the auto-scroll effect's start condition. They are
+              // the only signal that can report "the ScrollView exists and has a
+              // size" through state — the old effect tested builderScrollRef,
+              // which can never trigger a re-run (see the effect's comment).
+              onLayout={e => {
+                const w = e.nativeEvent.layout.width;
+                setStripMetrics(m => (m.viewport === w ? m : { ...m, viewport: w }));
               }}
-              onTouchEnd={() => {
-                console.log('[AUTO-SCROLL] Touch end - will resume in 1s');
-                // Resume auto-scroll 1 second after user releases touch
-                setTimeout(() => {
-                  console.log('[AUTO-SCROLL] Resuming after touch');
-                  setAutoScrollPaused(false);
-                }, 1000);
+              onContentSizeChange={w => {
+                setStripMetrics(m => (m.content === w ? m : { ...m, content: w }));
               }}
-              onScrollBeginDrag={() => {
-                console.log('[AUTO-SCROLL] Drag begin - pausing');
-                // Also pause on drag start (manual swipe)
-                setAutoScrollPaused(true);
-              }}
-              onScrollEndDrag={() => {
-                console.log('[AUTO-SCROLL] Drag end - will resume in 1s');
-                // Resume after drag ends
-                setTimeout(() => {
-                  console.log('[AUTO-SCROLL] Resuming after drag');
-                  setAutoScrollPaused(false);
-                }, 1000);
+              onTouchStart={pauseAutoScroll}
+              onTouchEnd={scheduleResume}
+              onScrollBeginDrag={pauseAutoScroll}
+              onScrollEndDrag={scheduleResume}
+              // Keep the timer's idea of "where we are" in sync with a manual
+              // swipe. Without this the first auto-tick after a swipe yanked the
+              // strip back to whatever index the timer last set.
+              onMomentumScrollEnd={e => {
+                const stride = cardStride(stripMetrics.content, builderProjects.length);
+                const maxOffset = Math.max(0, stripMetrics.content - stripMetrics.viewport);
+                const x = e.nativeEvent.contentOffset.x;
+                // At the very end the offset is a CLAMPED one (maxOffset is not a
+                // whole number of strides), so rounding it would report an index
+                // one short of the end and the next tick would re-request the same
+                // position — a dead beat before the loop. Snap to the first index
+                // that the tick's own clamp maps onto maxOffset instead, so the
+                // next tick wraps home.
+                currentCardIndex.current = x >= maxOffset - 1 && maxOffset > 0
+                  ? Math.ceil(maxOffset / stride)
+                  : Math.max(0, Math.round(x / stride));
               }}
             >
               {/* Details now goes through handlePropertyViewDetails, the SAME path
@@ -3516,12 +4129,13 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
               showsVerticalScrollIndicator
               ListHeaderComponent={(
                 <View style={gi.header}>
+                  {/* The only entry point to the profile-picture sheet, the way
+                      WhatsApp does it: tap the group's avatar in group info. */}
                   <Pressable 
                     style={gi.avatar}
-                    onPress={() => {
-                      console.log('Profile picture tapped!');
-                      setShowProfilePicModal(true);
-                    }}
+                    onPress={() => setShowProfilePicModal(true)}
+                    accessibilityRole="button"
+                    accessibilityLabel="Change group profile picture"
                   >
                     {customProfileImage ? (
                       <Image 
@@ -3789,18 +4403,29 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
         </Pressable>
       </Modal>
 
-      {/* ── Matching Results Modal ── */}
+      {/* ── Your Matches ──
+          Opened by the hub's Matching pill. Rows are MatchResultCard, the SAME
+          card the AI Assist results bubble renders, imported rather than
+          re-implemented: this sheet used to draw its own `mts` lookalike that had
+          already drifted (no cover image, no score pill, no Join Group) and was
+          fed fabricated demo rows. Join Group runs through
+          handleJoinPropertyGroup, so it works from here exactly as it does in
+          the chat — wrapped to dismiss this sheet first, see the call site. ── */}
       <Modal visible={showMatching} transparent animationType="slide" onRequestClose={() => setShowMatching(false)}>
         <Pressable style={pd.overlay} onPress={() => setShowMatching(false)}>
           <Pressable style={pd.sheet} onPress={() => {}}>
             <View style={pd.head}>
               <Search size={18} color={colors.brand} />
               <View style={{ flex: 1 }}>
-                <Text style={pd.headTitle}>Matching Properties</Text>
+                <Text style={pd.headTitle}>Your Matches</Text>
+                {/* No "0 matches" line: a zero in the header reads as a failure.
+                    An empty result is explained in the body instead. */}
                 <Text style={pd.headSub}>
-                  {matchingLoading ? 'Searching...' : 
-                   matchingResults.length > 0 ? `${matchingResults.length} properties found` : 
-                   'Results will appear here'}
+                  {matchingLoading
+                    ? 'Searching…'
+                    : matchingResults.length > 0
+                      ? `${matchingResults.length} ${matchingResults.length === 1 ? 'match' : 'matches'} across your requirements`
+                      : 'Lead → Inventory auto-match'}
                 </Text>
               </View>
               <Pressable onPress={() => setShowMatching(false)} hitSlop={8}><X size={20} color={colors.ink} /></Pressable>
@@ -3809,77 +4434,47 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
             {matchingLoading ? (
               <View style={{ paddingVertical: 60, alignItems: 'center' }}>
                 <ActivityIndicator color={colors.brand} size="large" />
-                <Text style={{ fontSize: 12, color: colors.muted, marginTop: 12 }}>Finding matching properties...</Text>
+                <Text style={{ fontSize: 12, color: colors.muted, marginTop: 12 }}>Loading your matches…</Text>
               </View>
             ) : matchingError ? (
-              <View style={{ paddingVertical: 40, alignItems: 'center', paddingHorizontal: 20 }}>
+              /* A failed request must never look like "you have no matches", so it
+                 says what happened and offers a retry. */
+              <View style={{ paddingVertical: 40, alignItems: 'center', paddingHorizontal: 20, gap: 14 }}>
                 <Text style={{ fontSize: 13, color: colors.muted2, textAlign: 'center' }}>{matchingError}</Text>
+                <Pressable onPress={() => loadMyMatches()} style={ld.findBtn}>
+                  <Search size={14} color="#fff" />
+                  <Text style={ld.findText}>Retry</Text>
+                </Pressable>
               </View>
             ) : matchingResults.length > 0 ? (
-              <ScrollView style={{ maxHeight: 500 }} contentContainerStyle={{ paddingBottom: 12 }} showsVerticalScrollIndicator={false}>
-                {matchingResults.map((match, idx) => {
-                  const project = match.project || {};
-                  const score = Math.round(match.score || 0);
-                  const matchedOn = match.matchedOn || [];
-                  const scoreColor = score >= 70 ? colors.greenText : score >= 50 ? colors.amberText : colors.muted2;
-
-                  return (
-                    <View key={idx} style={mts.card}>
-                      {/* Header with name and score */}
-                      <View style={mts.cardHeader}>
-                        <View style={{ flex: 1 }}>
-                          <Text style={mts.projectName} numberOfLines={1}>{project.projectName || 'Property'}</Text>
-                          <Text style={mts.projectLoc} numberOfLines={1}>
-                            📍 {[project.location, project.city].filter(Boolean).join(', ') || 'Location not specified'}
-                          </Text>
-                        </View>
-                        <View style={[mts.scoreBadge, { backgroundColor: `${scoreColor}18`, borderColor: scoreColor }]}>
-                          <Text style={[mts.scoreText, { color: scoreColor }]}>{score}%</Text>
-                        </View>
-                      </View>
-
-                      {/* Property details */}
-                      <View style={mts.detailsRow}>
-                        {project.configuration?.bhkOptions && project.configuration.bhkOptions.length > 0 && (
-                          <View style={mts.detailChip}>
-                            <Text style={mts.detailChipText}>{project.configuration.bhkOptions.join(', ')}</Text>
-                          </View>
-                        )}
-                        {project.pricing?.startingPrice && (
-                          <View style={mts.detailChip}>
-                            <Text style={mts.detailChipText}>{fmtPrice(project.pricing.startingPrice)}</Text>
-                          </View>
-                        )}
-                      </View>
-
-                      {/* Matched criteria */}
-                      {matchedOn.length > 0 && (
-                        <View style={mts.matchedRow}>
-                          <Text style={mts.matchedLabel}>Matched on:</Text>
-                          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4, flex: 1 }}>
-                            {matchedOn.slice(0, 4).map((criterion: string, i: number) => (
-                              <View key={i} style={mts.matchTag}>
-                                <Text style={mts.matchTagText}>{criterion}</Text>
-                              </View>
-                            ))}
-                          </View>
-                        </View>
-                      )}
-
-                      {/* Owner info if available */}
-                      {project.owner && (
-                        <Text style={mts.ownerText} numberOfLines={1}>
-                          By {project.owner.name || 'Builder'}{project.owner.companyName ? ` · ${project.owner.companyName}` : ''}
-                        </Text>
-                      )}
-                    </View>
-                  );
-                })}
+              <ScrollView style={{ maxHeight: 500 }} contentContainerStyle={{ paddingHorizontal: 14, paddingBottom: 14, gap: 8 }} showsVerticalScrollIndicator={false}>
+                {matchingResults.map(m => (
+                  /* Dismiss the sheet BEFORE joining. handleJoinPropertyGroup
+                     ends in openRoom(), but nothing used to clear showMatching,
+                     so this full-screen modal stayed on top of the thread it had
+                     just opened and the tap read as a no-op apart from a toast —
+                     the same "kuch bhi nahi hua" symptom this feature exists to
+                     fix. The close is done HERE, not inside
+                     handleJoinPropertyGroup, because the AI Assist results
+                     bubble and the inventory cards share that handler and have
+                     no modal in play. */
+                  <MatchResultCard
+                    key={m.projectId}
+                    match={m}
+                    onJoinGroup={(id) => { setShowMatching(false); handleJoinPropertyGroup(id); }}
+                  />
+                ))}
               </ScrollView>
             ) : (
-              <View style={{ paddingVertical: 40, alignItems: 'center', paddingHorizontal: 20 }}>
-                <Text style={{ fontSize: 13, color: colors.muted, textAlign: 'center' }}>
-                  No properties matched your requirement yet. Try adjusting your preferences.
+              /* Honest empty state. The previous version reached
+                 "No matching properties available" through fabricated data that
+                 was always empty, so it was never telling the truth about the
+                 user's account. This says what is actually missing and what to do
+                 about it. */
+              <View style={{ paddingVertical: 40, alignItems: 'center', paddingHorizontal: 24, gap: 12 }}>
+                <Search size={26} color={colors.muted} />
+                <Text style={{ fontSize: 13, color: colors.muted2, textAlign: 'center', lineHeight: 19 }}>
+                  Koi match nahi mila abhi. Apni requirement AI Assist me complete karein — match milte hi yahan dikh jayega.
                 </Text>
               </View>
             )}
@@ -4518,78 +5113,25 @@ const MessageBubble = React.memo(function MessageBubble({
             ]}
           />
 
-          {/* Quick action buttons */}
-          <View style={mbs.propertyActions}>
-            {(inv.callNumber || msg.sender.phone) && (
-              <Pressable
-                style={mbs.propertyActionBtn}
-                onPress={() => onPropertyCall(cardProjectId, inv.callNumber, msg.sender.phone)}
-                accessibilityLabel="Call"
-              >
-                <Phone size={13} color={colors.brand} />
-              </Pressable>
-            )}
-            {(inv.callNumber || msg.sender.phone) && (
-              <Pressable
-                style={mbs.propertyActionBtn}
-                onPress={() => {
-                  const phone = inv.callNumber || msg.sender.phone || '';
-                  if (phone) {
-                    // Normalize phone: add +91 prefix for Indian 10-digit mobiles
-                    // starting with 6-9. Numbers already prefixed remain unchanged.
-                    const cleaned = phone.replace(/\D/g, '');
-                    const normalized = (cleaned.length === 10 && /^[6-9]/.test(cleaned))
-                      ? `91${cleaned}`
-                      : cleaned;
-                    Linking.openURL(`whatsapp://send?phone=${normalized}`).catch(() => {
-                      toast.show('WhatsApp nahi khul saka. Check karein ki app installed hai.', 'error');
-                    });
-                  }
-                }}
-                accessibilityLabel="WhatsApp"
-              >
-                <MessageCircle size={13} color={colors.greenText} />
-              </Pressable>
-            )}
-            {/* Location button: only show when coordinates are available. 
-                Fallback Google Maps search was unreliable and could show wrong
-                locations, so button is hidden when projObj has no lat/lng. */}
-            {(() => {
-              // Type-safe coordinate check. The Project type from api.ts defines
-              // latitude/longitude, so no `as any` bypass is needed. This ensures
-              // compile-time safety if the schema changes.
-              const proj = (typeof projectRef === 'object' && projectRef) ? projectRef as Project : undefined;
-              const hasCoords = proj?.latitude && proj?.longitude;
-              return hasCoords ? (
-                <Pressable
-                  style={mbs.propertyActionBtn}
-                  onPress={() => {
-                    Linking.openURL(`https://www.google.com/maps?q=${proj.latitude},${proj.longitude}`).catch(() => {
-                      toast.show('Maps nahi khul saka.', 'error');
-                    });
-                  }}
-                  accessibilityLabel="Location"
-                >
-                  <MapPin size={13} color={colors.blueText} />
-                </Pressable>
-              ) : null;
-            })()}
-            {cardProjectId && (
-              <Pressable
-                style={mbs.propertyActionBtn}
-                onPress={async () => {
-                  try {
-                    await Share.share({
-                      message: `Check out this property: ${title}\n${location}\n${priceText}`,
-                    });
-                  } catch {}
-                }}
-                accessibilityLabel="Share"
-              >
-                <Share2 size={13} color={colors.slateText} />
-              </Pressable>
-            )}
-          </View>
+          {/* The CardActions row above is now the ONLY action row on this card.
+              A second, icon-only `mbs.propertyActions` row used to render right
+              beneath it with four bare icons — Phone, MessageCircle, MapPin and
+              Share2 — which made Call appear TWICE on one card (labelled in
+              CardActions, unlabelled here) and, worse, put an unlabelled green
+              speech bubble next to Join Group. That bubble read as the `Chat Now`
+              affordance we deliberately removed: it was never a chat, it deep-linked
+              to WhatsApp. Two rows of the same actions also pushed the card's
+              timestamp off the visible area in a dense thread.
+              Everything dropped with that row is still reachable:
+                • Call — in CardActions, with a label.
+                • WhatsApp — the phone +91 normalisation it duplicated is owned by
+                  handleMemberWhatsApp, reached from group info.
+                • Location — the detail sheet already shows the full location, and
+                  the icon only rendered when the project carried lat/lng anyway.
+                • Share — the detail sheet's Share2 (verified above `shareProjectId`)
+                  goes through shareApi and renders under exactly the same
+                  condition this icon did, a real resolved project id. A plain
+                  Share.share text blob was strictly the worse of the two. */}
 
           {!!messageClock(msg.createdAt) && (
             <Text style={mbs.propertyTime}>{messageClock(msg.createdAt)}</Text>
@@ -4743,6 +5285,19 @@ const s = StyleSheet.create({
   listHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 14, paddingVertical: 8, minHeight: 46 },
   newBtn: { flexShrink: 0, flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 12, paddingVertical: 9, borderRadius: 12, borderWidth: 1, borderColor: colors.brand, backgroundColor: colors.brandTint },
   newBtnText: { fontSize: 12, fontWeight: '800', color: colors.brand },
+  // Column wrapper around the search+New row and the filter chips. listHeader
+  // itself stays the row it always was, so nothing about the search field or the
+  // New button moved.
+  listHeaderWrap: { paddingBottom: 2 },
+  // Chip row. The shape is lifted from the proven filter pills on the Projects
+  // screen so the two screens do not drift apart: white fill with a neutral
+  // border when inactive, brand fill when active.
+  filterBar: { flexGrow: 0 },
+  filterContent: { gap: 8, paddingHorizontal: 14, paddingBottom: 8, alignItems: 'center' },
+  filterPill: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', height: 32, paddingHorizontal: 14, borderRadius: 16, backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line },
+  filterPillActive: { backgroundColor: colors.brand, borderColor: colors.brand },
+  filterPillText: { fontSize: 11.5, fontWeight: '700', color: colors.muted2 },
+  filterPillTextActive: { color: '#fff' },
   roomRow: { flexDirection: 'row', alignItems: 'center', padding: 12, gap: 12, backgroundColor: colors.white },
   roomRowPinned: { backgroundColor: `${colors.brand}08` },
   roomAvatar: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.brandTint, alignItems: 'center', justifyContent: 'center' },
@@ -4917,7 +5472,7 @@ const bp = StyleSheet.create({
   stripHead: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, marginBottom: 8 },
   stripTitle: { fontSize: 10, fontWeight: '800', color: colors.muted, letterSpacing: 0.4, textTransform: 'uppercase' },
   stripCount: { fontSize: 9.5, fontWeight: '800', color: colors.brand },
-  stripRow: { paddingHorizontal: 14, gap: 10 },
+  stripRow: { paddingHorizontal: 14, gap: CARD_GAP },
   stripEmpty: { paddingHorizontal: 14, fontSize: 11.5, color: colors.muted },
   card: {
     width: 186,
@@ -5236,28 +5791,10 @@ const mbs = StyleSheet.create({
     fontWeight: '800',
     textAlign: 'center',
   },
-  // Quick action buttons — icon-only row below inventory card content
-  propertyActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: colors.line,
-    marginTop: 8,
-  },
-  propertyActionBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 4,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    borderRadius: 8,
-    backgroundColor: colors.cream,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
+  // `propertyActions` / `propertyActionBtn` lived here and styled the icon-only
+  // second action row on the inventory card. That row is gone (see the comment in
+  // the inventory_card branch), so the styles went with it rather than being left
+  // behind for someone to re-render the duplicate row from.
   propertyTime: {
     alignSelf: 'flex-end',
     fontSize: 8.5,
@@ -5303,95 +5840,4 @@ const sh = StyleSheet.create({
   footer: { padding: 14, borderTopWidth: 1, borderTopColor: colors.line },
   submitBtn: { paddingVertical: 15, borderRadius: 14, alignItems: 'center' },
   submitText: { color: '#fff', fontSize: 14, fontWeight: '800' },
-});
-
-
-// Matching Results Styles
-const mts = StyleSheet.create({
-  card: {
-    backgroundColor: colors.white,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: colors.line,
-    padding: 14,
-    marginHorizontal: 16,
-    marginTop: 12,
-    gap: 10,
-  },
-  cardHeader: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 10,
-  },
-  projectName: {
-    fontSize: 14,
-    fontWeight: '800',
-    color: colors.ink,
-    letterSpacing: -0.2,
-  },
-  projectLoc: {
-    fontSize: 11.5,
-    color: colors.muted2,
-    marginTop: 2,
-  },
-  scoreBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 12,
-    borderWidth: 1.5,
-  },
-  scoreText: {
-    fontSize: 13,
-    fontWeight: '800',
-    letterSpacing: 0.2,
-  },
-  detailsRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-  },
-  detailChip: {
-    backgroundColor: colors.slateBg,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: colors.slateBorder,
-  },
-  detailChipText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: colors.slateText,
-  },
-  matchedRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 8,
-  },
-  matchedLabel: {
-    fontSize: 10.5,
-    fontWeight: '700',
-    color: colors.muted,
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-    marginTop: 2,
-  },
-  matchTag: {
-    backgroundColor: `${colors.brand}12`,
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: `${colors.brand}33`,
-  },
-  matchTagText: {
-    fontSize: 9.5,
-    fontWeight: '700',
-    color: colors.brand,
-  },
-  ownerText: {
-    fontSize: 10.5,
-    color: colors.muted,
-    fontStyle: 'italic',
-  },
 });

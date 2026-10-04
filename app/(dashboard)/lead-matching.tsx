@@ -182,20 +182,25 @@ function Chip({ label }: { label: string }) {
   );
 }
 
-// ── Sub-row pane tab (Groups / Chats) ────────────────────────
+// ── Sub-row pane pill (Groups / Chats) ───────────────────────
 // Renderer for the two PANE SWITCHERS only. The two AI actions share the same row
-// but are drawn by AiActionPill below, deliberately NOT by this component:
-//   • pane ('Groups' / 'Chats') — picks which content pane is shown, so the 2px
-//     brand underline reads as "this view is active" and is mutually exclusive.
-//   • action ('My Post' / 'Matching') — one-shot triggers that open a modal (the
-//     My Posts sheet / the Matching results sheet) and have no selected state at
-//     all, so they must NEVER hold a persistent underline: a lit tab would claim
-//     a view is active when the pane behind it never changed.
+// and are drawn by AiActionPill below.
 //
-// A previous pass rendered all four through this one component in the identical
-// text-tab treatment and deleted the pills. The user asked for the pills back, so
-// there are two renderers again — which is also the honest encoding of the rule
-// above: the pane/action split is now visible at rest, not only on tap.
+// HISTORY, so the shape is not flipped back and forth again. These two were
+// deliberately underline TABS and the actions were pills, because the two kinds
+// do different things:
+//   • pane ('Groups' / 'Chats') — picks which content pane is shown; mutually
+//     exclusive, and one of them is always selected.
+//   • action ('My Post' / 'Matching') — one-shot triggers that open a modal and
+//     have no selected state at all, so they must never hold a persistent lit
+//     state: that would claim a view is active when the pane never changed.
+// The shape difference was how that split read at rest. The user asked for all
+// four to read as ONE pill set, so the shapes now match and the split moved into
+// the FILL: a solid brand pill is the selected pane, a tinted/outlined pill is a
+// one-shot action. That, plus accessibilityRole (tab vs button), is what still
+// encodes the distinction — the 2px brand underline was previously the only
+// selected-state signal, so the pills had to take that job over, which is why
+// selected here is a full brand fill rather than a tint.
 function SubTab({ label, Icon, active, onPress }: {
   label: string;
   Icon: LucideIcon;
@@ -205,22 +210,22 @@ function SubTab({ label, Icon, active, onPress }: {
   return (
     <Pressable
       onPress={onPress}
-      style={({ pressed }) => [hub.subTab, active && hub.subTabActive, pressed && hub.subTabPressed]}
+      style={({ pressed }) => [hub.panePill, active && hub.panePillActive, pressed && hub.subTabPressed]}
       accessibilityRole="tab"
       accessibilityState={{ selected: active }}
       accessibilityLabel={label}
     >
-      {/* flexShrink: 0 so the icon keeps its 14px box when the label needs to give
+      {/* flexShrink: 0 so the icon keeps its box when the label needs to give
           way — RN already defaults to 0, stated explicitly because the Text next
-          to it deliberately overrides that default. */}
-      <Icon size={14} color={active ? colors.brand : colors.muted2} style={hub.subTabIcon} />
+          to it deliberately overrides that default. 13px matches AiActionPill. */}
+      <Icon size={13} color={active ? '#fff' : colors.muted2} style={hub.subTabIcon} />
       {/* Clamp to one line. numberOfLines alone is not enough: RN defaults
           flexShrink to 0 (unlike CSS), so the Text would be laid out at its
           intrinsic width and overflow its cell instead of ellipsizing — visible on
-          a ~320dp screen or at a system font scale above 1.0, where the two tabs
-          plus the two pills no longer fit side by side. hub.subTabText carries
+          a ~320dp screen or at a system font scale above 1.0, where the two panes
+          plus the two actions no longer fit side by side. hub.panePillText carries
           flexShrink: 1 so the clamp can actually truncate. */}
-      <Text numberOfLines={1} style={[hub.subTabText, active && hub.subTabTextActive]}>{label}</Text>
+      <Text numberOfLines={1} style={[hub.panePillText, active && hub.panePillTextActive]}>{label}</Text>
     </Pressable>
   );
 }
@@ -232,18 +237,21 @@ function SubTab({ label, Icon, active, onPress }: {
 // greenBg/greenBorder, Matching = brand on brandTint with a 33%-alpha brand
 // border). A previous pass restyled them as plain underline tabs; the user wants
 // the pills, so the values were recovered from the pre-merge code rather than
-// re-picked by eye.
+// re-picked by eye. SubTab now shares this geometry — see its comment.
 //
 // accessibilityRole is "button", not "tab": tapping one opens a modal instead of
 // changing which pane the row has selected. That is also why the tablist role
 // stays on the pane wrapper and does not cover these two — a row that mixes
 // navigation with actions must not announce every child as a tab.
-function AiActionPill({ label, Icon, fg, bg, border, onPress }: {
+function AiActionPill({ label, Icon, fg, bg, border, count, onPress }: {
   label: string;
   Icon: LucideIcon;
   fg: string;
   bg: string;
   border: string;
+  // How many results the action would show, when that is known. Only Matching
+  // passes it.
+  count?: number | null;
   onPress: () => void;
 }) {
   return (
@@ -254,10 +262,18 @@ function AiActionPill({ label, Icon, fg, bg, border, onPress }: {
       // modal it opens can take a moment to appear. Rest appearance is unchanged.
       style={({ pressed }) => [hub.aiPill, { backgroundColor: bg, borderColor: border }, pressed && hub.subTabPressed]}
       accessibilityRole="button"
-      accessibilityLabel={label}
+      accessibilityLabel={typeof count === 'number' && count > 0 ? `${label}, ${count}` : label}
     >
       <Icon size={13} color={fg} />
       <Text numberOfLines={1} style={[hub.aiPillText, { color: fg }]}>{label}</Text>
+      {/* `> 0` is deliberate. A `0` badge on a pill reads as a bug, and a null
+          count means "not loaded / request failed", which must not render as
+          zero either — the sheet explains an empty or failed result honestly. */}
+      {typeof count === 'number' && count > 0 && (
+        <View style={hub.aiPillBadge}>
+          <Text style={hub.aiPillBadgeText}>{count}</Text>
+        </View>
+      )}
     </Pressable>
   );
 }
@@ -288,6 +304,14 @@ export default function LeadMatchingHub({
   const handleActionsReady = useCallback((a: GroupActions) => {
     groupActionsRef.current = a;
   }, []);
+  // How many projects this user's requirements currently match, reported by the
+  // assistant pane so the Matching pill can carry a number. `null` = not known
+  // (never loaded, or the request failed), which is NOT the same as 0 and must
+  // not render as a badge. Stable callback for the same reason as above: the
+  // child publishes it from an effect, so a fresh identity each render would
+  // re-fire that effect on every keystroke in the composer.
+  const [matchCount, setMatchCount] = useState<number | null>(null);
+  const handleMatchCountChange = useCallback((n: number | null) => setMatchCount(n), []);
 
   // Tapping the "AI Leads" section button returns to the default landing page —
   // the same view the app opens on — instead of dropping the user back into a
@@ -317,9 +341,12 @@ export default function LeadMatchingHub({
   // chat's own action row inside GroupChatEmbedded, one row lower, on the
   // reasoning that a bar mixing navigation with actions was confusing. The user
   // asked for all four on one line, so the actions moved up here. The old
-  // reasoning is recorded so the second row is not silently reintroduced — the
-  // navigation / action distinction is now carried by the two renderers (tab vs
-  // pill) and by the gap between the groups, not by a separate row.
+  // reasoning is recorded so the second row is not silently reintroduced. The
+  // navigation / action distinction used to be carried by the two SHAPES
+  // (underline tab vs pill); the user then asked for all four to read as one pill
+  // set, so it is now carried by the FILL (solid brand = selected pane, tinted =
+  // one-shot action), by the gap between the two groups, and by the
+  // tab-vs-button accessibility roles.
   //
   // Nothing about what the actions DO changed: they call the same post() /
   // matching() triggers the assistant pane already published through
@@ -331,11 +358,12 @@ export default function LeadMatchingHub({
 
   // `tab === 'assistant' && groupOpen` reproduces the actions' old gate
   // (`headerless && aiAllowed` inside GroupChatEmbedded) exactly. Only the
-  // assistant pane is passed `headerless`/`hideThreadBack`, and inside it
+  // assistant pane is passed `headerless`/`autoOpenUniversal`, and inside it
   // `aiAllowed` collapses to `!!activeRoom` — which the child reports upward via
-  // onRoomOpenChange, i.e. `groupOpen`. When false the pill group is not rendered
-  // at all; because the pane tabs are content-width and left-aligned (not flex
-  // cells) they simply stay where they are instead of re-centring or stretching.
+  // onRoomOpenChange, i.e. `groupOpen`. When false the action group is not
+  // rendered at all; because the pane pills are content-width and left-aligned
+  // (not flex cells) they simply stay where they are instead of re-centring or
+  // stretching.
   const aiActionsVisible = tab === 'assistant' && groupOpen;
 
   // Keep the tab bar visible on the AI Lead Matching section (it IS the primary
@@ -361,9 +389,10 @@ export default function LeadMatchingHub({
             </View>
           )}
 
-          {/* Sub-row: Groups · Chats | My Post · Matching — one row, two groups.
-              See the SUB comment for the visibility rule and the SubTab /
-              AiActionPill comments for why the two kinds look different. */}
+          {/* Sub-row: Groups · Chats | My Post · Matching — four pills on one
+              row, two groups. See the SUB comment for the visibility rule and the
+              SubTab / AiActionPill comments for how the pane/action split is
+              still encoded now that the shapes match. */}
           <View style={hub.subBar}>
             {/* tablist covers ONLY the pane switchers. The pills next to them are
                 buttons, not tabs, so they sit outside this wrapper. */}
@@ -396,6 +425,9 @@ export default function LeadMatchingHub({
                   // 55 hex = 33% alpha, the softened brand border the pre-merge
                   // pill used so it reads lighter than the Leads button.
                   border={`${colors.brand}55`}
+                  // Only this pill gets a count — My Post has no equivalent
+                  // prefetched total.
+                  count={matchCount}
                   onPress={() => groupActionsRef.current?.matching()}
                 />
               </View>
@@ -433,6 +465,10 @@ export default function LeadMatchingHub({
             hideThreadBack
             headerless
             onActionsReady={handleActionsReady}
+            // Only the assistant pane reports a match count: it is the only pane
+            // that renders the Matching pill, so the groups pane must not pay for
+            // the prefetch request.
+            onMatchCountChange={handleMatchCountChange}
           />
         )}
       </View>
@@ -460,41 +496,55 @@ const hub = StyleSheet.create({
   headerTitle: { fontSize: 19, fontWeight: '800', color: colors.ink },
   // Sub-row: the Groups · Chats tabs, then the My Post · Matching pills at the
   // far right of the same line.
-  subBar: { flexDirection: 'row', backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.line },
-  // The tabs are content-width, not `flex: 1` cells. They used to split the row
-  // evenly (2 cells, then 4 once the actions were merged in), but even cells left
-  // no gap between the Chats tab and the My Post pill and stretched the active
-  // underline right up against it. Content width keeps the pair at the left edge
-  // whether or not the pills are showing, and keeps each underline the width of
-  // its own label. flexShrink lets the group give way before anything clips.
-  subPanes: { flexDirection: 'row', flexShrink: 1 },
-  subTab: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, paddingVertical: 11, paddingHorizontal: 12, borderBottomWidth: 2, borderBottomColor: 'transparent', flexShrink: 1 },
-  subTabActive: { borderBottomColor: colors.brand },
-  // Touch feedback. The pills need it most — an action has no selected state to
-  // change — and the tabs share it for parity.
+  // paddingVertical moved here from the pane tabs. They used to own the row's
+  // vertical rhythm with paddingVertical: 11 (needed to push the 2px underline to
+  // the bottom edge); now that they are pills of the same height as the actions,
+  // the row supplies the breathing space so both groups sit on one baseline.
+  subBar: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.line, paddingVertical: 7, paddingHorizontal: 12 },
+  // The pane pills are content-width, not `flex: 1` cells. They used to split the
+  // row evenly (2 cells, then 4 once the actions were merged in), but even cells
+  // left no gap between Chats and the My Post pill. Content width keeps the pair
+  // at the left edge whether or not the actions are showing. flexShrink lets the
+  // group give way before anything clips. gap 6 matches the action group, so all
+  // four pills are evenly spaced.
+  subPanes: { flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1 },
+  // Same geometry as aiPill below — radius 16, 1px border, 9/6 padding, gap 4 —
+  // because the user wants all four to read as one control set. The difference is
+  // the fill: solid brand = this pane is selected, outline = not selected.
+  panePill: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 9, paddingVertical: 6, borderRadius: 16, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.white, flexShrink: 1 },
+  panePillActive: { backgroundColor: colors.brand, borderColor: colors.brand },
+  // Touch feedback. The actions need it most — they have no selected state to
+  // change — and the pane pills share it for parity.
   subTabPressed: { opacity: 0.55 },
   subTabIcon: { flexShrink: 0 },
   // flexShrink: 1 is what makes numberOfLines={1} on the label effective. RN
   // defaults flexShrink to 0, so without it a label is measured at its intrinsic
   // width and spills out of its cell instead of ellipsizing — reachable at a
-  // system font scale above 1.0 on a ~320dp screen, where the two tabs and the
-  // two pills together exceed the row width.
-  subTabText: { fontSize: 11, fontWeight: '700', color: colors.muted2, flexShrink: 1 },
-  subTabTextActive: { color: colors.brand, fontWeight: '800' },
+  // system font scale above 1.0 on a ~320dp screen, where all four pills together
+  // exceed the row width.
+  panePillText: { fontSize: 11, fontWeight: '800', color: colors.muted2, flexShrink: 1 },
+  panePillTextActive: { color: '#fff' },
   // marginLeft: 'auto' is the gap the user asked for: it absorbs all free space in
   // the row, so the pills sit flush right and the tabs stay flush left no matter
   // how wide the screen is. With no free space left (large font scale) the auto
   // margin collapses to 0 and both groups shrink via flexShrink instead.
-  // gap 6 matches the pre-merge action bar; its paddingHorizontal was 14, trimmed
-  // to 12 here (same as the tabs) to buy back width, because the tabs now share
-  // the line instead of sitting on their own row above.
-  aiActions: { flexDirection: 'row', alignItems: 'center', gap: 6, marginLeft: 'auto', paddingHorizontal: 12, flexShrink: 1 },
+  // gap 6 matches the pre-merge action bar. Its paddingHorizontal (14, then 12)
+  // moved up to subBar once the pane tabs became pills: with four pills on one
+  // row the edge inset belongs to the row, not to one of the two groups,
+  // otherwise the left and right insets differ.
+  aiActions: { flexDirection: 'row', alignItems: 'center', gap: 6, marginLeft: 'auto', flexShrink: 1 },
   // Recovered verbatim from GroupChatEmbedded's `headerAiBtn` / `headerAiBtnText`
   // (the pills' home before the merge) so the look is identical to the screenshot
   // the user pointed at, rather than re-derived. Colours are passed per pill.
   // radius 16 against a ~27px tall pill is a full round, as before.
   aiPill: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 9, paddingVertical: 6, borderRadius: 16, borderWidth: 1, flexShrink: 1 },
   aiPillText: { fontSize: 11, fontWeight: '800', flexShrink: 1 },
+  // Count badge on the Matching pill. Brand fill with white text rather than the
+  // pill's own tinted scheme, so the number reads as a separate token and not as
+  // part of the label. flexShrink: 0 — the number must never be the thing that
+  // ellipsizes.
+  aiPillBadge: { minWidth: 16, paddingHorizontal: 4, paddingVertical: 1, borderRadius: 999, backgroundColor: colors.brand, alignItems: 'center', flexShrink: 0 },
+  aiPillBadgeText: { fontSize: 9, fontWeight: '800', color: '#fff' },
   leadsBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 18, backgroundColor: colors.brandTint, borderWidth: 1, borderColor: colors.brand },
   leadsBtnText: { fontSize: 11.5, fontWeight: '800', color: colors.brand },
   closeBtn: { padding: 6, borderRadius: 10, backgroundColor: colors.slateBg },

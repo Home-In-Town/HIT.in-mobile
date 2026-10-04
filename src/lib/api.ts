@@ -1534,7 +1534,16 @@ export interface GroupRoom {
       brochurePdf?: { url: string };
       layoutImage?: { url: string };
     };
-    owner?: { id: string; name?: string; companyName?: string };
+    /**
+     * `isVerified` was always on the wire — ROOM_PROJECT_POPULATE in
+     * groupChatController.js selects `name companyName role isVerified
+     * verificationStatus` — but transformGroupRoom narrowed the owner down to
+     * `{ id, name, companyName }` and threw the flag away, so the client had no
+     * way to tell a verified owner from an unverified one on a project room even
+     * though a builder room right next to it could. The loss was in the
+     * transform, not the API; no backend change was needed to recover it.
+     */
+    owner?: { id: string; name?: string; companyName?: string; isVerified?: boolean };
   };
   area?: { city: string; location: string };
   createdBy?: { id: string; name?: string };
@@ -1635,6 +1644,10 @@ function transformGroupRoom(raw: any): GroupRoom {
             id: String(raw.project.owner._id || raw.project.owner.id || ''),
             name: raw.project.owner.name,
             companyName: raw.project.owner.companyName,
+            // Compared against `true` the same way builder.isVerified is below,
+            // so a missing field reads as "not verified" rather than undefined
+            // and every caller gets a plain boolean.
+            isVerified: raw.project.owner.isVerified === true,
           }
           : { id: String(raw.project.owner) })
         : undefined,

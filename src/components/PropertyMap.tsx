@@ -14,11 +14,13 @@ import * as Location from 'expo-location';
 import { useRouter } from 'expo-router';
 import {
   Search, ArrowRight, Navigation, Locate, X, MapPin, AlertTriangle,
-  CheckCircle, Building2,
+  CheckCircle, Building2, Users, ChevronLeft,
 } from 'lucide-react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { mapPropertiesApi, MapProperty } from '../lib/mapProperties';
 import { useAuth } from '../lib/authContext';
 import { colors } from '../theme';
+import GroupChatEmbedded from './GroupChatEmbedded';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const CARD_WIDTH = SCREEN_WIDTH * 0.72;
@@ -45,6 +47,7 @@ const CATEGORY_TABS = [
 
 export default function PropertyMap({ isAdmin = false }: { isAdmin?: boolean }) {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const myId = user?.id ? String(user.id) : '';
   const mapRef = useRef<MapView>(null);
@@ -62,6 +65,21 @@ export default function PropertyMap({ isAdmin = false }: { isAdmin?: boolean }) 
   const [showDirectionsPanel, setShowDirectionsPanel] = useState(false);
   const [incompleteProperties, setIncompleteProperties] = useState<{ name: string; reason: string }[]>([]);
   const [showIncompletePanel, setShowIncompletePanel] = useState(false);
+  // Which property's group thread the local modal is showing, if any. See the
+  // modal's comment for why the thread is hosted here rather than navigated to.
+  const [joinProjectId, setJoinProjectId] = useState<string | null>(null);
+  // Has the hosted thread reported an OPEN room yet? GroupChatEmbedded publishes
+  // onRoomOpenChange on its mount pass too, and at that point the auto-join is
+  // still in flight, so acting on the first `false` would dismiss this modal
+  // before the thread ever appeared. Only a true → false transition means the
+  // room was actually closed from inside (Exit / Delete Group).
+  const threadRoomWasOpenRef = useRef(false);
+  const handleThreadRoomOpenChange = useCallback((open: boolean) => {
+    if (open) { threadRoomWasOpenRef.current = true; return; }
+    if (!threadRoomWasOpenRef.current) return;
+    threadRoomWasOpenRef.current = false;
+    setJoinProjectId(null);
+  }, []);
 
   const incompleteCount = incompleteProperties.length;
 
@@ -356,18 +374,32 @@ export default function PropertyMap({ isAdmin = false }: { isAdmin?: boolean }) 
                       <Text style={styles.cardBhk}>{item.bhkOptions[0]}</Text>
                     )}
                   </View>
-                  <View style={styles.cardCtaRow}>
-                    {item.cta?.callNumber && (
-                      <Pressable style={styles.cardCtaBtn} onPress={() => Linking.openURL(`tel:${item.cta!.callNumber}`)}>
-                        <Text style={styles.cardCtaText}>📞 Call</Text>
-                      </Pressable>
-                    )}
-                    {item.cta?.whatsappNumber && (
-                      <Pressable style={[styles.cardCtaBtn, styles.cardCtaWhatsapp]} onPress={() => Linking.openURL(`https://wa.me/91${item.cta!.whatsappNumber}`)}>
-                        <Text style={styles.cardCtaTextWhatsapp}>💬 WhatsApp</Text>
-                      </Pressable>
-                    )}
-                  </View>
+                  {/* WHY THERE IS NO Call / WhatsApp HERE ANY MORE.
+                      This row used to hold a `tel:` Call button and a green
+                      `wa.me` WhatsApp button, gated on item.cta. They were the
+                      ONLY contact affordance on this card, and they were removed
+                      on explicit user instruction in favour of a single Join
+                      Group — the same project-wide decision that makes every
+                      property card say "Join Group" and never "Chat Now". The
+                      builder's number is still reachable from the property detail
+                      screen (tap the card body) and from inside the group itself,
+                      so nothing became unreachable. DO NOT RESTORE THEM. */}
+                  <Pressable
+                    style={styles.cardJoinBtn}
+                    // stopPropagation matters: the card body is itself a Pressable
+                    // that calls openDetail, so without it this tap would also
+                    // push the detail route behind the group modal.
+                    // The ref is reset here, not only on close: dismissing the
+                    // modal with its chevron while a room is open leaves it true,
+                    // and the next mount's `false` publish would then close the
+                    // modal the instant it opened.
+                    onPress={(e) => { e.stopPropagation(); threadRoomWasOpenRef.current = false; setJoinProjectId(item.id); }}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Join the group for ${item.property_name}`}
+                  >
+                    <Users size={13} color="#fff" />
+                    <Text style={styles.cardJoinText}>Join Group</Text>
+                  </Pressable>
                 </View>
               </Pressable>
             )}
@@ -489,6 +521,59 @@ export default function PropertyMap({ isAdmin = false }: { isAdmin?: boolean }) 
           </View>
         </View>
       </Modal>
+
+      {/* ── Property group thread, opened by a card's Join Group ──
+          Hosted as a LOCAL modal rather than as a jump to the chat surface. The
+          group thread lives in the AI Leads tab while this map is the Project tab
+          of app/(dashboard)/crm.tsx, so handing a project id across that switcher
+          would have meant new state in crm.tsx, lead-matching.tsx and both keyed
+          GroupChatEmbedded panes — a cross-tab navigation the user did not ask
+          for, to land on a surface they would then have to navigate back out of.
+
+          `hideThreadBack` because this modal's own chevron is the only back
+          control: a second chevron inside the thread would close the room and
+          strand the user on an empty room list inside a modal. The `key` forces a
+          clean remount per property so the previous property's room, messages and
+          socket subscription cannot leak into the next one, and the
+          `{!!joinProjectId && …}` guard unmounts the component on close rather
+          than leaving it mounted and hidden with a live room subscription. All
+          providers it needs (Toast / Auth / SafeArea) sit in app/_layout.tsx,
+          above both surfaces.
+
+          `onAutoJoinFailed` closes this modal when the join request fails. It
+          used to just stay open: GroupChatEmbedded was left with no active room,
+          so it rendered its OWN room list — search bar, Groups/Chats sections,
+          Discover rows — under a header reading "Property Group". The failure
+          already toasts, so dropping back to the map (where Join Group can simply
+          be tapped again) is the honest outcome.
+
+          `onRoomOpenChange` closes it for the OTHER route to the same dead end,
+          which onAutoJoinFailed does not cover: this instance keeps its thread
+          header, so the avatar tap reaches group info, and Exit Group / Delete
+          Group there call closeRoom() — leaving that same room list under the
+          "Property Group" header with nothing to rejoin. Listening to the room's
+          open state catches every closeRoom path at once, including later ones.
+          ── */}
+      <Modal visible={!!joinProjectId} animationType="slide" onRequestClose={() => setJoinProjectId(null)}>
+        <View style={{ flex: 1, backgroundColor: colors.cream, paddingTop: insets.top }}>
+          <View style={styles.groupModalHeader}>
+            <Pressable onPress={() => setJoinProjectId(null)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Back to map">
+              <ChevronLeft size={22} color={colors.ink} />
+            </Pressable>
+            <Text style={styles.groupModalTitle}>Property Group</Text>
+          </View>
+          {!!joinProjectId && (
+            <GroupChatEmbedded
+              key={joinProjectId}
+              autoOpenProjectId={joinProjectId}
+              onAutoJoinFailed={() => setJoinProjectId(null)}
+              onRoomOpenChange={handleThreadRoomOpenChange}
+              hideThreadBack
+              topInset={0}
+            />
+          )}
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -542,11 +627,16 @@ const styles = StyleSheet.create({
   cardPriceRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 },
   cardPrice: { fontSize: 15, fontWeight: '900', color: '#111827' },
   cardBhk: { fontSize: 10, color: colors.muted2, backgroundColor: '#F3F4F6', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
-  cardCtaRow: { flexDirection: 'row', gap: 6, marginTop: 6 },
-  cardCtaBtn: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 20, borderWidth: 1, borderColor: '#D1D5DB' },
-  cardCtaText: { fontSize: 10, fontWeight: '600', color: '#374151' },
-  cardCtaWhatsapp: { backgroundColor: colors.green, borderColor: colors.green },
-  cardCtaTextWhatsapp: { fontSize: 10, fontWeight: '600', color: '#fff' },
+  // Replaces cardCtaRow / cardCtaBtn / cardCtaText / cardCtaWhatsapp /
+  // cardCtaTextWhatsapp, all deleted with the Call and WhatsApp buttons. Full
+  // width and brand-filled because it is now the card's single action — the two
+  // pill-shaped buttons it replaced shared the row.
+  cardJoinBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, marginTop: 6, paddingVertical: 7, borderRadius: 10, backgroundColor: colors.brand },
+  cardJoinText: { fontSize: 10.5, fontWeight: '800', color: '#fff' },
+
+  // Header of the local property-group modal — supplies the only back control.
+  groupModalHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 12, paddingVertical: 12, backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.line },
+  groupModalTitle: { fontSize: 15, fontWeight: '800', color: colors.ink },
 
   // Loading / empty
   loadingOverlay: { position: 'absolute', top: '45%', alignSelf: 'center', alignItems: 'center', backgroundColor: colors.white, paddingHorizontal: 24, paddingVertical: 16, borderRadius: 16, gap: 8, shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 8, elevation: 5 },
