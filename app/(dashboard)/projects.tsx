@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   View, Text, ScrollView, Pressable, StyleSheet,
-  RefreshControl, TextInput, FlatList, Share, Modal, Linking,
+  RefreshControl, TextInput, FlatList, Share, Modal, Linking, Alert, ActivityIndicator,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   Building2, Plus, Search,
-  Pencil, LayoutTemplate, BarChart3, Link as LinkIcon, ExternalLink, Trash2, X,
+  Pencil, LayoutTemplate, BarChart3, Link as LinkIcon, ExternalLink, Trash2, X, UserPlus,
 } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import { projectsApiExtended, Project, MarketplaceListing } from '../../src/lib/api';
@@ -42,8 +42,9 @@ function projectToListing(p: Project): MarketplaceListing {
 }
 
 // ── Project 3-dot menu (bottom sheet). Options mirror the website exactly. ──
-function ProjectMenuSheet({ project, onClose, onEdit, onLayout, onAnalytics, onCopyLink, onVisit, onDelete }: {
+function ProjectMenuSheet({ project, user, onClose, onEdit, onLayout, onAnalytics, onCopyLink, onVisit, onDelete, onAssignCaptain, onAssignAgent }: {
   project: Project | null;
+  user: { role?: string } | null;
   onClose: () => void;
   onEdit: (p: Project) => void;
   onLayout: (p: Project) => void;
@@ -51,14 +52,19 @@ function ProjectMenuSheet({ project, onClose, onEdit, onLayout, onAnalytics, onC
   onCopyLink: (p: Project) => void;
   onVisit: (p: Project) => void;
   onDelete: (p: Project) => void;
+  onAssignCaptain: (p: Project) => void;
+  onAssignAgent: (p: Project) => void;
 }) {
   if (!project) return null;
   // Visibility mirrors the website (ProjectTable kebab): Analytics + Visit only
   // appear for a published project; Visit also needs a slug.
+  // Assignment is role-gated: admin sees "Assign Captain", captain sees "Assign Agent".
   const items = [
     { label: 'Edit Details', icon: <Pencil size={17} color={colors.ink} />, onPress: () => onEdit(project), show: true },
     { label: 'Layout Editor', icon: <LayoutTemplate size={17} color={colors.ink} />, onPress: () => onLayout(project), show: true },
     { label: 'View Analytics', icon: <BarChart3 size={17} color={colors.ink} />, onPress: () => onAnalytics(project), show: !!project.isPublished },
+    { label: 'Assign Captain', icon: <UserPlus size={17} color={colors.ink} />, onPress: () => onAssignCaptain(project), show: user?.role === 'admin' },
+    { label: 'Assign Agent', icon: <UserPlus size={17} color={colors.ink} />, onPress: () => onAssignAgent(project), show: user?.role === 'captain' },
     { label: 'Copy Project Link', icon: <LinkIcon size={17} color={colors.ink} />, onPress: () => onCopyLink(project), show: true },
     { label: 'Visit Project ↗', icon: <ExternalLink size={17} color={colors.ink} />, onPress: () => onVisit(project), show: !!project.isPublished && !!project.slug },
     { label: 'Delete Project', icon: <Trash2 size={17} color={colors.redText} />, danger: true, onPress: () => onDelete(project), show: true },
@@ -95,6 +101,134 @@ const km = StyleSheet.create({
   rowLabel: { fontSize: 14, fontWeight: '700', color: colors.ink },
 });
 
+// ── Assignment Picker Modal (Captain or Agent) ──
+// Role-based assignment picker: admin assigns captain, captain assigns agent.
+// API endpoints were already present (/projects/:id/assign-captain and assign-agent)
+// but had no mobile UI until now. Previous behavior: assignments could only be
+// done via the web dashboard.
+function AssignmentPickerModal({ visible, project, mode, onClose, onAssign }: {
+  visible: boolean;
+  project: Project | null;
+  mode: 'captain' | 'agent' | null;
+  onClose: () => void;
+  onAssign: (userId: string) => void;
+}) {
+  const [users, setUsers] = useState<{ id: string; name: string; companyName?: string }[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [search, setSearch] = useState('');
+  const toast = useToast();
+
+  useEffect(() => {
+    if (!visible || !mode) return;
+    setSearch('');
+    setLoading(true);
+    (mode === 'captain' ? projectsApiExtended.getCaptains() : projectsApiExtended.getMyAgents())
+      .then(data => setUsers(data))
+      .catch(e => toast.show(e?.message || 'Failed to load', 'error'))
+      .finally(() => setLoading(false));
+  }, [visible, mode]);
+
+  if (!visible || !project || !mode) return null;
+
+  const filtered = users.filter(u =>
+    u.name.toLowerCase().includes(search.toLowerCase()) ||
+    (u.companyName && u.companyName.toLowerCase().includes(search.toLowerCase()))
+  );
+
+  return (
+    <Modal visible transparent animationType="slide" onRequestClose={onClose}>
+      <Pressable style={km.overlay} onPress={onClose}>
+        <Pressable style={[km.sheet, { maxHeight: '70%' }]} onPress={() => {}}>
+          <View style={km.handle} />
+          <View style={km.head}>
+            <Text style={km.headTitle}>
+              {mode === 'captain' ? 'Assign Captain' : 'Assign Agent'}
+            </Text>
+            <Pressable onPress={onClose} hitSlop={8}><X size={20} color={colors.ink} /></Pressable>
+          </View>
+
+          {/* Search input */}
+          <View style={apm.searchWrap}>
+            <Search size={15} color={colors.muted} />
+            <TextInput
+              value={search}
+              onChangeText={setSearch}
+              placeholder="Search by name..."
+              placeholderTextColor={colors.muted}
+              style={apm.searchInput}
+            />
+            {search ? (
+              <Pressable onPress={() => setSearch('')} hitSlop={8}>
+                <Text style={{ color: colors.muted, fontSize: 17 }}>×</Text>
+              </Pressable>
+            ) : null}
+          </View>
+
+          {/* User list */}
+          {loading ? (
+            <View style={apm.emptyWrap}>
+              <ActivityIndicator size="small" color={colors.brand} />
+            </View>
+          ) : filtered.length === 0 ? (
+            <View style={apm.emptyWrap}>
+              <Text style={apm.emptyText}>
+                {users.length === 0 ? (mode === 'captain' ? 'No captains available' : 'No agents in your team') : 'No matches'}
+              </Text>
+            </View>
+          ) : (
+            <FlatList
+              data={filtered}
+              keyExtractor={u => u.id}
+              contentContainerStyle={{ paddingVertical: 8 }}
+              renderItem={({ item: u }) => (
+                <Pressable
+                  style={apm.userRow}
+                  onPress={() => {
+                    onAssign(u.id);
+                    onClose();
+                  }}
+                >
+                  <View>
+                    <Text style={apm.userName}>{u.name}</Text>
+                    {u.companyName && <Text style={apm.userCompany}>{u.companyName}</Text>}
+                  </View>
+                </Pressable>
+              )}
+            />
+          )}
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
+const apm = StyleSheet.create({
+  searchWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: colors.cream,
+    borderWidth: 1,
+    borderColor: colors.line,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginHorizontal: 6,
+    marginBottom: 8,
+  },
+  searchInput: { flex: 1, fontSize: 13, color: colors.ink },
+  emptyWrap: { paddingVertical: 40, alignItems: 'center' },
+  emptyText: { fontSize: 13, color: colors.muted },
+  userRow: {
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderTopWidth: 1,
+    borderTopColor: colors.line,
+  },
+  userName: { fontSize: 14, fontWeight: '700', color: colors.ink },
+  userCompany: { fontSize: 12, color: colors.muted, marginTop: 2 },
+});
+
 // Filter chip labels
 const STATUS_LABEL: Record<string, string> = {
   All: 'All',
@@ -120,6 +254,8 @@ export default function ProjectsScreen() {
   const [shareProject, setShareProject] = useState<Project | null>(null);
   const [menuProject, setMenuProject] = useState<Project | null>(null);
   const [matchCounts, setMatchCounts] = useState<Record<string, number>>({});
+  const [assignProject, setAssignProject] = useState<Project | null>(null);
+  const [assignMode, setAssignMode] = useState<'captain' | 'agent' | null>(null);
 
   const canCreate = ['admin', 'builder'].includes(user?.role ?? '');
 
@@ -148,14 +284,33 @@ export default function ProjectsScreen() {
     return () => { cancelled = true; };
   }, [projects]);
 
-  const handleDelete = async (p: Project) => {
-    setDeleting(p.id);
-    try {
-      await projectsApiExtended.delete(p.id);
-      setProjects(prev => prev.filter(x => x.id !== p.id));
-      toast.show('Deleted', 'success');
-    } catch (e: any) { toast.show(e?.message || 'Delete failed', 'error'); }
-    finally { setDeleting(null); }
+  // Delete confirmation — previously the delete was immediate with no safeguard,
+  // which is dangerous for a destructive action that also deactivates the project's
+  // group room. Now we show a native Alert dialog before proceeding.
+  const handleDelete = (p: Project) => {
+    Alert.alert(
+      'Delete Project?',
+      `Delete "${p.name}"? This cannot be undone.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            setDeleting(p.id);
+            try {
+              await projectsApiExtended.delete(p.id);
+              setProjects(prev => prev.filter(x => x.id !== p.id));
+              toast.show('Deleted', 'success');
+            } catch (e: any) {
+              toast.show(e?.message || 'Delete failed', 'error');
+            } finally {
+              setDeleting(null);
+            }
+          },
+        },
+      ]
+    );
   };
 
   const handleCopyLink = async (p: Project) => {
@@ -183,6 +338,34 @@ export default function ProjectsScreen() {
     const url = visitUrlOf(p);
     try { await Linking.openURL(url); }
     catch { toast.show('Could not open link', 'error'); }
+  };
+
+  // ── Assignment handlers ──
+  // Role-based assignment: admin assigns captain, captain assigns agent.
+  // API endpoints were already present but had no mobile UI until now.
+  const handleAssignCaptain = (p: Project) => {
+    setAssignProject(p);
+    setAssignMode('captain');
+  };
+
+  const handleAssignAgent = (p: Project) => {
+    setAssignProject(p);
+    setAssignMode('agent');
+  };
+
+  const handleAssignSubmit = async (userId: string) => {
+    if (!assignProject || !assignMode) return;
+    try {
+      const updated = assignMode === 'captain'
+        ? await projectsApiExtended.assignCaptain(assignProject.id, userId)
+        : await projectsApiExtended.assignAgent(assignProject.id, userId);
+      setProjects(prev => prev.map(p => (p.id === updated.id ? updated : p)));
+      toast.show(assignMode === 'captain' ? 'Captain assigned' : 'Agent assigned', 'success');
+      setAssignProject(null);
+      setAssignMode(null);
+    } catch (e: any) {
+      toast.show(e?.message || 'Assignment failed', 'error');
+    }
   };
 
   const statuses = ['All', 'pre-launch', 'under-construction', 'ready'];
@@ -289,6 +472,7 @@ export default function ProjectsScreen() {
       {/* 3-dot menu (Edit / Layout / Analytics / Copy link / Visit / Delete) */}
       <ProjectMenuSheet
         project={menuProject}
+        user={user}
         onClose={() => setMenuProject(null)}
         onEdit={handleEdit}
         onLayout={handleLayout}
@@ -296,6 +480,20 @@ export default function ProjectsScreen() {
         onCopyLink={handleCopyLink}
         onVisit={handleVisit}
         onDelete={handleDelete}
+        onAssignCaptain={handleAssignCaptain}
+        onAssignAgent={handleAssignAgent}
+      />
+
+      {/* Assignment picker modal */}
+      <AssignmentPickerModal
+        visible={!!assignProject}
+        project={assignProject}
+        mode={assignMode}
+        onClose={() => {
+          setAssignProject(null);
+          setAssignMode(null);
+        }}
+        onAssign={handleAssignSubmit}
       />
     </View>
   );
