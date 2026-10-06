@@ -24,7 +24,7 @@ import {
   Users, Plus, Globe, ChevronLeft, Send, X, MoreVertical, Building2,
   Link as LinkIcon, FileText, QrCode, Image as ImageIcon, LogOut, Trash2,
   Search, MapPin, Check, Camera, Paperclip, Sparkles, ChevronDown, ChevronUp, Clock,
-  Phone, Eye, UserPlus, BadgeCheck, Share2, MessageCircle, Download, Edit3,
+  Phone, Eye, UserPlus, BadgeCheck, Share2, MessageCircle, Download, Edit3, Pencil, ExternalLink,
 } from 'lucide-react-native';
 import { groupChatApi, shareApi, mediaApi, leadMatchingApi, invalidateLeadsCache, projectsApiExtended, fetchPublicProjectsRaw, GroupRoom, GroupMessage, InventoryCard, OwnerPortfolioProject, Project, GroupMedia, GroupLink } from '../lib/api';
 import { ShareModal } from './ShareActions';
@@ -4859,6 +4859,23 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                   </Pressable>
                 )}
 
+                {/* Edit button — admin only, opens web dashboard edit URL. Previous behavior:
+                    no edit access from property detail sheet in group chat. User requirement:
+                    "admin edit kr ske" — admin needs ability to edit project from group context. */}
+                {viewProperty?.projectId && canManageRoomAvatar && (
+                  <Pressable
+                    style={pd.actionRow}
+                    onPress={() => {
+                      const editUrl = `https://sales.homeintown.in/dashboard/projects/${viewProperty.projectId}/edit`;
+                      Linking.openURL(editUrl).catch(() => toast.show('Could not open editor', 'error'));
+                    }}
+                  >
+                    <Pencil size={18} color={colors.brand} />
+                    <Text style={pd.actionLabel}>Edit Project</Text>
+                    <ExternalLink size={14} color={colors.muted} style={{ marginLeft: 'auto' }} />
+                  </Pressable>
+                )}
+
                 {/* Always show even if empty, so the sheet never looks completely blank */}
                 {!viewProperty?.brochureUrl && !viewProperty?.layoutImage && 
                  (viewProperty?.videos || []).length === 0 && !viewProperty?.googleMapLink && 
@@ -5092,7 +5109,18 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
 
       {/* Share sheet (tracked link, QR, brochure) for a builder's property —
           opened from the card's Share icon or the detail sheet's Share button. */}
-      {shareProject && <ShareModal project={shareProject} onClose={() => setShareProject(null)} />}
+      {shareProject && (
+        <ShareModal
+          project={shareProject}
+          onClose={() => setShareProject(null)}
+          showJoinGroup={activeRoom?.roomType === 'project'}
+          onJoinGroup={() => {
+            if (shareProject?.id) {
+              handleJoinPropertyGroup(shareProject.id);
+            }
+          }}
+        />
+      )}
 
       {/* ── Disappearing messages options (WhatsApp-style) ── */}
       <Modal visible={showDisappear} transparent animationType="slide" onRequestClose={() => setShowDisappear(false)}>

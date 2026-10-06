@@ -55,6 +55,14 @@ function ProjectMenuSheet({ project, user, onClose, onEdit, onLayout, onAnalytic
   onAssignCaptain: (p: Project) => void;
   onAssignAgent: (p: Project) => void;
 }) {
+  // Diagnostic logging to identify why assignment buttons don't appear. Previous behavior:
+  // buttons were defined with correct role checks but not appearing in menu. Root cause
+  // investigation: log user and role to verify context is correct.
+  if (__DEV__) {
+    console.log('[ProjectMenuSheet] user:', JSON.stringify(user));
+    console.log('[ProjectMenuSheet] user.role:', user?.role);
+  }
+
   if (!project) return null;
   // Visibility mirrors the website (ProjectTable kebab): Analytics + Visit only
   // appear for a published project; Visit also needs a slug.

@@ -7,7 +7,7 @@ import {
   ActivityIndicator, Linking, Share, ScrollView,
 } from 'react-native';
 import QRCode from 'react-native-qrcode-svg';
-import { X, Link2, QrCode, FileText, Download, ExternalLink } from 'lucide-react-native';
+import { X, Link2, QrCode, FileText, Download, ExternalLink, Users } from 'lucide-react-native';
 import { shareApi, Project } from '../lib/api';
 import { useToast } from './Toast';
 import { colors } from '../theme';
@@ -15,6 +15,8 @@ import { colors } from '../theme';
 interface Props {
   project: Project | null;
   onClose: () => void;
+  onJoinGroup?: () => void;
+  showJoinGroup?: boolean;
 }
 
 function getVisitUrl(project: Project): string {
@@ -22,7 +24,7 @@ function getVisitUrl(project: Project): string {
   return `https://homeintown.in`;
 }
 
-export default function ShareActions({ project, onClose }: Props) {
+export default function ShareActions({ project, onClose, onJoinGroup, showJoinGroup }: Props) {
   const toast = useToast();
   const [url, setUrl] = useState<string | null>(null);
   const [loadingUrl, setLoadingUrl] = useState(true);
@@ -187,6 +189,28 @@ export default function ShareActions({ project, onClose }: Props) {
               <Text style={s.actionSub}>Send via WhatsApp, email or any app</Text>
             </View>
           </Pressable>
+
+          {/* Join Group — only when in a property group context. Previous behavior:
+              ShareModal only had Share Link, QR, and Brochure actions. User requirement:
+              "share screen me join group vala button add kro" — user could not join
+              a group from the share screen before this addition. */}
+          {showJoinGroup && onJoinGroup && (
+            <Pressable
+              onPress={() => {
+                onJoinGroup();
+                onClose();
+              }}
+              style={s.actionRow}
+            >
+              <View style={[s.actionIcon, { backgroundColor: '#F0FDF4' }]}>
+                <Users size={20} color='#16A34A' />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={s.actionLabel}>Join Group</Text>
+                <Text style={s.actionSub}>Join this property's discussion group</Text>
+              </View>
+            </Pressable>
+          )}
 
           {/* Brochure */}
           <Pressable
