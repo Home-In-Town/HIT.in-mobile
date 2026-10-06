@@ -312,6 +312,13 @@ export default function LeadMatchingHub({
   // re-fire that effect on every keystroke in the composer.
   const [matchCount, setMatchCount] = useState<number | null>(null);
   const handleMatchCountChange = useCallback((n: number | null) => setMatchCount(n), []);
+  // Whether AI Assist applies to the room the assistant pane currently has open.
+  // Reported by the pane itself, because only it knows which room that is — see
+  // aiActionsVisible below for what this replaced and why. Stable callback for
+  // the same reason as handleMatchCountChange: the child publishes it from an
+  // effect, so a fresh identity each render would re-fire that effect.
+  const [aiAvailable, setAiAvailable] = useState(false);
+  const handleAiAvailableChange = useCallback((available: boolean) => setAiAvailable(available), []);
 
   // Tapping the "AI Leads" section button returns to the default landing page —
   // the same view the app opens on — instead of dropping the user back into a
@@ -356,15 +363,23 @@ export default function LeadMatchingHub({
     { key: 'chats',  label: 'Chats',  icon: MessageSquare, active: tab === 'chats',  onPress: () => setTab('chats') },
   ];
 
-  // `tab === 'assistant' && groupOpen` reproduces the actions' old gate
-  // (`headerless && aiAllowed` inside GroupChatEmbedded) exactly. Only the
-  // assistant pane is passed `headerless`/`autoOpenUniversal`, and inside it
-  // `aiAllowed` collapses to `!!activeRoom` — which the child reports upward via
-  // onRoomOpenChange, i.e. `groupOpen`. When false the action group is not
-  // rendered at all; because the pane pills are content-width and left-aligned
-  // (not flex cells) they simply stay where they are instead of re-centring or
-  // stretching.
-  const aiActionsVisible = tab === 'assistant' && groupOpen;
+  // My Post / Matching are actions ON the AI Assist room, so they are shown only
+  // while that room is the one open in the assistant pane.
+  //
+  // This used to read `tab === 'assistant' && groupOpen`, which reproduced the
+  // child's old gate (`headerless && aiAllowed`) exactly — back when `aiAllowed`
+  // collapsed to `!!activeRoom` because it was decided by the pane prop. It no
+  // longer does: the child now decides by ROOM IDENTITY, and the assistant pane
+  // can hold a property room (Join Group on a match row opens one there). In that
+  // room `groupOpen` is still true, so the old rule kept both pills on screen
+  // where My Post would enter AI mode only for the child's safety net to drop it
+  // again — a button that visibly does nothing. `aiAvailable` is the child's own
+  // answer, so the two can never disagree.
+  //
+  // When false the action group is not rendered at all; because the pane pills are
+  // content-width and left-aligned (not flex cells) they simply stay where they
+  // are instead of re-centring or stretching.
+  const aiActionsVisible = tab === 'assistant' && groupOpen && aiAvailable;
 
   // Keep the tab bar visible on the AI Lead Matching section (it IS the primary
   // section). Only hide chrome when a room is opened from the separate Groups tab.
@@ -469,12 +484,44 @@ export default function LeadMatchingHub({
             // that renders the Matching pill, so the groups pane must not pay for
             // the prefetch request.
             onMatchCountChange={handleMatchCountChange}
+            // Only this pane renders the My Post / Matching pills, so only this
+            // pane needs to know whether AI Assist applies to the open room.
+            onAiAvailableChange={handleAiAvailableChange}
           />
         )}
       </View>
 
-      {/* Leads overlay (opened from the top button) */}
-      <Modal visible={showLeads} animationType="slide" onRequestClose={() => setShowLeads(false)}>
+      {/* Leads overlay (opened from the top button)
+
+          WHY `statusBarTranslucent` IS ON THIS Modal. Without it the top inset
+          landed TWICE, leaving a blank colors.cream band exactly one
+          status-bar/cutout height tall above the "Extracted Leads" header:
+          React Native wraps a non-translucent Android Modal's content in a
+          FrameLayout with fitsSystemWindows = true, so the dialog window already
+          reserved the status bar, while expo-status-bar's <StatusBar> in
+          app/_layout.tsx defaults to translucent = true — so the ACTIVITY window
+          draws under the bar and useSafeAreaInsets() measures a non-zero top,
+          which the inner View then added on top of the reservation.
+
+          This is the same defect and the same one-prop fix as the Project-map
+          Join Group modal; the full root-cause write-up lives in exactly one
+          place, the "WHY statusBarTranslucent IS ON THIS Modal" block in
+          src/components/PropertyMap.tsx, so the two explanations cannot drift.
+          The prop is Android-only and the inner `paddingTop: insets.top` is
+          deliberately retained — it is what keeps iOS correct, where a
+          full-screen modal genuinely does not inset for the notch. No pixel
+          constant is involved, so a device with a different bar height is still
+          right.
+
+          Sweep result, recorded here so the next reader does not have to redo
+          it: across all of src/ and app/ these are the ONLY TWO <Modal> sites
+          that ever combined a non-transparent modal with a top inset applied to
+          its own content — this one and PropertyMap.tsx:609/610. Both now carry
+          the prop. Every other `insets.top` in the app is a screen root (or
+          Sidebar.tsx's drawer, which is an absolute-fill View, not a modal), and
+          the many `transparent` bottom sheets never add a top inset at all. So
+          there is no third site waiting to be found. */}
+      <Modal visible={showLeads} animationType="slide" statusBarTranslucent onRequestClose={() => setShowLeads(false)}>
         <View style={{ flex: 1, backgroundColor: colors.cream, paddingTop: insets.top }}>
           <View style={hub.header}>
             <Text style={hub.headerTitle}>Extracted Leads</Text>

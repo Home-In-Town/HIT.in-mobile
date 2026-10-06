@@ -109,6 +109,22 @@ export function useSocket() {
     return () => { s?.off('group_message_deleted', handler); };
   }, []);
 
+  /**
+   * A group's profile picture was changed or cleared by one of its admins.
+   * `avatar: null` means cleared — fall back to the default room-type icon.
+   *
+   * The server emits this on the `group_<roomId>` channel, which trackJoinGroup
+   * already joins for the room the user currently has open. So this covers live
+   * updates for THAT room only and is NOT a substitute for the `avatar` field
+   * on the room payload: rows for every other group in the list are not
+   * subscribed, and their authoritative value still arrives with GET /rooms.
+   */
+  const onGroupAvatarUpdated = useCallback((handler: (data: { roomId: string; avatar: { type: 'icon' | 'image'; value: string; key?: string | null } | null }) => void) => {
+    const s = socketRef.current;
+    s?.on('group_avatar_updated', handler);
+    return () => { s?.off('group_avatar_updated', handler); };
+  }, []);
+
   return {
     // 1:1
     joinChat, leaveChat, sendMessage, sendTyping, markRead,
@@ -116,6 +132,7 @@ export function useSocket() {
     // Group
     joinGroup, leaveGroup, sendGroupMessage, sendGroupTyping,
     onGroupMessage, onGroupTyping, onMatchResults, onGroupDeleted, onGroupMessageDeleted,
+    onGroupAvatarUpdated,
     // Increments once the underlying socket is available. Include it in the deps
     // of any effect that subscribes, so the subscription is (re)attached rather
     // than silently no-op'ing when the socket wasn't ready on first run.

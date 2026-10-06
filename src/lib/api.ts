@@ -1573,6 +1573,38 @@ export interface GroupRoom {
    * `markRoomRead`.
    */
   unreadCount?: number;
+  /**
+   * The group's profile picture, and the SERVER's copy of it — which is now the
+   * source of truth. It used to live only in the mobile app's own AsyncStorage
+   * map (`room_profile_pictures`), so a picture sat on one device, never
+   * followed the user and was invisible to every other member of the group.
+   *
+   * `type: 'icon'` means `value` is one of the fifteen allowed emoji; `type:
+   * 'image'` means `value` is a public, cache-immutable R2 URL that can be
+   * rendered directly (the key is unique per upload, so no cache busting). The
+   * whole path is ABSENT — not `{}` — on a room that never had a picture and
+   * absent again after a clear, so `room.avatar == null` is the documented
+   * "render the default room-type icon" signal.
+   *
+   * Already present on every room-bearing response (GET /rooms for both arrays,
+   * create, both joins, and all three avatar endpoints), so nothing needs an
+   * extra fetch. Contract:
+   * HIT_Backend/.agents/tasks/group-avatar-backend/api-contract.md
+   */
+  avatar?: RoomAvatar;
+}
+
+/**
+ * The avatar sub-document as the server serialises it. `key` is the R2 object
+ * key and is null for icons; `updatedBy` is null when the server could not
+ * attribute the change.
+ */
+export interface RoomAvatar {
+  type: 'icon' | 'image';
+  value: string;
+  key?: string | null;
+  updatedAt?: string;
+  updatedBy?: string | null;
 }
 
 export interface InventoryCard {
@@ -1685,6 +1717,31 @@ function transformGroupRoom(raw: any): GroupRoom {
     // undefined (not 0) when the server has not sent the field, so the UI can
     // omit the segment entirely instead of rendering a misleading "0 projects".
     projectCount: Number(raw?.projectCount) || undefined,
+    // Mapped defensively on purpose: the renderer branches on `type`, so a
+    // half-formed object (a type outside the enum, or an empty value) would
+    // reach it as a truthy avatar and draw an empty circle. Only a fully-formed
+    // pair survives; anything else collapses to undefined, which is exactly the
+    // shape the contract guarantees for a room with no picture, so the default
+    // room-type icon path handles both cases with one check.
+    avatar: transformRoomAvatar(raw?.avatar),
+  };
+}
+
+/**
+ * Shared by `transformGroupRoom` and the three avatar endpoints, so the room on
+ * the list and the `avatar` envelope returned alongside it can never be
+ * normalised differently.
+ */
+function transformRoomAvatar(raw: any): RoomAvatar | undefined {
+  const type = raw?.type;
+  const value = raw?.value;
+  if ((type !== 'icon' && type !== 'image') || typeof value !== 'string' || !value) return undefined;
+  return {
+    type,
+    value,
+    key: typeof raw.key === 'string' ? raw.key : null,
+    updatedAt: raw.updatedAt ? String(raw.updatedAt) : undefined,
+    updatedBy: raw.updatedBy ? String(raw.updatedBy) : null,
   };
 }
 
@@ -1846,10 +1903,116 @@ export const groupChatApi = {
     const r = await fetch(`${API_URL}/group-chat/rooms/${encodeURIComponent(roomId)}`, { method: 'DELETE', headers: await authHeaders() });
     await handleResponse(r);
   },
+
+  /* ── GROUP AVATAR (group profile picture) ─────────────────────────────
+     Three endpoints, one envelope: all of them answer `{ room, avatar }` where
+     `room` is the full populated, phone-sanitised room serialised exactly like
+     the join response — so every caller can drop the returned room straight
+     into its cached list with no follow-up fetch. That is why these live in
+     groupChatApi and not mediaApi: the response has to go through
+     transformGroupRoom.
+
+     Authorization is enforced SERVER-side (room admin, or the room's creator, or
+     a platform admin; the universal/community room is refused for everyone).
+     A client-side permission check exists only to avoid offering a button that
+     would come back 403 — it is never the boundary.
+
+     The authority for paths, the multipart field name and every error code is
+     the written contract, NOT the controller:
+     HIT_Backend/.agents/tasks/group-avatar-backend/api-contract.md
+     ── */
+
+  /**
+   * Set the group's picture to one of the fifteen allowed emoji. The server
+   * trims whitespace and strips a trailing U+FE0F, so the value it echoes back
+   * is the canonical one and is what should be stored — not the string sent.
+   * An icon outside the allow-list is a 400.
+   */
+  async setRoomAvatarIcon(roomId: string, value: string): Promise<{ room: GroupRoom; avatar: RoomAvatar | undefined }> {
+    const r = await fetch(`${API_URL}/group-chat/rooms/${encodeURIComponent(roomId)}/avatar`, {
+      method: 'PUT',
+      headers: await authHeaders(),
+      body: JSON.stringify({ type: 'icon', value }),
+    });
+    const res = await handleResponse<{ room: any; avatar: any }>(r);
+    return { room: transformGroupRoom(res.room), avatar: transformRoomAvatar(res.avatar) };
+  },
+
+  /**
+   * Upload a photo as the group's picture. Multipart field name is `file` and
+   * exactly one file is accepted; JPEG/PNG/WebP only, 5 MB ceiling, and the
+   * server sniffs magic bytes so a mislabelled file is refused.
+   *
+   * The headers are built by hand — only Authorization — rather than through
+   * authHeaders(), which forces 'Content-Type: application/json'. Setting any
+   * Content-Type here would stop React Native generating the multipart
+   * boundary and the upload would arrive unparseable. This deliberately mirrors
+   * mediaApi.uploadGroupAttachment, where the same note is recorded.
+   */
+  async uploadRoomAvatarImage(opts: { roomId: string; uri: string; name: string; mimeType: string }): Promise<{ room: GroupRoom; avatar: RoomAvatar | undefined }> {
+    const token = await tokenStorage.get();
+    const form = new FormData();
+    form.append('file', { uri: opts.uri, name: opts.name, type: opts.mimeType } as any);
+
+    const headers: Record<string, string> = {};
+    if (token) headers.Authorization = `Bearer ${token}`;
+
+    const r = await fetch(
+      `${API_URL}/group-chat/rooms/${encodeURIComponent(opts.roomId)}/avatar/image`,
+      { method: 'POST', headers, body: form },
+    );
+    const res = await handleResponse<{ room: any; avatar: any }>(r);
+    return { room: transformGroupRoom(res.room), avatar: transformRoomAvatar(res.avatar) };
+  },
+
+  /**
+   * Clear the group's picture, returning it to the client's own default
+   * room-type icon. Idempotent per the contract — a room that never had a
+   * picture also answers 200 — and the returned room carries no `avatar` key at
+   * all, so `avatar` here is always undefined. The server deliberately does not
+   * substitute a default, because choosing the default is a rendering decision.
+   */
+  async clearRoomAvatar(roomId: string): Promise<{ room: GroupRoom; avatar: RoomAvatar | undefined }> {
+    const r = await fetch(`${API_URL}/group-chat/rooms/${encodeURIComponent(roomId)}/avatar`, {
+      method: 'DELETE',
+      headers: await authHeaders(),
+    });
+    const res = await handleResponse<{ room: any; avatar: any }>(r);
+    return { room: transformGroupRoom(res.room), avatar: transformRoomAvatar(res.avatar) };
+  },
 };
 
 // ── Lead Matching (NLP) ─────────────────────────────────────
+
+// Extracted-leads list cache. Same Map-pair shape as the project detail cache
+// above: a short TTL collapses repeat opens, an in-flight map collapses
+// concurrent callers, and the write paths invalidate it.
+//
+// Why it is needed. GroupChatEmbedded asks for the SAME page of the same list
+// twice: the mount-time match-count prefetch (loadMyMatches page 1) and My Posts
+// (loadPostedLeads). Only the query string differed, so the two could not share a
+// response and every My Post open was a second uncached round trip on top of a
+// request the component had already made. The key is the built query string, so
+// callers asking different questions (the admin Leads tab's unfiltered list) keep
+// their own entries.
+const LEADS_CACHE_TTL_MS = 60_000;
+const leadsCache = new Map<string, { at: number; data: { leads: any[]; pagination: any } }>();
+const leadsInFlight = new Map<string, Promise<{ leads: any[]; pagination: any }>>();
+
+/**
+ * Drop cached lead lists. Must be called by anything that CREATES a lead, or the
+ * user's own freshly posted property would be hidden from My Posts for up to a
+ * minute — a worse bug than the duplicate request this cache removes.
+ */
+export function invalidateLeadsCache() {
+  leadsCache.clear();
+  leadsInFlight.clear();
+}
+
 export const leadMatchingApi = {
+  /** Drops cached lead lists. Exposed on the api object too, for symmetry with projectsApiExtended.invalidateProjectCache. */
+  invalidateLeadsCache,
+
   async getLeads(params?: { page?: number; limit?: number; status?: string; source?: string; mineOnly?: boolean }): Promise<{ leads: any[]; pagination: any }> {
     const q = new URLSearchParams();
     if (params?.page) q.set('page', String(params.page));
@@ -1857,8 +2020,27 @@ export const leadMatchingApi = {
     if (params?.status) q.set('status', params.status);
     if (params?.source) q.set('source', params.source);
     if (params?.mineOnly) q.set('mineOnly', 'true');
-    const r = await fetch(`${API_URL}/lead-matching/leads${q.toString() ? '?' + q.toString() : ''}`, { headers: await authHeaders() });
-    return handleResponse<any>(r);
+    const query = q.toString();
+
+    const cached = leadsCache.get(query);
+    if (cached && Date.now() - cached.at < LEADS_CACHE_TTL_MS) return cached.data;
+
+    const pending = leadsInFlight.get(query);
+    if (pending) return pending;
+
+    const request = (async () => {
+      const r = await fetch(`${API_URL}/lead-matching/leads${query ? '?' + query : ''}`, { headers: await authHeaders() });
+      const data = await handleResponse<{ leads: any[]; pagination: any }>(r);
+      leadsCache.set(query, { at: Date.now(), data });
+      return data;
+    })();
+
+    leadsInFlight.set(query, request);
+    try {
+      return await request;
+    } finally {
+      leadsInFlight.delete(query);
+    }
   },
   async getStats(): Promise<any> {
     const r = await fetch(`${API_URL}/lead-matching/stats`, { headers: await authHeaders() });
@@ -1870,10 +2052,15 @@ export const leadMatchingApi = {
   },
   async confirm(payload: any): Promise<any> {
     const r = await fetch(`${API_URL}/lead-matching/confirm`, { method: 'POST', headers: await authHeaders(), body: JSON.stringify(payload) });
+    // Confirming writes a lead (and its matches), so every cached page of the
+    // list is now stale. Invalidated here rather than at each call site so no
+    // caller can forget and serve the user a list without their own new lead.
+    invalidateLeadsCache();
     return handleResponse<any>(r);
   },
   async updateStatus(id: string, status: string): Promise<any> {
     const r = await fetch(`${API_URL}/lead-matching/leads/${encodeURIComponent(id)}/status`, { method: 'PATCH', headers: await authHeaders(), body: JSON.stringify({ status }) });
+    invalidateLeadsCache();
     return handleResponse<any>(r);
   },
   async testMatch(text: string): Promise<any> {

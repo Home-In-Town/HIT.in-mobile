@@ -9,10 +9,14 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { usePathname, useRouter } from 'expo-router';
+// Zap, MessageSquare and Clock were dropped with the four NAV_ITEMS entries
+// below — nothing else in this file used them. `Users` is kept: it is still the
+// footer Team row's icon and the Team-for-developers modal's icon, not a nav
+// entry's.
 import {
-  LayoutDashboard, Building2, BarChart3, ShoppingBag, Zap,
-  Users, Briefcase, Clock, Bell, User, Building, LogOut,
-  X, Shield, MessageSquare, Settings,
+  LayoutDashboard, Building2, BarChart3, ShoppingBag,
+  Users, Briefcase, Bell, User, Building, LogOut,
+  X, Shield, Settings,
 } from 'lucide-react-native';
 import { useAuth } from '../lib/authContext';
 import { colors } from '../theme';
@@ -27,18 +31,33 @@ interface NavItem {
   roles: string[]; // which roles see this item ('*' = all)
 }
 
+// Four entries were removed from this list at the user's request:
+//   AI Lead Matching → /(dashboard)/lead-matching
+//   Chat             → /(dashboard)/chat
+//   Field Team       → /(dashboard)/employees
+//   Archive          → /(dashboard)/archive
+//
+// NAV ENTRIES ONLY. No route file was deleted and app/(dashboard)/_layout.tsx is
+// untouched, so all four screens still exist and still resolve — they simply have
+// no navigation path from this drawer any more. A repo-wide search found no other
+// router.push to any of them, so that is the full picture, and it is the input to
+// the pending dead-code cleanup rather than something to act on here.
+//
+// `lead-matching.tsx` in particular MUST STAY: crm.tsx imports it and renders it
+// as the AI Leads tab, so deleting the file would break the Overview screen even
+// though its route is now unreachable.
+//
+// `Field Check-in` is deliberately kept. It points at /(dashboard)/field, which is
+// a DIFFERENT screen from Field Team's /(dashboard)/employees, and app/index.tsx
+// redirects employee accounts to it.
 const NAV_ITEMS: NavItem[] = [
   { label: 'Overview',      route: '/(dashboard)/crm',           icon: LayoutDashboard, roles: ['admin', 'builder', 'captain', 'agent'] },
   { label: 'Projects',       route: '/(dashboard)/projects',      icon: Building2,       roles: ['admin', 'builder', 'captain', 'agent'] },
   { label: 'Marketplace',    route: '/(dashboard)/marketplace',   icon: ShoppingBag,     roles: ['admin', 'builder', 'captain'] },
-  { label: 'AI Lead Matching', route: '/(dashboard)/lead-matching', icon: Zap,           roles: ['admin', 'builder', 'captain', 'agent'] },
   { label: 'Analytics',      route: '/(dashboard)/analytics',     icon: BarChart3,       roles: ['admin', 'builder'] },
-  { label: 'Chat',           route: '/(dashboard)/chat',          icon: MessageSquare,   roles: ['admin', 'builder', 'captain', 'agent'] },
-  { label: 'Field Team',     route: '/(dashboard)/employees',     icon: Users,           roles: ['admin', 'builder', 'captain', 'agent'] },
   { label: 'Organizations',  route: '/(dashboard)/organizations', icon: Building,        roles: ['admin', 'builder'] },
   { label: 'Users',          route: '/(dashboard)/admin-users',   icon: Shield,          roles: ['admin'] },
   { label: 'Field Check-in', route: '/(dashboard)/field',         icon: Briefcase,       roles: ['employee'] },
-  { label: 'Archive',        route: '/(dashboard)/archive',       icon: Clock,           roles: ['employee', 'agent'] },
   { label: 'Notifications',  route: '/(dashboard)/notifications', icon: Bell,            roles: ['*'] },
   { label: 'Profile',        route: '/(dashboard)/profile',       icon: User,            roles: ['*'] },
 ];

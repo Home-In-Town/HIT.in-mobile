@@ -3,7 +3,13 @@
 // theme (colors), lucide icons, and expo-router navigation. Shows a full map
 // with price-pin markers, a search bar + filter chips, a property count badge,
 // a "24/7 AI Guide" pill, and a bottom horizontal property-card carousel.
-// Tapping a pin or card opens the full PropertyDetail screen.
+// Tapping a price pin selects that property and scrolls the bottom carousel to
+// its card; the card's ONLY action is Join Group. Both of those taps used to
+// push the /(dashboard)/property-detail route as well, and that route was
+// dropped from this surface on explicit user instruction — the Project tab is
+// not allowed to show project details. The property sheet seen in a group
+// thread is a different component (GroupChatEmbedded's own viewProperty modal)
+// and still has its View Details button.
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View, Text, StyleSheet, TextInput, Pressable, FlatList,
@@ -11,7 +17,6 @@ import {
 } from 'react-native';
 import MapView, { Marker, Region, PROVIDER_GOOGLE } from 'react-native-maps';
 import * as Location from 'expo-location';
-import { useRouter } from 'expo-router';
 import {
   Search, ArrowRight, Navigation, Locate, X, MapPin, AlertTriangle,
   CheckCircle, Building2, Users, ChevronLeft,
@@ -46,7 +51,6 @@ const CATEGORY_TABS = [
 ];
 
 export default function PropertyMap({ isAdmin = false }: { isAdmin?: boolean }) {
-  const router = useRouter();
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const myId = user?.id ? String(user.id) : '';
@@ -181,11 +185,6 @@ export default function PropertyMap({ isAdmin = false }: { isAdmin?: boolean }) 
     }
   };
 
-  const openDetail = (property: MapProperty) => {
-    // Pass the property to the detail screen via a serialized param.
-    router.push({ pathname: '/(dashboard)/property-detail', params: { data: JSON.stringify(property) } } as any);
-  };
-
   const handleMyLocation = async () => {
     try {
       const location = await Location.getCurrentPositionAsync({});
@@ -229,10 +228,14 @@ export default function PropertyMap({ isAdmin = false }: { isAdmin?: boolean }) 
           <Marker
             key={property.id}
             coordinate={{ latitude: property.lat, longitude: property.lng }}
+            // A pin tap selects and reveals — nothing more. It used to also call
+            // openDetail(property), which pushed /(dashboard)/property-detail on
+            // top of the map, so the scroll it had just started was never seen.
+            // The user asked for exactly this instead: "pill tap → bas niche wala
+            // card us property pe aa jaaye", with no details anywhere on this tab.
             onPress={() => {
               setSelectedIndex(index);
               cardListRef.current?.scrollToIndex({ index, animated: true });
-              openDetail(property);
             }}
             tracksViewChanges={trackMarkers}
           >
@@ -340,6 +343,13 @@ export default function PropertyMap({ isAdmin = false }: { isAdmin?: boolean }) 
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={styles.cardListContent}
             keyExtractor={(item) => `card-${item.id}`}
+            // Cards are a fixed CARD_WIDTH with a 12 gap, so the layout is exact
+            // and worth declaring: without getItemLayout, scrollToIndex silently
+            // no-ops for any index outside the rendered window (and
+            // onScrollToIndexFailed below swallows it). That never showed up
+            // before because the pin tap also pushed the detail route, which
+            // covered the map; now the scroll IS the whole pin-tap feature.
+            getItemLayout={(_, index) => ({ length: CARD_WIDTH + 12, offset: (CARD_WIDTH + 12) * index, index })}
             onScrollToIndexFailed={() => {}}
             onMomentumScrollEnd={(e) => {
               const index = Math.round(e.nativeEvent.contentOffset.x / (CARD_WIDTH + 12));
@@ -350,10 +360,21 @@ export default function PropertyMap({ isAdmin = false }: { isAdmin?: boolean }) 
               }
             }}
             renderItem={({ item, index }) => (
-              <Pressable
-                style={[styles.card, selectedIndex === index && styles.cardActive]}
-                onPress={() => openDetail(item)}
-              >
+              // WHY THIS CARD BODY IS A PLAIN View AND NOT A Pressable.
+              // It used to be a Pressable whose onPress ran openDetail(item),
+              // pushing the /(dashboard)/property-detail route. That was removed
+              // on explicit user instruction for THIS surface specifically — the
+              // Project tab must not reveal project details from either entry
+              // point ("jb hum pil or card pr click krte he tb details show nahi
+              // honi chiye"). So the body is deliberately inert and Join Group
+              // below is the card's only action. A Pressable with no onPress was
+              // the wrong way to express that: TalkBack would still announce the
+              // card as a button, which is now a lie, so it is a View.
+              // The property sheet with the gallery / brochure is NOT this code:
+              // it lives in GroupChatEmbedded (handlePropertyViewDetails →
+              // viewProperty modal), reached from a group thread's View Details,
+              // and was intentionally left untouched — it is a wanted feature.
+              <View style={[styles.card, selectedIndex === index && styles.cardActive]}>
                 {/* Rendered locally rather than via a placeholder URL: the
                     via.placeholder.com domain this used to point at no longer
                     resolves, so every image-less property fired a failing
@@ -381,19 +402,24 @@ export default function PropertyMap({ isAdmin = false }: { isAdmin?: boolean }) 
                       on explicit user instruction in favour of a single Join
                       Group — the same project-wide decision that makes every
                       property card say "Join Group" and never "Chat Now". The
-                      builder's number is still reachable from the property detail
-                      screen (tap the card body) and from inside the group itself,
-                      so nothing became unreachable. DO NOT RESTORE THEM. */}
+                      builder's number is still reachable from inside the group
+                      this button opens, and from the group thread's View Details
+                      sheet, so nothing became unreachable. This clause used to
+                      name "the property detail screen (tap the card body)" as a
+                      third route; that stopped being true when the detail route
+                      was removed from this surface. DO NOT RESTORE THEM. */}
                   <Pressable
                     style={styles.cardJoinBtn}
-                    // stopPropagation matters: the card body is itself a Pressable
-                    // that calls openDetail, so without it this tap would also
-                    // push the detail route behind the group modal.
+                    // No stopPropagation any more: the card body was a Pressable
+                    // calling openDetail, so this tap used to push the detail
+                    // route behind the group modal unless it was stopped. The
+                    // body is now an inert View, so there is nothing left above
+                    // this button to propagate to.
                     // The ref is reset here, not only on close: dismissing the
                     // modal with its chevron while a room is open leaves it true,
                     // and the next mount's `false` publish would then close the
                     // modal the instant it opened.
-                    onPress={(e) => { e.stopPropagation(); threadRoomWasOpenRef.current = false; setJoinProjectId(item.id); }}
+                    onPress={() => { threadRoomWasOpenRef.current = false; setJoinProjectId(item.id); }}
                     accessibilityRole="button"
                     accessibilityLabel={`Join the group for ${item.property_name}`}
                   >
@@ -401,7 +427,7 @@ export default function PropertyMap({ isAdmin = false }: { isAdmin?: boolean }) 
                     <Text style={styles.cardJoinText}>Join Group</Text>
                   </Pressable>
                 </View>
-              </Pressable>
+              </View>
             )}
           />
         </View>
@@ -553,8 +579,34 @@ export default function PropertyMap({ isAdmin = false }: { isAdmin?: boolean }) 
           Group there call closeRoom() — leaving that same room list under the
           "Property Group" header with nothing to rejoin. Listening to the room's
           open state catches every closeRoom path at once, including later ones.
+
+          WHY `statusBarTranslucent` IS ON THIS Modal.
+          Without it there was a blank colors.cream band, exactly one
+          status-bar/cutout height tall, sitting above the "‹ Property Group"
+          header — the top inset was being applied TWICE. React Native's Android
+          Modal is a separate dialog window, and when statusBarTranslucent is
+          false (the default) ReactModalHostView wraps the dialog content in a
+          FrameLayout with fitsSystemWindows = true; RN's own comment there says
+          this "has the pleasant side-effect of us not having to preface all
+          Modals with 'top: statusBarHeight'". So the dialog already reserved the
+          status bar, and then the inner View added `paddingTop: insets.top` on
+          top of it. That inset is non-zero because app/_layout.tsx renders
+          expo-status-bar's <StatusBar>, whose `translucent` prop defaults to
+          true, so the ACTIVITY window draws under the status bar and
+          useSafeAreaInsets() measures the real bar/cutout there. On a punch-hole
+          device displayCutout() is OR-ed into that measurement, which is why the
+          band read as a large gap rather than a hairline.
+          Turning statusBarTranslucent on makes the dialog window behave like the
+          activity window the insets were measured against, so the single
+          remaining `insets.top` becomes the correct, device-measured value
+          instead of a double. No pixel constant and no StatusBar.currentHeight is
+          involved, so a phone with a different bar height is still right. The
+          prop is Android-only and the paddingTop stays for iOS, where a
+          full-screen modal genuinely does not inset for the notch. topInset={0}
+          on the child is also deliberate: this modal's own groupModalHeader is
+          the chrome, so the thread must not inset a third time.
           ── */}
-      <Modal visible={!!joinProjectId} animationType="slide" onRequestClose={() => setJoinProjectId(null)}>
+      <Modal visible={!!joinProjectId} animationType="slide" statusBarTranslucent onRequestClose={() => setJoinProjectId(null)}>
         <View style={{ flex: 1, backgroundColor: colors.cream, paddingTop: insets.top }}>
           <View style={styles.groupModalHeader}>
             <Pressable onPress={() => setJoinProjectId(null)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Back to map">
