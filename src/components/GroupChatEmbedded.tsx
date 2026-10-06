@@ -5113,9 +5113,9 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
 
       {/* Share sheet (tracked link, QR, brochure) for a builder's property —
           opened from the card's Share icon or the detail sheet's Share button.
-          Join Group button appears in all discoverable rooms (builder, area, property groups)
-          because share context is universal — user can join any group from share screen,
-          not limited to property-specific groups only. roomType === 'project' catches all three. */}
+          Join Group button appears only in property groups (roomType === 'project'),
+          not in builder or area rooms, because property groups are the discussion space
+          for a specific property's interested buyers. */}
       {shareProject && (
         <ShareModal
           project={shareProject}

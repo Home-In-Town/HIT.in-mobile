@@ -236,7 +236,8 @@ export default function ShareActions({ project, onClose, onJoinGroup, showJoinGr
 }
 
 // ── Modal wrapper ──────────────────────────────────────────
-export function ShareModal({ project, onClose }: Props) {
+// WHY: Forward all props to ShareActions so Join Group button can render
+export function ShareModal({ project, onClose, onJoinGroup, showJoinGroup }: Props) {
   return (
     <Modal
       visible={!!project}
@@ -246,7 +247,12 @@ export function ShareModal({ project, onClose }: Props) {
     >
       <Pressable style={s.backdrop} onPress={onClose} />
       <View style={s.container}>
-        <ShareActions project={project} onClose={onClose} />
+        <ShareActions 
+          project={project} 
+          onClose={onClose} 
+          onJoinGroup={onJoinGroup}
+          showJoinGroup={showJoinGroup}
+        />
       </View>
     </Modal>
   );

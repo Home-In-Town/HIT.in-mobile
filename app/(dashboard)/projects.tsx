@@ -55,15 +55,21 @@ function ProjectMenuSheet({ project, user, onClose, onEdit, onLayout, onAnalytic
   onAssignCaptain: (p: Project) => void;
   onAssignAgent: (p: Project) => void;
 }) {
-  // Diagnostic logging to identify why assignment buttons don't appear. Previous behavior:
-  // buttons were defined with correct role checks but not appearing in menu. Root cause
-  // investigation: log user and role to verify context is correct.
+  if (!project) return null;
+  
+  // WHY: Assignment buttons were invisible because role check failed. Root cause was that
+  // user.role string values from backend were not matching the strict equality checks.
+  // FIX: Normalize role to lowercase for comparison, handle null/undefined user gracefully,
+  // and log diagnostic info in dev mode to track any future mismatches.
   if (__DEV__) {
     console.log('[ProjectMenuSheet] user:', JSON.stringify(user));
     console.log('[ProjectMenuSheet] user.role:', user?.role);
   }
 
-  if (!project) return null;
+  const userRole = user?.role?.toLowerCase() || '';
+  const isAdmin = userRole === 'admin';
+  const isCaptain = userRole === 'captain';
+
   // Visibility mirrors the website (ProjectTable kebab): Analytics + Visit only
   // appear for a published project; Visit also needs a slug.
   // Assignment is role-gated: admin sees "Assign Captain", captain sees "Assign Agent".
@@ -71,8 +77,8 @@ function ProjectMenuSheet({ project, user, onClose, onEdit, onLayout, onAnalytic
     { label: 'Edit Details', icon: <Pencil size={17} color={colors.ink} />, onPress: () => onEdit(project), show: true },
     { label: 'Layout Editor', icon: <LayoutTemplate size={17} color={colors.ink} />, onPress: () => onLayout(project), show: true },
     { label: 'View Analytics', icon: <BarChart3 size={17} color={colors.ink} />, onPress: () => onAnalytics(project), show: !!project.isPublished },
-    { label: 'Assign Captain', icon: <UserPlus size={17} color={colors.ink} />, onPress: () => onAssignCaptain(project), show: user?.role === 'admin' },
-    { label: 'Assign Agent', icon: <UserPlus size={17} color={colors.ink} />, onPress: () => onAssignAgent(project), show: user?.role === 'captain' },
+    { label: 'Assign Captain', icon: <UserPlus size={17} color={colors.ink} />, onPress: () => onAssignCaptain(project), show: isAdmin },
+    { label: 'Assign Agent', icon: <UserPlus size={17} color={colors.ink} />, onPress: () => onAssignAgent(project), show: isCaptain },
     { label: 'Copy Project Link', icon: <LinkIcon size={17} color={colors.ink} />, onPress: () => onCopyLink(project), show: true },
     { label: 'Visit Project ↗', icon: <ExternalLink size={17} color={colors.ink} />, onPress: () => onVisit(project), show: !!project.isPublished && !!project.slug },
     { label: 'Delete Project', icon: <Trash2 size={17} color={colors.redText} />, danger: true, onPress: () => onDelete(project), show: true },
