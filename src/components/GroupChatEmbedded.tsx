@@ -2431,8 +2431,10 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
    * prefetch whose only job is to put a number on the pill.
    */
   const loadMyMatches = useCallback(async (opts?: { silent?: boolean }) => {
+    console.log('[MATCHING] loadMyMatches called, opts:', opts);
     const silent = !!opts?.silent;
     if (!silent) {
+      console.log('[MATCHING] Setting showMatching=true, matchingLoading=true');
       setShowMatching(true);
       setMatchingLoading(true);
       setMatchingError(null);
@@ -2458,8 +2460,10 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
       // less harmful failure.
       const MAX_PAGES = 20;
 
+      console.log('[MATCHING] Fetching leads from API...');
       const first = await leadMatchingApi.getLeads({ mineOnly: true, limit: LIMIT, page: 1 });
       const leads = Array.isArray(first?.leads) ? [...first.leads] : [];
+      console.log('[MATCHING] First page leads count:', leads.length);
 
       // Trust `pages` when the server sends it; derive it from total/limit only as
       // a fallback, because an older deploy may send one and not the other.
@@ -2517,6 +2521,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
       setMatchingError(null);
       setMatchCountKnown(true);
     } catch (e: any) {
+      console.log('[MATCHING] Error:', e?.message || e);
       // Only a THROWN request is an error. An empty list is a legitimate answer
       // and gets the honest empty state in the sheet instead — showing an error
       // for it would read as "something broke" when nothing did.
@@ -2536,8 +2541,16 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     // to be pushed from these two branches using `cards.length`, which is the
     // pre-filter total — so once a joined match stopped being rendered the badge
     // still counted it and the pill said 9 over a list of 8.
+    //
+    // WHY the dep array was changed from [] to explicit state setters:
+    // The empty array captured stale closures of setState functions from the first
+    // render. When the Matching button was tapped, setShowMatching(true) targeted
+    // a stale reference that no longer updated the live state, so the modal never
+    // opened. React setState functions ARE stable, but explicitly listing them
+    // documents the closure's actual dependencies and prevents future refactors
+    // from breaking this assumption.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [setShowMatching, setMatchingLoading, setMatchingError, setMatchingResults, setMatchCountKnown]);
 
   // Prefetch the match count once, so the hub's Matching pill can carry a number
   // before anyone taps it and the sheet then opens straight from state instead of
@@ -2686,6 +2699,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   // `[builderProjects]`, which changed identity on every portfolio load and
   // needlessly re-fired the onActionsReady publish effect below.)
   const aiMatching = useCallback(() => {
+    console.log('[MATCHING] aiMatching called');
     loadMyMatches();
   }, [loadMyMatches]);
   // Quick-start: user picked Sell / Buy / Rent. Enter AI mode and let the
@@ -2754,6 +2768,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const aiResetToLanding = useCallback(() => {
     const api = aiApiRef.current;
     setShowPost(false);
+    console.log('[MATCHING] aiResetToLanding clearing showMatching');
     setShowMatching(false);
     setShowAiMenu(false);
     setShowDisappear(false);
@@ -2785,6 +2800,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   // safe — the previous version captured the first render's `aiMode` (always
   // false), which is why "My Post" and "Matching" sometimes did nothing.
   useEffect(() => {
+    console.log('[MATCHING] Publishing actions to parent, aiPost:', !!aiPost, 'aiMatching:', !!aiMatching, 'aiResetToLanding:', !!aiResetToLanding);
     onActionsReady?.({ post: aiPost, matching: aiMatching, resetToLanding: aiResetToLanding });
   }, [onActionsReady, aiPost, aiMatching, aiResetToLanding]);
 
@@ -5238,8 +5254,9 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
           fed fabricated demo rows. Join Group runs through
           handleJoinPropertyGroup, so it works from here exactly as it does in
           the chat — wrapped to dismiss this sheet first, see the call site. ── */}
-      <Modal visible={showMatching} transparent animationType="slide" onRequestClose={() => setShowMatching(false)}>
-        <Pressable style={pd.overlay} onPress={() => setShowMatching(false)}>
+      {console.log('[MATCHING] Rendering modal, showMatching:', showMatching, 'matchingLoading:', matchingLoading, 'visibleMatches.length:', visibleMatches.length)}
+      <Modal visible={showMatching} transparent animationType="slide" onRequestClose={() => { console.log('[MATCHING] Modal onRequestClose'); setShowMatching(false); }}>
+        <Pressable style={pd.overlay} onPress={() => { console.log('[MATCHING] Overlay tapped'); setShowMatching(false); }}>
           <Pressable style={pd.sheet} onPress={() => {}}>
             <View style={pd.head}>
               <Search size={18} color={colors.brand} />
@@ -5259,7 +5276,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                       : 'Lead → Inventory auto-match'}
                 </Text>
               </View>
-              <Pressable onPress={() => setShowMatching(false)} hitSlop={8}><X size={20} color={colors.ink} /></Pressable>
+              <Pressable onPress={() => { console.log('[MATCHING] X button tapped'); setShowMatching(false); }} hitSlop={8}><X size={20} color={colors.ink} /></Pressable>
             </View>
 
             {matchingLoading ? (

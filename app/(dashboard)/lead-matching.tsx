@@ -302,6 +302,7 @@ export default function LeadMatchingHub({
   const groupActionsRef = useRef<GroupActions | null>(null);
   // Stable identity so the child's onActionsReady effect doesn't re-run each render.
   const handleActionsReady = useCallback((a: GroupActions) => {
+    console.log('[MATCHING] handleActionsReady called, actions:', a);
     groupActionsRef.current = a;
   }, []);
   // How many projects this user's requirements currently match, reported by the
@@ -443,7 +444,10 @@ export default function LeadMatchingHub({
                   // Only this pill gets a count — My Post has no equivalent
                   // prefetched total.
                   count={matchCount}
-                  onPress={() => groupActionsRef.current?.matching()}
+                  onPress={() => {
+                    console.log('[MATCHING] Button tapped, groupActionsRef.current:', groupActionsRef.current);
+                    groupActionsRef.current?.matching();
+                  }}
                 />
               </View>
             )}
