@@ -24,9 +24,9 @@ import {
   Users, Plus, Globe, ChevronLeft, Send, X, MoreVertical, Building2,
   Link as LinkIcon, FileText, QrCode, Image as ImageIcon, LogOut, Trash2,
   Search, MapPin, Check, Camera, Paperclip, Sparkles, ChevronDown, ChevronUp, Clock,
-  Phone, Eye, UserPlus, BadgeCheck, Share2, MessageCircle,
+  Phone, Eye, UserPlus, BadgeCheck, Share2, MessageCircle, Download, Edit3,
 } from 'lucide-react-native';
-import { groupChatApi, shareApi, mediaApi, leadMatchingApi, projectsApiExtended, fetchPublicProjectsRaw, GroupRoom, GroupMessage, InventoryCard, OwnerPortfolioProject, Project, GroupMedia, GroupLink } from '../lib/api';
+import { groupChatApi, shareApi, mediaApi, leadMatchingApi, invalidateLeadsCache, projectsApiExtended, fetchPublicProjectsRaw, GroupRoom, GroupMessage, InventoryCard, OwnerPortfolioProject, Project, GroupMedia, GroupLink } from '../lib/api';
 import { ShareModal } from './ShareActions';
 import AiAssistant, { AiAssistantApi, AiPostDraft, InventoryMatchCard, MatchCard, MatchResultCard, aiOwnsInput } from './AiAssistant';
 import { postedListStorage, disappearStorage } from '../lib/storage';
@@ -42,6 +42,16 @@ const ROOM_ICON: Record<string, string> = { project: '🏗', builder: '🏢', ar
 // single render of a 4000-line component for a value that never changes. It also
 // listed '🏢' twice (old indices 2 and 8), which drew the same office block in
 // two cells of the picker and made the grid look broken.
+//
+// COUPLED ACROSS REPOS — these fifteen are duplicated as the server's avatar
+// allow-list, with the codepoint table recorded in
+// HIT_Backend/.agents/tasks/group-avatar-backend/api-contract.md. There is no
+// shared package between HIT_Mobile and HIT_Backend, so the duplication cannot
+// be factored out; anything outside the list comes back 400 "Unsupported group
+// icon". Verified byte-identical against the contract's codepoints (1F3E0,
+// 1F3D7, 1F3E2, 1F4CD, 1F3D8, 1F3E1, 1F3EC, 1F3ED, 1F3F0, 1F3EF, 1F3DB, 1F306,
+// 1F3D9, 1F307, 1F3AA) with no stray U+FE0F presentation selectors. If the icon
+// set ever changes, BOTH repos must change in the same commit.
 const PROPERTY_ICONS = ['🏠', '🏗', '🏢', '📍', '🏘', '🏡', '🏬', '🏭', '🏰', '🏯', '🏛', '🌆', '🏙', '🌇', '🎪'];
 
 // ── Groups-pane filter chips ──────────────────────────────────────────────────
@@ -131,24 +141,75 @@ function isOrphanedPropertyGroup(room: GroupRoom, publishedCountByOwner: Record<
   return false;
 }
 
-// Profile picture storage helpers.
+/**
+ * Is this room a PROPERTY room at all — a company group or one of its property
+ * groups? Area and universal rooms are excluded for the same reason the orphan
+ * rule above excludes them: they are not property groups in any sense.
+ *
+ * This is a separate test rather than a widening of isOrphanedPropertyGroup()
+ * because the two answer different questions. Orphan-ness answers "would the
+ * user never find this group on their own"; joined-ness answers "is the user
+ * already in it". The Property Groups chip now needs EITHER to be true, but
+ * folding the membership question into the orphan predicate would silently
+ * widen every other caller of that rule, and the orphan rule is the thing that
+ * decides which UNJOINED rooms are worth surfacing — a joined room has already
+ * been found, so it tells us nothing about discoverability.
+ */
+function isPropertyRoomType(room: GroupRoom): boolean {
+  return room.roomType === 'project' || room.roomType === 'builder';
+}
+
+// Profile picture cache.
 //
-// DELIBERATELY LOCAL-ONLY for now: the chosen picture lives in AsyncStorage on
-// this one device and is not sent to the server. Server-side persistence is a
-// pending product decision with the user, so do NOT "improve" this by adding an
-// API call or a HIT_Backend field until that decision is made. Consequence to be
-// aware of: the picture does not follow the user to another device and is lost on
-// uninstall.
+// THE DECISION HERE HAS BEEN REVERSED. This block used to read "DELIBERATELY
+// LOCAL-ONLY" and warned the next developer not to add an API call or a
+// HIT_Backend field until the product question was settled. It has now been
+// settled the other way: a group's picture must be visible to every member, so
+// the SERVER is the source of truth. It lives on the room as `room.avatar` and
+// is written through the three endpoints under /api/group-chat —
+// PUT /rooms/:roomId/avatar (emoji), POST /rooms/:roomId/avatar/image (photo),
+// DELETE /rooms/:roomId/avatar (clear) — documented in
+// HIT_Backend/.agents/tasks/group-avatar-backend/api-contract.md. That warning
+// is obsolete; this comment replaces it so nobody re-applies it.
+//
+// What the old behaviour actually cost: the picture sat in AsyncStorage on one
+// device, so it did not follow the user to another phone, was lost on uninstall,
+// and — the part that mattered — no other member of the group ever saw it. An
+// admin would set a group photo and be the only person on earth looking at it.
+//
+// This map is now demoted to a strictly SUBORDINATE offline/optimistic cache.
+// Its only job is to keep the avatar from flickering or vanishing on a cold
+// start, in the window before GET /rooms answers. It never wins against
+// `room.avatar` — see resolveRoomAvatar, which encodes that precedence once for
+// every surface in this file.
+//
+// The storage key is unchanged on purpose, so pictures already saved by the old
+// local-only build still render as cache entries instead of disappearing on
+// upgrade. Nothing migrates them to the server: an admin re-picking the picture
+// once is what publishes it to the group.
 const PROFILE_STORAGE_KEY = 'room_profile_pictures';
 
 // Directory the picked photos are copied into. The ImagePicker hands back a path
 // under the app's *cache* dir, which Android is free to purge and which does not
 // survive a reinstall — persisting that URI produced avatars that silently went
 // blank days later. documentDirectory survives app restarts and cache clears
-// (though not an uninstall, which is accepted while storage is local-only).
+// (though not an uninstall).
+//
+// This copy still matters now that uploads go to the server: it is the `localUri`
+// offline fallback, the thing that renders when the device has no network and the
+// public R2 URL cannot be fetched.
 const AVATAR_DIR = `${FileSystem.documentDirectory}group-avatars/`;
 
-type RoomProfile = { type: 'icon' | 'image'; value: string };
+/**
+ * One cached avatar.
+ *
+ * `type` / `value` mirror SERVER truth: the canonical emoji the server echoed
+ * back, or the public R2 URL of the uploaded photo. `localUri` is OURS — the
+ * durable copy of a photo this device uploaded — and exists only so the avatar
+ * still draws when the R2 URL cannot be reached. Nothing should ever prefer
+ * `localUri` over `value`; it is the second hop, not the first.
+ */
+type RoomProfile = { type: 'icon' | 'image'; value: string; localUri?: string };
 
 /**
  * The ONE canonical key for a room in the profile store, used on every read and
@@ -165,37 +226,145 @@ function roomProfileKey(room?: { id?: string } | null): string | null {
 }
 
 /**
- * Persists one room's choice and returns the entry it replaced, so the caller can
- * clean up a now-orphaned photo file. The previous entry is read back from
- * storage rather than from React state on purpose: storage is the single source
- * of truth here, and reading it avoids capturing `allRoomProfiles` in a closure —
- * which is precisely how this feature broke in the first place.
+ * The result of a cache write.
+ *
+ * WHY THIS IS A DISCRIMINATED UNION and not just `RoomProfile | null`. The old
+ * `saveRoomProfilePicture` caught its own write failure, logged it, and returned
+ * `null` — which is byte-for-byte what it returned on a perfectly successful
+ * write to a room that simply had no previous picture. The caller could not tell
+ * the two apart, so a failed write looked like a clean one: the success toast
+ * fired, and the orphan-file cleanup below ran against a `previous` that was
+ * never actually read. `ok` separates "did the write land" from "what did it
+ * replace", so the caller can only reach `previous` when the write really
+ * happened.
  */
-async function saveRoomProfilePicture(roomId: string, type: 'icon' | 'image', value: string): Promise<RoomProfile | null> {
+type CacheWriteResult = { ok: true; previous: RoomProfile | null } | { ok: false };
+
+/**
+ * Caches one room's avatar locally and reports what it replaced, so the caller
+ * can clean up a now-orphaned photo file. The previous entry is read back from
+ * storage rather than from React state on purpose: storage is the single source
+ * of truth for this map, and reading it avoids capturing `avatarCache` in a
+ * closure — which is precisely how this feature broke in the first place.
+ *
+ * This is a cache write, not the save. The save is the server call the caller
+ * has already awaited; if this fails the picture is still published to the
+ * group, only the offline fallback is missing.
+ */
+async function cacheRoomAvatar(roomId: string, entry: RoomProfile): Promise<CacheWriteResult> {
   try {
     const stored = await AsyncStorage.getItem(PROFILE_STORAGE_KEY);
     const profiles: Record<string, RoomProfile> = stored ? JSON.parse(stored) : {};
     const previous = profiles[roomId] || null;
-    profiles[roomId] = { type, value };
+    profiles[roomId] = entry;
     await AsyncStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profiles));
-    return previous;
+    return { ok: true, previous };
   } catch (error) {
-    console.error('Failed to save profile picture:', error);
-    return null;
+    console.error('Failed to cache group avatar:', error);
+    return { ok: false };
   }
 }
 
 /**
- * Removes a replaced avatar file. Guarded on the AVATAR_DIR prefix for the same
- * reason the R2 deletes elsewhere in this project are guarded on
- * `groups/{roomId}/`: a stored value this feature did not write (a legacy picker
- * cache path, anything else) must never be deleted by it. Best-effort — a failed
+ * Drops one room's cache entry — used after a successful server-side clear, so
+ * the local copy cannot keep rendering a picture the group no longer has. Same
+ * honest-failure contract as cacheRoomAvatar.
+ */
+async function removeCachedRoomAvatar(roomId: string): Promise<CacheWriteResult> {
+  try {
+    const stored = await AsyncStorage.getItem(PROFILE_STORAGE_KEY);
+    const profiles: Record<string, RoomProfile> = stored ? JSON.parse(stored) : {};
+    const previous = profiles[roomId] || null;
+    delete profiles[roomId];
+    await AsyncStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profiles));
+    return { ok: true, previous };
+  } catch {
+    // Nothing is logged here on purpose: `ok: false` is the report, and the
+    // caller is the only place that knows what the user should be told. A
+    // console.error would be a second, silent channel for the same event.
+    return { ok: false };
+  }
+}
+
+/**
+ * Persists an avatar learned from the server's `group_avatar_updated` push.
+ *
+ * The socket handler used to update the in-memory map only, which made a
+ * live-learned picture session-only: an admin changed the photo, this user
+ * watched it change, and at the next cold start it was absent from storage and
+ * the avatar fell back to the room-type emoji until GET /rooms answered. That
+ * cold-start window is the cache's one documented reason to exist, so the one
+ * write path that skipped it was the one undermining it.
+ *
+ * `localUri` is carried over ONLY when the push describes the same picture the
+ * stored entry already does — which is what this device's own upload echoing
+ * back off the socket looks like. For anyone else's new picture there is no
+ * local copy, and offering the replaced photo's file as its fallback would show
+ * the wrong image offline. Fire-and-forget: it never throws, and a failed cache
+ * write costs nothing the user can see right now.
+ */
+async function cacheServerPushedAvatar(roomId: string, entry: { type: 'icon' | 'image'; value: string }): Promise<void> {
+  const written = await cacheRoomAvatar(roomId, entry);
+  if (!written.ok) return;
+  const previous = written.previous;
+  if (previous?.type === 'image' && previous.value === entry.value && previous.localUri) {
+    await cacheRoomAvatar(roomId, { ...entry, localUri: previous.localUri });
+  }
+}
+
+/**
+ * Removes a replaced avatar's local file. Guarded on the AVATAR_DIR prefix for
+ * the same reason the R2 deletes elsewhere in this project are guarded on
+ * `groups/{roomId}/`: a path this feature did not write (a legacy picker cache
+ * path, anything else) must never be deleted by it. Best-effort — a failed
  * delete only leaves a stray file behind.
+ *
+ * It now guards on `previous.localUri` rather than `previous.value`, because
+ * from the server-backed version onwards `value` on an image entry is a remote
+ * R2 URL, not a file path — there is nothing on this device to delete there, and
+ * the server handles its own object cleanup through its own prefix guard.
+ *
+ * Only call this when the cache write returned `ok: true`. On `ok: false` the
+ * `previous` entry was never read, so there is no reliable statement about what
+ * was replaced and deleting anything would be a guess.
  */
 function discardReplacedAvatar(previous: RoomProfile | null, keep?: string) {
-  if (previous?.type !== 'image') return;
-  if (!previous.value?.startsWith(AVATAR_DIR) || previous.value === keep) return;
-  FileSystem.deleteAsync(previous.value, { idempotent: true }).catch(() => {});
+  const localUri = previous?.localUri;
+  if (!localUri) return;
+  if (!localUri.startsWith(AVATAR_DIR) || localUri === keep) return;
+  FileSystem.deleteAsync(localUri, { idempotent: true }).catch(() => {});
+}
+
+/**
+ * Turns an avatar-endpoint failure into something worth showing a person.
+ *
+ * The server's own sentence comes first: handleResponse in lib/api.ts already
+ * lifts `body.error` into ApiError.message, and the contract fixes those strings
+ * ("Only a group admin can change the group photo", "The community group photo
+ * cannot be changed", "Group photo must be 5 MB or smaller"), so they are more
+ * specific than anything that could be written here. The status map is only for
+ * the cases with a status but no readable body — a proxy 413, a gateway error.
+ * The point of the whole function is that there is no silent path: a failure
+ * always produces a message that says it failed.
+ *
+ * `message` is trusted ONLY when the error carries a numeric `status`, i.e. only
+ * when it is an ApiError the server actually answered. Previously any non-empty
+ * message won, and an RN fetch rejection has one — so a dead signal reached the
+ * user verbatim as "Network request failed", skipping the status map on exactly
+ * the class of failure that map was written for. A transport failure has no
+ * status, so it now falls through to the caller's fallback sentence.
+ */
+function avatarErrorMessage(e: any, fallback: string): string {
+  const status = typeof e?.status === 'number' ? e.status : null;
+  const message = status !== null && typeof e?.message === 'string' ? e.message.trim() : '';
+  if (message) return message;
+  switch (status) {
+    case 403: return 'Only a group admin can change the group photo';
+    case 413: return 'Group photo must be 5 MB or smaller';
+    case 400: return 'That picture could not be used';
+    case 503: return 'Photo storage is unavailable right now';
+    default: return fallback;
+  }
 }
 
 async function loadRoomProfilePictures(): Promise<Record<string, RoomProfile>> {
@@ -203,13 +372,34 @@ async function loadRoomProfilePictures(): Promise<Record<string, RoomProfile>> {
     const stored = await AsyncStorage.getItem(PROFILE_STORAGE_KEY);
     const profiles: Record<string, RoomProfile> = stored ? JSON.parse(stored) : {};
 
-    // Prune entries whose image file is gone (uninstall/reinstall, or a legacy
-    // entry still pointing at the ImagePicker cache that Android has cleared).
-    // Without this an absent file renders as an empty circle forever, with no way
-    // back to the default icon.
+    // Prune dead local files. Two distinct cases now, and they are NOT handled
+    // the same way:
     let dropped = false;
     for (const [key, profile] of Object.entries(profiles)) {
-      if (profile?.type !== 'image' || !profile.value?.startsWith('file://')) continue;
+      if (profile?.type !== 'image') continue;
+
+      // Case 1 — the CURRENT shape. `value` is a remote R2 URL and `localUri` is
+      // our durable copy. If the copy is gone the entry still has a perfectly
+      // good remote URL, so only the dead fallback is cleared and the entry is
+      // kept. Dropping the whole entry here would needlessly lose the cached
+      // value and make the avatar blink to the default icon on a cold start.
+      if (profile.localUri) {
+        try {
+          const info = await FileSystem.getInfoAsync(profile.localUri);
+          if (!info.exists) { profiles[key] = { type: profile.type, value: profile.value }; dropped = true; }
+        } catch {
+          profiles[key] = { type: profile.type, value: profile.value };
+          dropped = true;
+        }
+        continue;
+      }
+
+      // Case 2 — the LEGACY, pre-server shape, written by the local-only build:
+      // `value` is itself a file:// path and there is no localUri. There is no
+      // remote URL to fall back on, so a missing file makes the entry worthless
+      // and it is dropped entirely. Without this an absent file renders as an
+      // empty circle forever, with no way back to the default icon.
+      if (!profile.value?.startsWith('file://')) continue;
       try {
         const info = await FileSystem.getInfoAsync(profile.value);
         if (!info.exists) { delete profiles[key]; dropped = true; }
@@ -230,41 +420,111 @@ async function loadRoomProfilePictures(): Promise<Record<string, RoomProfile>> {
   }
 }
 
-function getRoomProfilePicture(room: any, profilePictures: any): RoomProfile | null {
+/**
+ * THE one place the avatar precedence is written down, so the room list row, the
+ * thread header and the group-info sheet cannot disagree about which picture a
+ * group has. Precedence: the server's `room.avatar`, then the local cache, then
+ * `null` meaning "render the default room-type icon".
+ *
+ * The server wins because it is the only value every member of the group can
+ * see. Before this, the local AsyncStorage map was the ONLY source, which is how
+ * two members ended up looking at two different pictures for the same group —
+ * and how one member's header and the room list beside it could disagree.
+ *
+ * The first parameter used to be typed `any`, which meant passing a raw room id
+ * STRING where the room object belonged compiled cleanly and then silently
+ * resolved nothing. The `Pick<GroupRoom, …>` below makes that a compile error.
+ */
+function resolveRoomAvatar(
+  room: Pick<GroupRoom, 'id' | 'avatar' | 'isUniversal'> | null | undefined,
+  cache: Record<string, RoomProfile>,
+): RoomProfile | null {
   const key = roomProfileKey(room);
-  return key ? (profilePictures?.[key] || null) : null;
+  const cached = key ? (cache?.[key] || null) : null;
+
+  const server = room?.avatar;
+  if (server) {
+    // Carry the cached localUri across only when the cache is describing THIS
+    // same picture. A localUri from a previous, replaced photo would otherwise
+    // be offered as the offline fallback for the current one.
+    const localUri = cached?.type === 'image' && cached.value === server.value ? cached.localUri : undefined;
+    return { type: server.type, value: server.value, localUri };
+  }
+
+  return cached;
 }
 
-// Helper component to render room avatar with profile picture
-function RoomAvatar({ room, profilePictures, size = 17, style }: { 
-  room: any, 
-  profilePictures: any, 
-  size?: number, 
-  style?: any 
+/**
+ * Renders a group's avatar: server picture if there is one, otherwise the cached
+ * one, otherwise the room-type emoji.
+ *
+ * `cache` is named for what it is — the subordinate fallback — rather than the
+ * old `profilePictures`, which read like the source of truth it is no longer.
+ *
+ * THIS IS THE ONLY PLACE AN AVATAR IS RENDERED. It used to serve the room list
+ * row alone, while the thread header and the group-info sheet each hand-rolled
+ * their own `<Image>` from the same resolved value. Those two copies had no
+ * `onError` and never reached for `localUri`, so an unreachable R2 URL left a
+ * blank circle on exactly the two surfaces the offline fallback was built for,
+ * while the list row two taps away degraded correctly. Sharing the resolver was
+ * not enough — the failure walk has to be shared too, so all three now come
+ * through here.
+ *
+ * `size` is the emoji font size and the image diameter is derived from it, which
+ * held for the list row but not for the other two (38 px image beside a 15 pt
+ * emoji in the header, 70 px beside 30 pt in the sheet). `imageSize` overrides
+ * the derived diameter so those call sites keep their existing pixel values
+ * instead of being nudged to fit a formula.
+ */
+function RoomAvatar({ room, cache, size = 17, imageSize, style }: {
+  room: GroupRoom;
+  cache: Record<string, RoomProfile>;
+  size?: number;
+  imageSize?: number;
+  style?: any;
 }) {
-  const profile = getRoomProfilePicture(room, profilePictures);
-  // A stored path can outlive its file. `onError` is the only signal RN gives us
-  // at render time, so a failed load degrades to the room-type emoji instead of
-  // leaving a blank circle. Keyed off profile.value so picking a new picture
-  // clears a previous failure.
-  const [failed, setFailed] = useState(false);
-  useEffect(() => { setFailed(false); }, [profile?.value]);
+  const profile = resolveRoomAvatar(room, cache);
+  // There are TWO fallback hops now, not one. `value` is a remote R2 URL, so it
+  // needs the network and can fail on a flight or a dead signal; `localUri` is
+  // this device's own copy and needs nothing. So a failed remote load tries the
+  // local copy first, and only when that ALSO fails do we degrade to the
+  // room-type emoji. Never an empty circle, which is what a single hop produced.
+  // `onError` is the only signal RN gives at render time, hence the state.
+  const [failedRemote, setFailedRemote] = useState(false);
+  const [failedLocal, setFailedLocal] = useState(false);
+  // Reset on either URI changing, so picking a new picture clears a previous
+  // failure instead of inheriting it.
+  useEffect(() => { setFailedRemote(false); setFailedLocal(false); }, [profile?.value, profile?.localUri]);
+
+  const dimension = imageSize ?? size * 2.7;
+  const imageStyle = [{ width: dimension, height: dimension, borderRadius: dimension / 2 }, style];
 
   if (!room.isUniversal && profile) {
-    if (profile.type === 'image' && !failed) {
+    if (profile.type === 'image' && !failedRemote) {
       return (
-        <Image 
-          source={{ uri: profile.value }} 
-          style={[{ width: size * 2.7, height: size * 2.7, borderRadius: (size * 2.7) / 2 }, style]} 
+        <Image
+          source={{ uri: profile.value }}
+          style={imageStyle}
           resizeMode="cover"
-          onError={() => setFailed(true)}
+          onError={() => setFailedRemote(true)}
         />
       );
-    } else if (profile.type === 'icon') {
+    }
+    if (profile.type === 'image' && profile.localUri && !failedLocal) {
+      return (
+        <Image
+          source={{ uri: profile.localUri }}
+          style={imageStyle}
+          resizeMode="cover"
+          onError={() => setFailedLocal(true)}
+        />
+      );
+    }
+    if (profile.type === 'icon') {
       return <Text style={{ fontSize: size }}>{profile.value}</Text>;
     }
   }
-  
+
   return (
     <Text style={{ fontSize: size }}>
       {room.isUniversal ? '🌐' : (ROOM_ICON[room.roomType] || '💬')}
@@ -823,11 +1083,18 @@ const BuilderPropertyCard = React.memo(function BuilderPropertyCard({ project, o
 
   return (
     <View style={bp.card}>
+      {/* Card body tap now opens Share sheet instead of Details. Previous
+          behavior: tapping the card body opened a detail view, and the three
+          buttons below offered Details / Open Group / Share. User requirement:
+          remove ALL three buttons and make the card body itself open Share.
+          This consolidates the share action into the only tap target on the
+          card, making the interaction model simpler — one card, one action. */}
       <Pressable
-        onPress={() => onDetails(project)}
+        onPress={() => onShare(project)}
+        disabled={sharing}
         style={({ pressed }) => [pressed && { opacity: 0.7 }]}
         accessibilityRole="button"
-        accessibilityLabel={`Details of ${project.name}`}
+        accessibilityLabel={`Share ${project.name}`}
       >
         {project.coverImage ? (
           <Image source={{ uri: project.coverImage }} style={bp.cover} resizeMode="cover" />
@@ -847,60 +1114,6 @@ const BuilderPropertyCard = React.memo(function BuilderPropertyCard({ project, o
           )}
         </View>
       </Pressable>
-
-      <View style={bp.actions}>
-        {/* Spinner while the project loads. Details used to build its sheet from
-            data already in hand, so it opened instantly; it now fetches the full
-            project, and without this the first tap per card left the press-down
-            opacity as the only sign anything was happening for a whole round-trip.
-            Same one-id-in-state pattern as `sharing`. */}
-        <Pressable
-          onPress={() => onDetails(project)}
-          disabled={loadingDetails}
-          style={[bp.btn, bp.btnGhost, loadingDetails && { opacity: 0.6 }]}
-          accessibilityRole="button"
-          accessibilityLabel={`Details of ${project.name}`}
-        >
-          {loadingDetails
-            ? <ActivityIndicator size="small" color={colors.brand} />
-            : (
-              <>
-                <Eye size={11} color={colors.brand} />
-                <Text style={[bp.btnText, { color: colors.brand }]} numberOfLines={1}>Details</Text>
-              </>
-            )}
-        </Pressable>
-        <Pressable
-          onPress={() => onOpenGroup(project)}
-          disabled={opening}
-          style={[bp.btn, bp.btnSolid, opening && { opacity: 0.6 }]}
-          accessibilityRole="button"
-          accessibilityLabel={`Open group of ${project.name}`}
-        >
-          {opening
-            ? <ActivityIndicator size="small" color="#fff" />
-            : (
-              <>
-                <Users size={11} color="#fff" />
-                <Text style={[bp.btnText, { color: '#fff' }]} numberOfLines={1}>Open Group</Text>
-              </>
-            )}
-        </Pressable>
-        {/* Icon only, fixed width: the card is 186 dp wide and the two labelled
-            buttons already run at 9 px text, so a third labelled button clipped.
-            The accessibilityLabel carries the meaning instead. */}
-        <Pressable
-          onPress={() => onShare(project)}
-          disabled={sharing}
-          style={[bp.btnIcon, sharing && { opacity: 0.6 }]}
-          accessibilityRole="button"
-          accessibilityLabel={`Share ${project.name}`}
-        >
-          {sharing
-            ? <ActivityIndicator size="small" color={colors.brand} />
-            : <Share2 size={12} color={colors.brand} />}
-        </Pressable>
-      </View>
     </View>
   );
 });
@@ -915,13 +1128,16 @@ const RoomSeparator = () => (
   <View style={{ height: 1, backgroundColor: colors.line, marginLeft: 64 }} />
 );
 
-const GroupRow = React.memo(function GroupRow({ room, joined, joining, onPress, onJoin, profilePictures }: {
+const GroupRow = React.memo(function GroupRow({ room, joined, joining, onPress, onJoin, cache }: {
   room: GroupRoom;
   joined: boolean;
   joining?: boolean;
   onPress?: (room: GroupRoom) => void;
   onJoin?: (room: GroupRoom) => void;
-  profilePictures?: any;
+  // The avatar fallback cache, not the avatar itself — the row's picture comes
+  // from room.avatar when the server has one. Renamed from `profilePictures`
+  // (and off `any`) so that subordinate role is legible at the call site.
+  cache: Record<string, RoomProfile>;
 }) {
   const { primary, secondary } = roomLines(room);
   const typeLabel = roomTypeLabel(room);
@@ -934,7 +1150,7 @@ const GroupRow = React.memo(function GroupRow({ room, joined, joining, onPress, 
       style={[s.roomRow, room.isUniversal && s.roomRowPinned]}
     >
       <View style={[s.roomAvatar, room.isUniversal && { backgroundColor: colors.brand }]}>
-        <RoomAvatar room={room} profilePictures={profilePictures || {}} />
+        <RoomAvatar room={room} cache={cache} />
       </View>
 
       <View style={{ flex: 1, minWidth: 0 }}>
@@ -979,7 +1195,7 @@ const GroupRow = React.memo(function GroupRow({ room, joined, joining, onPress, 
   );
 });
 
-export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, autoOpenUniversal = false, hideThreadBack = false, headerless = false, onActionsReady, onMatchCountChange, autoOpenProjectId, onAutoJoinFailed }: {
+export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, autoOpenUniversal = false, hideThreadBack = false, headerless = false, onActionsReady, onMatchCountChange, onAiAvailableChange, autoOpenProjectId, onAutoJoinFailed }: {
   onRoomOpenChange?: (open: boolean) => void;
   topInset?: number;
   // When true, the Universal ("AI Lead Matching") room opens automatically and
@@ -1007,6 +1223,14 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   // known" (never loaded, or the request failed) — deliberately distinct from 0,
   // because a failed load must not render as "you have no matches".
   onMatchCountChange?: (n: number | null) => void;
+  // Whether AI Assist is available in the room currently open, so the hub can
+  // hide its My Post / Matching pills when it is not. The hub used to derive this
+  // itself as `tab === 'assistant' && groupOpen`, which reproduced the old
+  // prop-based `aiAllowed`; that rule stopped being true once this component
+  // could open a PROPERTY room inside the AI pane, where My Post would set
+  // aiMode only for the safety-net effect to clear it again — a visibly dead
+  // button. Only this component knows which room is open, so it reports the fact.
+  onAiAvailableChange?: (available: boolean) => void;
   // Open this property's group room immediately on mount, skipping the room
   // list. Used by the Project-map card's Join Group button, which knows a project
   // id and nothing else.
@@ -1024,6 +1248,15 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const [myRooms, setMyRooms] = useState<GroupRoom[]>([]);
   const [discoverRooms, setDiscoverRooms] = useState<GroupRoom[]>([]);
   const [activeRoom, setActiveRoom] = useState<GroupRoom | null>(null);
+  // The room AI Assist belongs to, captured when the autoOpenUniversal effect
+  // resolves it. This exists because `aiAllowed` used to be decided by the
+  // `autoOpenUniversal` PROP, which is a fact about the pane and not about the
+  // room currently open — so every room opened in that pane inherited "AI is
+  // allowed here". Holding the resolved room lets the render path ask the only
+  // question that matters: "is the open room the AI room?" It is also the room
+  // the thread's back control returns to, which is why it is state and not a ref
+  // (the header must re-render when it appears).
+  const [aiRoom, setAiRoom] = useState<GroupRoom | null>(null);
   const [messages, setMessages] = useState<GroupMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMsgs, setLoadingMsgs] = useState(false);
@@ -1081,6 +1314,10 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const [postingDraft, setPostingDraft] = useState(false);
   // "Post" view: all properties the user has posted so far + the current draft.
   const [showPost, setShowPost] = useState(false);
+  // True while the two backend loads behind My Posts are in flight. They used to
+  // be fired un-awaited with nothing on screen to say so, so the sheet opened
+  // blank with "0 posted" and filled in a second later.
+  const [postsLoading, setPostsLoading] = useState(false);
   const [postedList, setPostedList] = useState<any[]>([]); // AiPostDraft + { projectId, postedAt, id }
   const [postedLeads, setPostedLeads] = useState<any[]>([]); // backend ExtractedLeads (sell/rent)
   const [myProjects, setMyProjects] = useState<any[]>([]); // backend published projects (source of truth)
@@ -1124,10 +1361,18 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   // Profile picture upload modal states
   const [showProfilePicModal, setShowProfilePicModal] = useState(false);
   const [updatingProfilePic, setUpdatingProfilePic] = useState(false);
-  const [customProfileIcon, setCustomProfileIcon] = useState<string | null>(null);
-  const [customProfileImage, setCustomProfileImage] = useState<string | null>(null);
-  // Keyed by roomProfileKey(room) — the same key the write path uses.
-  const [allRoomProfiles, setAllRoomProfiles] = useState<Record<string, RoomProfile>>({});
+  // Keyed by roomProfileKey(room) — the same key the write path uses. Renamed
+  // from `allRoomProfiles`: it is the offline fallback cache, not the list of
+  // group pictures, which now comes down on room.avatar.
+  //
+  // There used to be two more states here, `customProfileIcon` and
+  // `customProfileImage`, holding the OPEN room's picture for the thread header
+  // and the group-info sheet. They were a second source of truth for the same
+  // pixel and the room list did not share them, which is how a freshly picked
+  // picture showed in the header while the list row kept the default icon. Both
+  // are gone; all three surfaces now read resolveRoomAvatar, so they cannot
+  // disagree.
+  const [avatarCache, setAvatarCache] = useState<Record<string, RoomProfile>>({});
   // Matching results state. Typed as MatchCard[] now — it used to be `any[]`
   // holding raw `{ project, score, matchedOn }` rows for a local lookalike card;
   // it holds the shape the one shared MatchResultCard renders.
@@ -1135,6 +1380,11 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const [matchingResults, setMatchingResults] = useState<MatchCard[]>([]);
   const [matchingLoading, setMatchingLoading] = useState(false);
   const [matchingError, setMatchingError] = useState<string | null>(null);
+  // Has a match load ever SUCCEEDED? This is what separates "you have no
+  // matches" (0) from "we do not know" (null) for the hub's pill badge. An empty
+  // `matchingResults` cannot answer it on its own — that is also the initial
+  // state and the state after a failure.
+  const [matchCountKnown, setMatchCountKnown] = useState(false);
   // Free-text lead detection (mirrors the website's extract → confirm → match).
   // When a typed message like "i need a flat in besa" is detected as a lead,
   // we show a confirm sheet; on confirm we run matching (leadMatchingApi.confirm).
@@ -1155,19 +1405,29 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   // individual property or area group, where its greeting, intent chips and
   // My Post / Matching buttons make no sense.
   //
-  // `autoOpenUniversal` identifies the AI Leads hub pane — the pane whose
-  // auto-opened room IS the universal room; `isUniversal` covers that same room
-  // being opened directly from the Groups list.
+  // This is answered by ROOM IDENTITY: `isUniversal` for the universal room
+  // however it was opened, plus an id match against `aiRoom` — the room the
+  // autoOpenUniversal effect actually resolved, which covers the `/hit community/`
+  // name fallback that effect uses when the server sends no isUniversal flag.
   //
-  // This used to read `hideThreadBack` instead, which was true of the same single
-  // caller and so behaved identically. It stopped being safe when the Project
-  // map's Join Group started mounting this component in a modal with
-  // `hideThreadBack` (the modal owns the only back control) on an ordinary
-  // PROPERTY room: that would have made aiAllowed true there and rendered the
-  // Sell/Buy/Rent starter chips inside a property group — exactly what the note
-  // above says must never happen. `autoOpenUniversal` names the actual condition
-  // (the room really is the universal one) instead of a coincidence of chrome.
-  const aiAllowed = !!activeRoom && (activeRoom.isUniversal || autoOpenUniversal);
+  // Previous behaviour, and why it was wrong. This read
+  // `activeRoom.isUniversal || autoOpenUniversal`. `autoOpenUniversal` is a prop
+  // of the PANE, not a fact about the open room, so once the user opened any
+  // other room inside the AI Leads pane — which is exactly what Join Group on a
+  // match row does — `aiAllowed` stayed true for that property room. Three things
+  // followed: the Sell/Buy/Rent starter chips kept rendering inside a property
+  // group (the note above says that must never happen), the safety-net effect
+  // below could never fire, and the room looked like it had not opened at all.
+  // (The even earlier version read `hideThreadBack`, which was wrong for the same
+  // reason one step removed — it is chrome, not identity.)
+  //
+  // Accepted consequence, deliberately: now that this is honest, joining a
+  // property group from the AI pane ENDS an in-progress AI Assist conversation,
+  // because the safety-net effect clears aiMode and unmounts AiAssistant. That is
+  // precisely what the safety net was written for; a stale assistant painted over
+  // someone else's property group is the worse outcome.
+  const isAiRoom = !!activeRoom && (activeRoom.isUniversal || (!!aiRoom && activeRoom.id === aiRoom.id));
+  const aiAllowed = isAiRoom;
 
   // Use this — never raw `aiMode` — for anything in the render path. It prevents
   // a frame where the assistant UI paints over a property group before the
@@ -1205,38 +1465,58 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     return !!ownerId && ownerId === user.id;
   }, [role, activeRoom, user?.id]);
 
+  /**
+   * Who may change the group's profile picture on screen.
+   *
+   * THIS IS NOT THE SECURITY BOUNDARY. The server enforces the identical rule in
+   * groupChatController and answers 403 to anyone else, and it would do so even
+   * if this memo were deleted. The only reason it exists is so the UI does not
+   * offer a tap target whose entire outcome is an error toast — hiding a button
+   * is never a permission check.
+   *
+   * Mirrors the contract's rule in the contract's own order: a platform admin
+   * (the same emergency override DELETE /rooms/:roomId already has, and exempt
+   * from membership), or the room's creator, or a member whose own row says
+   * role: 'admin'.
+   *
+   * The universal / community room is refused for EVERYONE including platform
+   * admins — it has no owner and its picture is the app's own. That clause is
+   * belt-and-braces: canOpenGroupInfo below is already `!activeRoom.isUniversal`
+   * so the sheet holding the picker cannot be opened there at all. It is stated
+   * anyway, because the next person to add a second entry point to the picker
+   * should not have to rediscover the rule.
+   */
+  const canManageRoomAvatar = useMemo(() => {
+    if (!activeRoom) return false;
+    if (activeRoom.isUniversal || activeRoom.roomType === 'universal') return false;
+    if (role === 'admin') return true;
+    if (!user?.id) return false;
+    if (activeRoom.createdBy?.id === user.id) return true;
+    return (activeRoom.members || []).some(m => m.user.id === user.id && m.role === 'admin');
+  }, [activeRoom, user?.id, role]);
+
   // Requirement / inventory composer state
   const [reqForm, setReqForm] = useState({ bhkType: '2BHK', budget: '', area: '', city: '', possessionNeeded: 'immediate', loanRequired: false, urgency: 'normal', clientNotes: '' });
   const [invForm, setInvForm] = useState({ bhkOptions: '', min: '', max: '', area: '', city: '', possessionStatus: 'ready', bankLoanAvailable: false, commissionPercent: '2', description: '' });
 
   useEffect(() => { onRoomOpenChange?.(!!activeRoom); }, [activeRoom, onRoomOpenChange]);
+  // Publish AI availability upward (see the prop's comment). Derived from
+  // aiAllowed so the hub's pills and this component's own AI chrome can never
+  // disagree about whether the open room is the AI room.
+  useEffect(() => { onAiAvailableChange?.(aiAllowed); }, [aiAllowed, onAiAvailableChange]);
 
-  // Load profile pictures from storage. Re-runs whenever a room opens or closes
-  // (activeRoom?.id goes to undefined on close), so returning to the list always
-  // re-reads AsyncStorage and the rows reflect whatever was just saved.
+  // Load the avatar fallback cache from storage. Re-runs whenever a room opens
+  // or closes (activeRoom?.id goes to undefined on close), so returning to the
+  // list always re-reads AsyncStorage and the rows reflect whatever was just
+  // cached.
+  //
+  // This used to ALSO copy the open room's entry into customProfileIcon /
+  // customProfileImage for the header and the group-info sheet. That second
+  // mirror is gone — those surfaces resolve from room.avatar plus this cache
+  // directly now, so there is nothing left to keep in sync here.
   useEffect(() => {
     const loadProfiles = async () => {
-      const profiles = await loadRoomProfilePictures();
-      setAllRoomProfiles(profiles);
-      
-      // Set current room's profile picture if exists. Goes through the same
-      // canonical key helper as the write path — reading with a raw id here and
-      // writing with the helper elsewhere is exactly the kind of drift that would
-      // bring this bug back.
-      const activeKey = roomProfileKey(activeRoom);
-      if (activeKey && profiles[activeKey]) {
-        const profile = profiles[activeKey];
-        if (profile.type === 'icon') {
-          setCustomProfileIcon(profile.value);
-          setCustomProfileImage(null);
-        } else if (profile.type === 'image') {
-          setCustomProfileImage(profile.value);
-          setCustomProfileIcon(null);
-        }
-      } else {
-        setCustomProfileIcon(null);
-        setCustomProfileImage(null);
-      }
+      setAvatarCache(await loadRoomProfilePictures());
     };
     loadProfiles();
   }, [activeRoom?.id]);
@@ -1357,6 +1637,79 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     return unsub;
   }, [activeRoom?.id, socket.onGroupMessageDeleted, socket.ready]);
 
+  /**
+   * Writes a server-authoritative avatar onto the open room and both cached room
+   * lists at once, so the thread header and every list row converge in the same
+   * commit without a refetch. The server returns the full room on all three
+   * avatar endpoints precisely so this is possible.
+   *
+   * `avatar: undefined` is the cleared state, matching the contract: the field is
+   * absent rather than set to a default, because what the default LOOKS like is
+   * a rendering decision and resolveRoomAvatar owns it.
+   *
+   * Declared HERE, above the socket effect that depends on it, rather than down
+   * with the three write handlers that also use it: a `const` in a component
+   * body is in its temporal dead zone until the line that initialises it runs,
+   * and an effect's dependency array is evaluated during render — so listing it
+   * from an effect placed earlier in the body would throw on first render.
+   */
+  const applyRoomAvatar = useCallback((roomId: string, avatar: GroupRoom['avatar']) => {
+    const patch = (r: GroupRoom): GroupRoom => (r.id === roomId ? { ...r, avatar } : r);
+    setActiveRoom(prev => (prev ? patch(prev) : prev));
+    setMyRooms(prev => prev.map(patch));
+    setDiscoverRooms(prev => prev.map(patch));
+  }, []);
+
+  // An admin changed the group's photo. Patch it in place so the thread header
+  // and the list row both follow without a refetch.
+  //
+  // `socket.ready` is in the deps for the same cold-start reason the neighbouring
+  // effects document: the subscription silently no-ops if the socket did not
+  // exist on the first run. activeRoom?.id deliberately is NOT — this handler
+  // patches the cached room lists as well as the open room, so re-registering it
+  // every time a room opens would be pure churn for no extra coverage.
+  //
+  // The server emits on channel `group_<roomId>`, which trackJoinGroup already
+  // joins for the open room, so this only ever fires for the room the user is
+  // in. It is NOT a substitute for the `avatar` field on the GET /rooms payload,
+  // which is how every other row in the list learns its picture.
+  //
+  // No toast: another member changing a picture is not worth interrupting
+  // whatever this user is doing.
+  //
+  // AsyncStorage is written as well as the in-memory map. Updating memory alone
+  // made a live-learned picture last only for the session — see
+  // cacheServerPushedAvatar for why that defeated the cache's only purpose.
+  useEffect(() => {
+    const unsub = socket.onGroupAvatarUpdated(({ roomId, avatar }) => {
+      const id = String(roomId || '');
+      if (!id) return;
+      const next = avatar && (avatar.type === 'icon' || avatar.type === 'image') && avatar.value
+        ? { type: avatar.type, value: avatar.value, key: avatar.key ?? null }
+        : undefined;
+      applyRoomAvatar(id, next);
+      // Deliberately outside the setAvatarCache updater below: a state updater
+      // must stay pure, and React may call it more than once for one dispatch.
+      void (next
+        ? cacheServerPushedAvatar(id, { type: next.type, value: next.value })
+        : removeCachedRoomAvatar(id));
+      setAvatarCache(prev => {
+        if (!next) {
+          if (!prev[id]) return prev;
+          const cleared = { ...prev };
+          delete cleared[id];
+          return cleared;
+        }
+        // A localUri from this device's own previous upload must not be carried
+        // onto someone else's new picture, so it is dropped unless the value is
+        // unchanged.
+        const keepLocal = prev[id]?.type === 'image' && prev[id]?.value === next.value ? prev[id].localUri : undefined;
+        return { ...prev, [id]: { type: next.type, value: next.value, localUri: keepLocal } };
+      });
+    });
+    return unsub;
+  }, [socket.onGroupAvatarUpdated, socket.ready, applyRoomAvatar]);
+
   // Another member may delete the group while this screen is open. Close the
   // thread immediately instead of leaving a dead composer that only fails on
   // the next send.
@@ -1390,6 +1743,13 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   // so the callback does not need to change when a room opens.
   const activeRoomIdRef = useRef<string | null>(null);
   useEffect(() => { activeRoomIdRef.current = activeRoom?.id ?? null; }, [activeRoom?.id]);
+  // Same mirror trick as aiModeRef: aiResetToLanding is handed to the parent hub
+  // ONCE through onActionsReady and called much later, so reading `aiRoom` from
+  // the closure would capture the first render's null forever. Keeping the
+  // callback identity stable also matters — the hub's publish effect depends on
+  // it, so a fresh identity per room change would re-fire that effect.
+  const aiRoomRef = useRef<GroupRoom | null>(null);
+  useEffect(() => { aiRoomRef.current = aiRoom; }, [aiRoom]);
 
   const openRoom = useCallback(async (room: GroupRoom) => {
     const previousId = activeRoomIdRef.current;
@@ -1558,6 +1918,26 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   };
 
   /**
+   * The thread header's back control.
+   *
+   * In the AI Leads pane the user can now land in a PROPERTY room (Join Group on
+   * a match row), and that room is not somewhere this pane can simply close out
+   * of: `closeRoom()` would strand the pane on this component's own room list —
+   * search bar, Discover rows, Create Group — which is not a view the AI Leads
+   * pane is supposed to have at all. So from a non-AI room we go back to the AI
+   * room instead, which is the view the user came from. Everywhere else (the
+   * Groups pane) the behaviour is unchanged: close the thread, return to the list.
+   */
+  const handleThreadBack = () => {
+    const ai = aiRoomRef.current;
+    if (ai && activeRoom && activeRoom.id !== ai.id) {
+      openRoom(ai);
+      return;
+    }
+    closeRoom();
+  };
+
+  /**
    * Media & Links for the group-info sheet, loaded only when that sheet is
    * actually opened. Deliberately NOT loaded on room open: the Groups list and
    * thread must not get slower for a section most taps never reach.
@@ -1590,6 +1970,12 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     const universal = myRooms.find(r => r.isUniversal) || myRooms.find(r => /hit community/i.test(r.name));
     if (universal) {
       autoOpenedRef.current = true;
+      // Remember WHICH room this was before opening it. `aiAllowed` used to be
+      // derived from the autoOpenUniversal prop, which stayed true for every
+      // room this pane later opened; capturing the resolved room here is what
+      // lets isAiRoom above be an identity test and still honour the
+      // `/hit community/` name fallback on the line before.
+      setAiRoom(universal);
       openRoom(universal);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1669,6 +2055,11 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
         'success',
       );
       setLeadDetect(null);
+      // Confirming wrote a new lead. leadMatchingApi.confirm already dropped the
+      // api-level leads cache; this drops My Posts' own freshness window too, so
+      // a sell/rent lead confirmed from chat shows up on the next sheet open
+      // instead of waiting out the minute.
+      postsFetchedAtRef.current = 0;
     } catch (e: any) {
       toast.show(e?.message || 'Could not find matches', 'error');
     } finally {
@@ -1839,6 +2230,12 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
       // 3) Save to the local posted list with a cooldown timestamp (per-property).
       const updated = await postedListStorage.add({ ...postDraft, projectId, postedAt: Date.now() });
       // Refresh the durable backend list so the new post shows even after a reinstall.
+      // Both caches have to be dropped first or the refresh is a no-op: the leads
+      // list is cached for 60 s in api.ts, and My Posts skips its loads entirely
+      // while postsFetchedAtRef is fresh — either one on its own would hide the
+      // user's brand-new post until the minute was up.
+      invalidateLeadsCache();
+      postsFetchedAtRef.current = 0;
       loadPostedLeads();
       setPostedList(updated);
 
@@ -1885,6 +2282,10 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
         projectId: project.id, postedAt: Date.now(),
       } as any);
       setPostedList(updated);
+      // A re-post rewrites this property's cooldown, which My Posts reads, so the
+      // sheet's freshness marker is dropped — otherwise a re-open within the
+      // minute could show the card with a stale cooldown.
+      postsFetchedAtRef.current = 0;
       toast.show('Property re-posted to group 📢', 'success');
       setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 150);
     } catch (e: any) {
@@ -1906,6 +2307,9 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
       if (res?.message) appendMessage(normalizeMsg(res.message, activeRoom.id));
       const updated = await postedListStorage.add({ ...entry, postedAt: Date.now() } as any);
       setPostedList(updated);
+      // Same reason as repostProject: the cooldown changed, so My Posts must
+      // re-read rather than reuse its freshness window.
+      postsFetchedAtRef.current = 0;
       toast.show('Property re-posted to group 📢', 'success');
       setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 150);
     } catch (e: any) {
@@ -1931,9 +2335,16 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   // reinstall, unlike the local posted list (AsyncStorage gets wiped). Normal
   // add-project projects are not ExtractedLeads, so Post stays separate from
   // the Project section.
+  //
+  // `page: 1` is not cosmetic. loadMyMatches below asks for
+  // `{ mineOnly: true, limit: 50, page: 1 }`, and leadMatchingApi.getLeads now
+  // caches on the built query string — so stating page 1 explicitly makes this
+  // request byte-identical to that one and the two collapse onto a single
+  // response. Without it the only difference was a missing `page=1`, and the
+  // component fetched the same page of the same list twice.
   const loadPostedLeads = useCallback(async () => {
     try {
-      const res = await leadMatchingApi.getLeads({ limit: 50, mineOnly: true });
+      const res = await leadMatchingApi.getLeads({ mineOnly: true, limit: 50, page: 1 });
       const leads = Array.isArray(res?.leads) ? res.leads : [];
       // Only sellable inventory (sell / rent) — buyer requirements aren't "posts".
       const sellable = leads.filter((l: any) => {
@@ -1954,11 +2365,38 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   // another entry point — it only offers Disappearing messages / End / Exit Chat.)
   // Post = show ALL properties the user has posted so far, plus (if present) the
   // current AI-collected draft as a postable card.
+  /**
+   * Freshness marker for the two backend lists behind My Posts. 0 = "never
+   * loaded, or a write invalidated them".
+   *
+   * Every open of this sheet used to re-issue both requests, so closing and
+   * re-opening it paid the full network cost again for data that had not changed.
+   * A component-local marker is deliberate rather than a TTL cache on
+   * projectsApiExtended.getAll(): that call is shared with projects.tsx and
+   * marketplace.tsx and would need invalidating on every create / update /
+   * publish / delete path in the app, which is a much larger blast radius than
+   * this one sheet is worth. Each of the three post/re-post paths clears this
+   * marker instead, so a property the user just posted is never hidden by it.
+   */
+  const postsFetchedAtRef = useRef(0);
+  const POSTS_FRESH_MS = 60_000;
+
   const doPost = async () => {
     const list = await postedListStorage.getAll();
     setPostedList(list);
-    loadMyProjects();   // backend published projects (for cooldown enrichment)
-    loadPostedLeads();  // backend AI-posted properties — the durable source
+    // Awaited now, with a spinner in the sheet. Both were fire-and-forget before,
+    // which is why the sheet opened empty and the count jumped from 0 to 32 a
+    // moment later. allSettled is enough and no error branch is needed because
+    // both loaders already swallow their own failures into empty arrays.
+    const fresh = Date.now() - postsFetchedAtRef.current < POSTS_FRESH_MS;
+    if (!fresh) {
+      setPostsLoading(true);
+      // Not awaited before the sheet opens below: the open must not wait on the
+      // network, so this promise is handled on its own and only toggles the body.
+      Promise.allSettled([loadMyProjects(), loadPostedLeads()])
+        .then(() => { postsFetchedAtRef.current = Date.now(); })
+        .finally(() => setPostsLoading(false));
+    }
     const draft = aiApiRef.current?.getPostDraft();
     // Only treat the draft as postable if it's a new sellable draft not already
     // in the posted list (avoid showing a just-posted item twice as "draft").
@@ -2077,19 +2515,29 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
 
       setMatchingResults(cards);
       setMatchingError(null);
-      onMatchCountChange?.(cards.length);
+      setMatchCountKnown(true);
     } catch (e: any) {
       // Only a THROWN request is an error. An empty list is a legitimate answer
       // and gets the honest empty state in the sheet instead — showing an error
       // for it would read as "something broke" when nothing did.
       setMatchingResults([]);
       if (!silent) setMatchingError(e?.message || 'Could not load your matches');
-      onMatchCountChange?.(null);
+      // Mark the count UNKNOWN regardless of `silent`. A silent failure must
+      // still publish null, never 0 — the pill's badge treats 0 and null
+      // differently on purpose, and `matchingError` cannot carry this because it
+      // is deliberately only set when !silent (the prefetch has no sheet to
+      // explain itself in).
+      setMatchCountKnown(false);
     } finally {
       if (!silent) setMatchingLoading(false);
     }
+    // onMatchCountChange is no longer called from in here: the count is published
+    // by the effect below, derived from the SAME array the sheet renders. It used
+    // to be pushed from these two branches using `cards.length`, which is the
+    // pre-filter total — so once a joined match stopped being rendered the badge
+    // still counted it and the pill said 9 over a list of 8.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [onMatchCountChange]);
+  }, []);
 
   // Prefetch the match count once, so the hub's Matching pill can carry a number
   // before anyone taps it and the sheet then opens straight from state instead of
@@ -2114,6 +2562,42 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     // this once-per-mount, so a new callback identity must not re-trigger it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [headerless, activeRoom]);
+
+  /**
+   * Which of this user's matches are still worth showing, and how many.
+   *
+   * Once the user has joined a property's group there is nothing left for the
+   * match row to offer — its only action is Join Group — so the row used to sit
+   * there forever advertising a group the user is already inside. It now drops
+   * out of the list the moment the join lands.
+   *
+   * "Already joined" comes from SERVER truth, not a local joined-set:
+   * `myRooms` is GET /group-chat/rooms, which the backend answers with every room
+   * where this user is a member (`getRooms` filters on `members.user`, with no
+   * roomType filter), so a project room the user joined on another device or
+   * before a reinstall is still counted. It also costs zero extra requests — the
+   * list is already loaded on mount — and `handleJoinPropertyGroup` prepends the
+   * freshly joined room to it, which is what makes the row vanish instantly
+   * rather than on the next refresh.
+   */
+  const joinedProjectIds = useMemo(
+    () => new Set(myRooms.map(r => String(r.project?.id || '')).filter(Boolean)),
+    [myRooms],
+  );
+  const visibleMatches = useMemo(
+    () => matchingResults.filter(m => !joinedProjectIds.has(String(m.projectId))),
+    [matchingResults, joinedProjectIds],
+  );
+
+  // ONE number feeds the pill badge, the sheet's "N matches…" subtitle and the
+  // rendered rows, so they cannot disagree. This used to be pushed from inside
+  // loadMyMatches as `cards.length` — the unfiltered total — which is how a badge
+  // of 9 could sit above a list of 8 once a joined match stopped rendering.
+  // `null` (not 0) while the count is unknown: the hub renders the badge only for
+  // count > 0, so an emptied list drops the badge instead of showing a zero.
+  useEffect(() => {
+    onMatchCountChange?.(matchCountKnown ? visibleMatches.length : null);
+  }, [matchCountKnown, visibleMatches.length, onMatchCountChange]);
 
   // Expose post/matching to the parent hub (headerless mode) so its sub-row can
   // trigger them. aiPost/aiMatching are defined below; a stable wrapper is fine
@@ -2270,18 +2754,31 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const aiResetToLanding = useCallback(() => {
     const api = aiApiRef.current;
     setShowPost(false);
+    setShowMatching(false);
     setShowAiMenu(false);
     setShowDisappear(false);
     setText('');
     pendingAiActionRef.current = null;
     pendingAiIntentRef.current = null;
+    // The landing view is the AI room's thread. Since Join Group on a match row
+    // can leave this pane sitting in a PROPERTY room, "reset" has to put the AI
+    // room back on screen as well — previously it only cleared the conversation
+    // state, so tapping "AI Leads" while inside a property group reset the
+    // assistant but left the user looking at the property thread.
+    const ai = aiRoomRef.current;
+    if (ai && activeRoomIdRef.current && activeRoomIdRef.current !== ai.id) openRoom(ai);
     Promise.resolve(api?.exitChat?.()).finally(() => {
       setAiMode(false);
       setAiInputType(undefined);
       setAiReady(false);
       aiApiRef.current = null;
     });
-  }, []);
+    // openRoom is the only dependency: it is useCallback-stable (its own deps are
+    // socket.joinGroup / socket.leaveGroup, both useCallback([]) in useSocket), so
+    // naming it keeps this callback's identity stable and the hub's publish effect
+    // below does not re-fire. Room identity is read through refs for the same
+    // reason.
+  }, [openRoom]);
 
   // Expose post / matching / reset to the parent hub. All three are
   // useCallback-stable and read live state through refs, so publishing them is
@@ -2430,6 +2927,9 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
         videos: mediaUrls((p as any).videos),
         layoutImage: oneUrl((p as any).layoutImage),
         brochureUrl: oneUrl((p as any).brochureUrl),
+        googleMapLink: p.googleMapLink || '',
+        latitude: p.latitude,
+        longitude: p.longitude,
         sourceMessageId,
       });
     } catch {
@@ -2751,26 +3251,36 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
 
   // Group profile picture — the write path.
   //
-  // THE BUG THIS FIXES: both of these handlers used to declare `[toast]` as their
-  // only dependency. The component always mounts on the room LIST, where
-  // activeRoom is null, so the closure useCallback handed to the modal had
-  // captured activeRoom === null — the `if (activeRoom?.id)` guard was false and
-  // neither saveRoomProfilePicture() nor setAllRoomProfiles() ever ran. Nothing
-  // was ever written to AsyncStorage. What still worked through the stale closure
-  // were the useState setters (referentially stable), which is why the thread
-  // header and the group-info sheet showed the new picture while the list kept
-  // the default icon; and `toast.show('Profile picture updated!')` sat OUTSIDE
-  // the guard, so the app reported success on a save that never happened. That
-  // false success is what survived three rounds of fixes aimed at the read side.
+  // THE TWO BUGS THIS CODE HAS ALREADY BEEN THROUGH, kept on record because the
+  // second one is the reason the whole feature moved to the server:
   //
-  // Two changes keep it fixed: activeRoom?.id is now a dependency, and the map is
-  // updated with a functional updater so `allRoomProfiles` is not captured at all
-  // (the old `{ ...allRoomProfiles }` spread could resurrect a stale snapshot and
-  // drop another room's entry).
+  // 1. Both handlers used to declare `[toast]` as their only dependency. The
+  //    component always mounts on the room LIST, where activeRoom is null, so the
+  //    closure handed to the modal had captured activeRoom === null — the
+  //    `if (activeRoom?.id)` guard was false and nothing was ever written to
+  //    AsyncStorage. The useState setters still worked through the stale closure
+  //    (they are referentially stable), which is why the header showed the new
+  //    picture while the list kept the default icon. Fixed by depending on
+  //    activeRoom?.id and using functional updaters, both of which are retained.
+  // 2. The success toast fired off a LOCAL write that nobody else could see, and
+  //    `saveRoomProfilePicture` returned null on a failed write — indistinguishable
+  //    from "no previous entry" — so even a storage failure reported success.
+  //
+  // Both handlers now await the real server call FIRST and only touch local state
+  // after it resolves. Every failure path says it failed, in the server's own
+  // words where it has any. Authorization is the server's; canManageRoomAvatar is
+  // only here to keep an unusable button off the screen.
   const handleProfilePicUpload = useCallback(async (option: 'gallery' | 'camera') => {
     const key = roomProfileKey(activeRoom);
     if (!key) {
       toast.show('Open a group first', 'error');
+      return;
+    }
+    // Defensive only — the picker lives behind an affordance that is not
+    // rendered for a caller who fails this check. The server's 403 is the
+    // boundary; this just avoids spending a request to be refused.
+    if (!canManageRoomAvatar) {
+      toast.show('Only a group admin can change the group photo', 'error');
       return;
     }
     try {
@@ -2797,7 +3307,31 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
           });
 
       if (!result.canceled && result.assets[0]) {
-        const imageUri = result.assets[0].uri;
+        const asset = result.assets[0];
+        const imageUri = asset.uri;
+
+        // Pre-flight against the contract's own limits, before the file is copied
+        // or a request is spent. The server accepts only JPEG / PNG / WebP at up
+        // to 5 MB and sniffs magic bytes, so these two checks just move a refusal
+        // that would happen anyway to somewhere it can be explained.
+        //
+        // HEIC is REFUSED rather than converted: there is no image transcoder in
+        // this project (no expo-image-manipulator), so an iPhone pick saved as
+        // HEIC cannot be made acceptable here. A clear sentence beats a server
+        // 400 the user cannot act on.
+        //
+        // A missing mimeType defaults to image/jpeg, exactly as the chat
+        // attachment path does, and the server's magic-byte sniff is then the
+        // real gate — guessing wrong there is a clean 400, not a corrupt upload.
+        const mimeType = asset.mimeType || 'image/jpeg';
+        if (!['image/jpeg', 'image/png', 'image/webp'].includes(mimeType)) {
+          toast.show('Only JPEG, PNG and WebP photos can be used', 'error');
+          return;
+        }
+        if (typeof asset.fileSize === 'number' && asset.fileSize > 5 * 1024 * 1024) {
+          toast.show('Group photo must be 5 MB or smaller', 'error');
+          return;
+        }
 
         // Copy the pick out of the picker's cache before anything is persisted.
         // The URI handed back lives under .../cache/ImagePicker/, which Android
@@ -2806,11 +3340,30 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
         // timestamp in the filename matters: reusing one filename lets RN's
         // Image serve the previously cached bitmap, so a new photo would appear
         // not to have changed.
+        //
+        // The copy earns its keep twice over now: it is what gets uploaded (so a
+        // purge mid-request cannot pull the file out from under the upload) and
+        // it becomes the entry's `localUri` offline fallback afterwards.
         let storedUri: string;
+        let name: string;
         try {
           await FileSystem.makeDirectoryAsync(AVATAR_DIR, { intermediates: true }); // idempotent
-          const ext = (imageUri.match(/\.(jpe?g|png|webp|heic)(?:\?|$)/i)?.[0] || '.jpg').toLowerCase();
-          storedUri = `${AVATAR_DIR}${key}-${Date.now()}${ext}`;
+          // The extension comes from the CAPTURE GROUP, not the whole match. The
+          // previous expression took `?.[0]`, which for a URI carrying a query
+          // string ("…/photo.jpg?token=abc") matched '.jpg?' including the
+          // question mark — producing a file literally named `…jpg?` on disk.
+          //
+          // `heic` is NOT in the alternation, and that is not an oversight: the
+          // mime pre-flight above already refuses a declared HEIC, so the branch
+          // could only ever fire when asset.mimeType was absent — naming the
+          // file `.heic` on a payload this code declares as image/jpeg. The
+          // alternation now lists exactly the three types the contract accepts
+          // and anything else falls to the 'jpg' default, which matches that
+          // declared mime.
+          const extMatch = imageUri.match(/\.(jpe?g|png|webp)(?:\?|$)/i);
+          const ext = `.${(extMatch?.[1] || 'jpg').toLowerCase()}`;
+          name = `${key}-${Date.now()}${ext}`;
+          storedUri = `${AVATAR_DIR}${name}`;
           await FileSystem.copyAsync({ from: imageUri, to: storedUri });
         } catch (copyError) {
           // Persisting the cache URI as a fallback would just recreate the decay
@@ -2820,18 +3373,34 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
           return;
         }
 
-        // Clear icon and set image
-        setCustomProfileIcon(null);
-        setCustomProfileImage(storedUri);
+        try {
+          // The durable copy is what gets uploaded, never the picker-cache URI.
+          const res = await groupChatApi.uploadRoomAvatarImage({ roomId: key, uri: storedUri, name, mimeType });
+          if (!res.avatar) throw new Error('The server did not return the new photo');
 
-        const replaced = await saveRoomProfilePicture(key, 'image', storedUri);
-        discardReplacedAvatar(replaced, storedUri);
-        // Functional updater, so `allRoomProfiles` is never read from this
-        // closure and a stale snapshot can never drop another room's entry.
-        setAllRoomProfiles(prev => ({ ...prev, [key]: { type: 'image', value: storedUri } }));
+          // Server first, and only AFTER it answered. room.avatar is what every
+          // other member will see; the cache entry below is only this device's
+          // offline fallback.
+          applyRoomAvatar(key, res.avatar);
+          const written = await cacheRoomAvatar(key, { type: 'image', value: res.avatar.value, localUri: storedUri });
+          if (written.ok) {
+            // Only reachable on ok: on a failed cache write `previous` was never
+            // read, so deleting anything would be a guess.
+            discardReplacedAvatar(written.previous, storedUri);
+          }
+          // Functional updater, so `avatarCache` is never read from this closure
+          // and a stale snapshot can never drop another room's entry.
+          setAvatarCache(prev => ({ ...prev, [key]: { type: 'image', value: res.avatar!.value, localUri: storedUri } }));
 
-        toast.show('Profile picture updated!', 'success');
-        setShowProfilePicModal(false);
+          toast.show('Group photo updated', 'success');
+          setShowProfilePicModal(false);
+        } catch (uploadError) {
+          // Nothing landed, so nothing changes: no room patch, no cache write,
+          // and the local copy is removed rather than left as a file nobody will
+          // ever read.
+          FileSystem.deleteAsync(storedUri, { idempotent: true }).catch(() => {});
+          toast.show(avatarErrorMessage(uploadError, 'Could not update the group photo'), 'error');
+        }
       }
     } catch (error) {
       console.error('Profile pic upload error:', error);
@@ -2839,7 +3408,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     } finally {
       setUpdatingProfilePic(false);
     }
-  }, [toast, activeRoom?.id]);
+  }, [toast, activeRoom?.id, canManageRoomAvatar, applyRoomAvatar]);
 
   const handleIconSelect = useCallback(async (icon: string) => {
     const key = roomProfileKey(activeRoom);
@@ -2847,29 +3416,94 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
       toast.show('Open a group first', 'error');
       return;
     }
+    if (!canManageRoomAvatar) {
+      toast.show('Only a group admin can change the group photo', 'error');
+      return;
+    }
     try {
       setUpdatingProfilePic(true);
       // There used to be an artificial 500ms sleep here commented "Simulate API
-      // call". There is no API call on this path — storage is local by design —
-      // so it only delayed a write that takes a millisecond.
+      // call". It was removed because there was no API call to simulate. There
+      // is a real one now — do NOT reintroduce a sleep beside it.
+      const res = await groupChatApi.setRoomAvatarIcon(key, icon);
+      if (!res.avatar) throw new Error('The server did not return the new icon');
 
-      // Clear image and set icon
-      setCustomProfileImage(null);
-      setCustomProfileIcon(icon); // Update local state to show new icon
-
-      const replaced = await saveRoomProfilePicture(key, 'icon', icon);
-      // Switching to an emoji orphans whatever photo this room had.
-      discardReplacedAvatar(replaced);
-      setAllRoomProfiles(prev => ({ ...prev, [key]: { type: 'icon', value: icon } }));
-      toast.show('Profile picture updated!', 'success');
+      // The server's echoed value is stored, not the local `icon` string: the
+      // contract says a trailing U+FE0F presentation selector is tolerated and
+      // stripped, so the server's value is the canonical one and caching ours
+      // would mean the cache and the room disagreed by a codepoint.
+      applyRoomAvatar(key, res.avatar);
+      const written = await cacheRoomAvatar(key, { type: 'icon', value: res.avatar.value });
+      if (written.ok) {
+        // Switching to an emoji orphans whatever photo this room had locally.
+        discardReplacedAvatar(written.previous);
+      }
+      setAvatarCache(prev => ({ ...prev, [key]: { type: 'icon', value: res.avatar!.value } }));
+      toast.show('Group photo updated', 'success');
       setShowProfilePicModal(false);
     } catch (error) {
-      console.error('Icon update error:', error);
-      toast.show('Failed to update profile picture', 'error');
+      // No state change and no cache write on this path — the group's picture is
+      // whatever the server still says it is.
+      toast.show(avatarErrorMessage(error, 'Could not update the group photo'), 'error');
     } finally {
       setUpdatingProfilePic(false);
     }
-  }, [toast, activeRoom?.id]);
+  }, [toast, activeRoom?.id, canManageRoomAvatar, applyRoomAvatar]);
+
+  /**
+   * Returns the group to its default room-type icon. Without this an uploaded
+   * photo could never be undone — the picker only ever offered replacements.
+   *
+   * DELETE is idempotent per the contract (a room with no picture also answers
+   * 200) and the returned room carries no `avatar` key at all, which is why the
+   * room patch below is an explicit `undefined` rather than anything derived
+   * from the response.
+   */
+  const handleClearAvatar = useCallback(async () => {
+    const key = roomProfileKey(activeRoom);
+    if (!key) {
+      toast.show('Open a group first', 'error');
+      return;
+    }
+    if (!canManageRoomAvatar) {
+      toast.show('Only a group admin can change the group photo', 'error');
+      return;
+    }
+    try {
+      setUpdatingProfilePic(true);
+      await groupChatApi.clearRoomAvatar(key);
+      applyRoomAvatar(key, undefined);
+      const written = await removeCachedRoomAvatar(key);
+      if (written.ok) {
+        // The in-memory delete is INSIDE the ok branch. It used to run before
+        // this check, so a failed storage removal left the session showing no
+        // picture while AsyncStorage still held one — the two disagreed until
+        // the next read, and the old photo then came back out of nowhere. They
+        // now move together or not at all, and the toast below says which.
+        setAvatarCache(prev => {
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
+        discardReplacedAvatar(written.previous);
+        toast.show('Group photo removed', 'success');
+      } else {
+        // The clear itself DID land — the group no longer has a photo for anyone.
+        // But the stored fallback entry survived, and resolveRoomAvatar falls
+        // back to the cache precisely when room.avatar is absent, so this device
+        // keeps rendering the old picture. The in-memory entry is left in place
+        // to match that, rather than hiding a discrepancy the user would meet
+        // again on the next cold start. Reporting a clean removal here would be
+        // the same false-success this whole rewrite exists to kill.
+        toast.show('Removed for the group, but the copy on this device could not be cleared', 'error');
+      }
+      setShowProfilePicModal(false);
+    } catch (error) {
+      toast.show(avatarErrorMessage(error, 'Could not remove the group photo'), 'error');
+    } finally {
+      setUpdatingProfilePic(false);
+    }
+  }, [toast, activeRoom?.id, canManageRoomAvatar, applyRoomAvatar]);
 
   // Stable renderItem so the memoised MessageBubble can actually bail out.
   // Previously this was an inline arrow with a fresh onInterested on every
@@ -3129,10 +3763,10 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
         joining={joiningId === room.id}
         onPress={openRoom}
         onJoin={handleJoin}
-        profilePictures={allRoomProfiles}
+        cache={avatarCache}
       />
     ),
-    [joiningId, openRoom, handleJoin, allRoomProfiles]
+    [joiningId, openRoom, handleJoin, avatarCache]
   );
 
   const renderSectionHeader = useCallback(
@@ -3192,19 +3826,34 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     );
 
     // Property Groups chip: the ONLY top-level path to a roomType 'project'
-    // room. Project rooms stay out of the unfiltered discoverList above — one
-    // builder can have eighteen properties and listing them all alongside their
-    // company group showed the same property twice — and that decision is NOT
-    // reversed here. This chip is an extra surface on top of it, and it admits a
-    // project room only when the room is ORPHANED: a lone published property, or
-    // an owner with no complete identity to group it under. Those are precisely
-    // the rooms that are otherwise unreachable, because a user who never opens
-    // the builder's group never sees them.
+    // room. Project rooms stay out of the unfiltered discoverList above, and out
+    // of My Groups' Builders/Area sections — one builder can have eighteen
+    // properties, and listing them all alongside their company group showed the
+    // same property twice. That decision is NOT reversed here; this chip is a
+    // deliberate narrow exception layered on top of it, and it only ever applies
+    // when the user has explicitly picked the chip.
     //
-    // Built from myRooms AND discoverRooms so a joined orphan and a joinable one
-    // sit in the same list. De-duplicated on id with the JOINED copy winning,
-    // because the joined row is the richer one: it carries joined: true (so the
-    // row renders Open rather than Join) and its unread badge.
+    // The bug this fixes: the chip used to admit a property room ONLY when
+    // isOrphanedPropertyGroup() said so. A user who joined a project group from
+    // the Project tab's map (Sai Dham Developers) could open it fine from the map
+    // but then could not find it ANYWHERE in the Groups list — the orphan rule
+    // correctly answered "not orphaned" for a verified owner with two published
+    // projects, and the top-level exclusion above hid it from every other
+    // section. A group you are a member of must be findable.
+    //
+    // So admission is now: a property-type room (company or property) that the
+    // user has JOINED, **or** one that is ORPHANED. The orphan half is untouched,
+    // so unjoined single-property groups and groups from builders without a
+    // complete profile are still discoverable here — those stay the rooms a user
+    // would otherwise never reach, because someone who never opens the builder's
+    // group never sees them.
+    //
+    // Built from myRooms AND discoverRooms so a joined room and a joinable one
+    // sit in the same list. De-duplication is the byId map, keyed on the
+    // canonical id minted once in transformGroupRoom(), so a room that is both
+    // joined and orphaned is drawn exactly once. The joined pass runs LAST on
+    // purpose: its copy is the richer one — populated members plus unreadCount —
+    // so it overwrites any discover copy of the same room.
     const propertyGroups = (() => {
       const byId = new Map<string, GroupRoom>();
       for (const r of discoverRooms) {
@@ -3212,9 +3861,26 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
         if (isOrphanedPropertyGroup(r, publishedCountByOwner)) byId.set(r.id, r);
       }
       for (const r of listRooms) {
-        if (isOrphanedPropertyGroup(r, publishedCountByOwner)) byId.set(r.id, r);
+        if (!isPropertyRoomType(r)) continue;
+        byId.set(r.id, r);
       }
-      return Array.from(byId.values());
+      // Joined groups first, discoverable ones after.
+      //
+      // Both passes and the byId de-duplication above are deliberately unchanged
+      // — the joined pass must still run LAST so its richer copy (populated
+      // members, unreadCount) wins — but Map.set keeps an existing key's original
+      // insertion position, so a room that was also in Discover kept its discover
+      // slot and a purely-joined room was simply appended at the end. Either way
+      // the groups the user is actually a member of sank to the bottom of a list
+      // whose top rows they cannot even open without joining.
+      //
+      // Partitioning after the fact, rather than reordering the passes, is what
+      // keeps admission identical: isOrphanedPropertyGroup() and
+      // isOwnerProfileIncomplete() still decide WHICH rooms appear, this only
+      // decides the order. Inside each half the server's lastActivity order is
+      // preserved.
+      const all = Array.from(byId.values());
+      return [...all.filter(r => joinedIds.has(r.id)), ...all.filter(r => !joinedIds.has(r.id))];
     })();
 
     // ONE list for everything. Empty sections drop out, so a user with no area
@@ -3236,7 +3902,10 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
             // joined orphan to render a "Join" button it does not need — so this
             // section also hands renderGroupRow the joined-id set and the row
             // resolves its own state. `joined: false` only picks the heading's
-            // globe icon, which is right for a discovery surface.
+            // globe icon, which is right for a discovery surface — it does NOT
+            // decide any row, so a joined project room renders Open (tappable
+            // row, time and unread badge) while an unjoined orphan next to it
+            // still renders its Join Group button.
             ? [{ title: GROUP_FILTER_LABELS.property, data: propertyGroups, joined: false, joinedIds }]
             : [
               { title: 'Builders', data: myBuilders, joined: true },
@@ -3267,7 +3936,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
         : groupFilter === 'discover'
           ? 'You have already joined every public group we can see.'
           : groupFilter === 'property'
-            ? 'Single-property groups and groups from builders without a complete profile appear here.'
+            ? 'Property groups you have joined show up here, along with single-property groups and builders without a complete profile.'
             : 'Groups you join appear here, and public groups show up under Discover Groups.';
 
     return (
@@ -3434,15 +4103,45 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const canOpenGroupInfo = !activeRoom.isUniversal;
   const infoMembers = activeRoom.members || [];
   const infoAdmins = infoMembers.filter(m => m.role === 'admin');
+  // The group-info avatar, built once and placed into whichever wrapper the
+  // caller's permission selects below. It used to be two verbatim ~20-line
+  // copies of the same image/emoji block, one inside the admin Pressable and one
+  // inside the non-admin View, which meant any fix to the avatar's failure
+  // behaviour had to land twice — and the first time round it landed in neither.
+  // The branches now differ ONLY in the wrapper element, which is the only thing
+  // the permission actually changes.
+  const groupInfoAvatar = <RoomAvatar room={activeRoom} cache={avatarCache} size={30} imageSize={70} />;
+
+  // Header / back visibility. Both props describe the AI Leads pane's chrome for
+  // its OWN room; neither was ever meant to apply to a second room opened inside
+  // that pane, which is what Join Group on a match row now does. So the
+  // suppression is narrowed to the AI room and every other room keeps a real
+  // header with a working back control (see handleThreadBack for where it goes).
+  const showThreadHeader = !headerless || !isAiRoom;
+  const showThreadBack = !hideThreadBack || (!isAiRoom && !!aiRoom);
+
   return (
     <KeyboardAvoidingView style={{ flex: 1, paddingTop: topInset }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      {/* Thread header — hidden entirely in headerless mode, where the AI Leads
-          hub supplies the single Groups · Chats · My Post · Matching tab row
-          instead (it used to supply only Groups · Chats). */}
-      {!headerless && (
+      {/* Thread header — hidden in headerless mode ONLY for the AI room, where the
+          AI Leads hub supplies the single Groups · Chats · My Post · Matching tab
+          row instead (it used to supply only Groups · Chats).
+
+          `!headerless` alone was wrong once the AI pane could open a second room.
+          Join Group on a match row opens that property's thread in this pane, and
+          with the header suppressed it arrived with NO title and NO back control —
+          the user saw a nameless thread with the hub's AI chrome on top and read
+          it as "the sheet closed and nothing happened". A room the hub does not
+          name has to name itself, so any non-AI room gets the real header back.
+
+          The two other callers are unaffected: the Groups pane passes neither
+          prop (header and back exactly as before), and PropertyMap's modal passes
+          hideThreadBack with headerless false and no autoOpenUniversal — so
+          aiRoom is null there, showThreadBack stays false, and the modal keeps
+          owning the only back control. */}
+      {showThreadHeader && (
       <View style={s.threadHeader}>
-        {!hideThreadBack && (
-          <Pressable onPress={closeRoom} style={{ padding: 4 }}><ChevronLeft size={22} color={colors.ink} /></Pressable>
+        {showThreadBack && (
+          <Pressable onPress={handleThreadBack} style={{ padding: 4 }}><ChevronLeft size={22} color={colors.ink} /></Pressable>
         )}
         {/* Avatar + title are one tap target that opens group info, the way
             WhatsApp does it. They used to be inert Views, so there was no way to
@@ -3460,20 +4159,24 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
         >
           {/* Universal room gets the globe symbol (matches the room list) so this
               header reads as "the shared room", not a repeat of the tab name. */}
+          {/* Rendered by the SHARED RoomAvatar, like the list row and the
+              group-info sheet. This used to read two component-level states
+              (customProfileIcon / customProfileImage) that the room list had no
+              access to, so a freshly picked picture appeared here and in the
+              info sheet while the list row beside it kept the default icon.
+
+              The first pass at that fix routed this site through the shared
+              RESOLVER but kept its own hand-rolled <Image>, which had no
+              onError and never tried the cached localUri — so once `value`
+              became a remote R2 URL instead of a file:// path, an offline open
+              showed a blank 38×38 circle here while the list row behind it
+              showed the local copy. The whole component is shared now, so the
+              remote → localUri → room-type emoji walk is too.
+
+              Pixel values and s.threadAvatar are unchanged: imageSize={38} is
+              the diameter this site always used, and size={15} the emoji's. */}
           <View style={[s.threadAvatar, activeRoom.isUniversal && { backgroundColor: colors.brand }]}>
-            {!activeRoom.isUniversal && customProfileImage ? (
-              <Image 
-                source={{ uri: customProfileImage }} 
-                style={{ width: 38, height: 38, borderRadius: 19 }} 
-                resizeMode="cover"
-              />
-            ) : (
-              <Text style={{ fontSize: 15 }}>
-                {activeRoom.isUniversal 
-                  ? '🌐' 
-                  : (customProfileIcon || ROOM_ICON[activeRoom.roomType] || '💬')}
-              </Text>
-            )}
+            <RoomAvatar room={activeRoom} cache={avatarCache} size={15} imageSize={38} />
           </View>
           {/* The universal room keeps membership stats as its title — the tab above
               already names it, so repeating "AI Lead Matching" here said nothing.
@@ -3916,8 +4619,38 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
               <Pressable onPress={() => setShowPost(false)} hitSlop={8}><X size={20} color={colors.ink} /></Pressable>
             </View>
 
+            {/* Loading state. Both loads used to be fired WITHOUT await and with
+                no indicator, so the sheet opened on an empty body with "0 posted"
+                in the header and the cards plus the real count appeared a second
+                later — which is what "posts load lene me time lagta hai / tut
+                gaya" was describing. The sheet still opens immediately (so its
+                slide animation is not held up by the network); only the body
+                waits, and it says so. Shown only while there is genuinely nothing
+                to show yet — a re-open that already has cards keeps rendering
+                them rather than flashing a spinner over them. */}
+            {postsLoading && postedCards.length === 0 && !postDraft ? (
+              <View style={{ paddingVertical: 48, alignItems: 'center' }}>
+                <ActivityIndicator color={colors.brand} size="large" />
+                <Text style={{ fontSize: 12, color: colors.muted, marginTop: 12 }}>Loading your posts…</Text>
+              </View>
+            ) : (
             <ScrollView
-              style={{ maxHeight: '78%' }}
+              /* flexShrink: 1, not a percentage maxHeight. `maxHeight: '78%'`
+                 could not resolve to anything meaningful: pd.sheet has NO definite
+                 height (it is content-driven and only clamped by
+                 maxHeight: '88%'), so a percentage on its child had no definite
+                 base to resolve against. The list was laid out at a height
+                 unrelated to the space the sheet actually had, the sheet's own 88%
+                 clamp then cut the third card through its button row, and the
+                 sheet space left under the cropped list painted plain white —
+                 the "blank ghagha" in the screenshot.
+
+                 flexShrink: 1 makes the list give way to the real available space
+                 instead (RN defaults children to flexShrink: 0), so it fills the
+                 sheet, scrolls through every post, and still lets the sheet sit
+                 short when the user has only one or two. Same fix and same
+                 reasoning as the group-info FlatList and the Your Matches list. */
+              style={{ flexShrink: 1 }}
               contentContainerStyle={{ gap: 10, paddingBottom: 12 }}
               showsVerticalScrollIndicator
               nestedScrollEnabled
@@ -3974,6 +4707,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                 <Text style={pd.empty}>Abhi tak koi property post nahi ki. AI ko apni sell/rent property batayein, phir yahan se post karein.</Text>
               )}
             </ScrollView>
+            )}
           </Pressable>
         </Pressable>
       </Modal>
@@ -3989,6 +4723,24 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                 {viewProperty?.subtitle ? <Text style={pd.headSub} numberOfLines={1}>📍 {viewProperty.subtitle}</Text> : null}
               </View>
               {viewProperty?.price ? <Text style={pd.cardPrice}>{viewProperty.price}</Text> : null}
+              {/* Admin Edit button — role-gated. Previous behavior: property details
+                  were read-only for everyone. New: admins see an Edit button that
+                  opens the web dashboard edit screen, matching the Projects list
+                  3-dot menu pattern. Non-admins see no Edit button at all. */}
+              {user?.role === 'admin' && viewProperty?.shareProjectId && (
+                <Pressable
+                  onPress={() => {
+                    const editUrl = `https://sales.homeintown.in/dashboard/projects/${viewProperty.shareProjectId}/edit`;
+                    Linking.openURL(editUrl).catch(() => toast.show('Could not open edit page', 'error'));
+                  }}
+                  style={[pd.shareBtn, { marginRight: 8 }]}
+                  hitSlop={6}
+                  accessibilityRole="button"
+                  accessibilityLabel="Edit property"
+                >
+                  <Edit3 size={16} color={colors.brand} />
+                </Pressable>
+              )}
               {/* Share is offered only when the sheet was built from a real
                   project. Card-only fallbacks and lead/match sheets have nothing
                   shareable, so no button appears there. */}
@@ -4010,85 +4762,112 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
             </View>
 
             <ScrollView style={{ maxHeight: 520 }} contentContainerStyle={{ paddingBottom: 6, gap: 12 }} showsVerticalScrollIndicator={false}>
+              {/* Cover image at the top */}
               {!!viewProperty?.image && (
                 <Image source={{ uri: viewProperty.image }} style={pd.detailHero} resizeMode="cover" />
               )}
 
-              {/* Two shapes, deliberately: `sections` is the full-project detail
-                  view (Overview / Pricing / Configuration / Amenities / Contact),
-                  `fields` is the single flat list every other caller still builds
-                  (Preview Info, lead cards, match cards, the draft post card).
-                  Adding a shape instead of changing one kept those six callers
-                  untouched. */}
-              {Array.isArray(viewProperty?.sections) && viewProperty.sections.length > 0 ? (
-                viewProperty.sections.map((sec: any, si: number) => (
-                  <View key={`${sec.title}-${si}`} style={pd.section}>
-                    <Text style={pd.sectionTitle}>{sec.title}</Text>
-                    <View style={pd.detailList}>
-                      {sec.fields.map((f: any, i: number) => (
-                        <View key={i} style={pd.detailRow}>
-                          <Text style={pd.detailLabel}>{f.label}</Text>
-                          <Text style={pd.detailValue} numberOfLines={4}>{f.value}</Text>
-                        </View>
-                      ))}
-                    </View>
-                  </View>
-                ))
-              ) : (
-                <View style={pd.detailList}>
-                  {(viewProperty?.fields || []).map((f: any, i: number) => (
-                    <View key={i} style={pd.detailRow}>
-                      <Text style={pd.detailLabel}>{f.label}</Text>
-                      <Text style={pd.detailValue} numberOfLines={3}>{f.value}</Text>
-                    </View>
-                  ))}
-                </View>
-              )}
-
-              {/* Preview Info is deliberately short: basics only, no media. */}
-              {!viewProperty?.compact && (viewProperty?.galleryImages?.length > 0 || viewProperty?.videos?.length > 0 || viewProperty?.brochureUrl || viewProperty?.layoutImage) && (
-                <View style={pd.mediaSection}>
-                  {/* Count in the heading, so a 20-photo gallery reads as one even
-                      before the user scrolls the thumbnail strip sideways. */}
-                  <Text style={pd.mediaTitle}>
-                    {['Media',
-                      viewProperty?.galleryImages?.length ? `${viewProperty.galleryImages.length} photos` : '',
-                      viewProperty?.videos?.length ? `${viewProperty.videos.length} videos` : '',
-                    ].filter(Boolean).join(' · ')}
+              {/* Clean action-button list replaces all text detail sections. Previous
+                  behavior: showed text sections (Overview/Pricing/Configuration/
+                  Amenities/Contact) with ~20+ fields, most empty, making the sheet
+                  verbose and hard to scan. User requirement: "jo abhi details dhik
+                  rahi he vo remove krna he" — remove the text details entirely and
+                  show only actionable buttons. Each button opens/downloads the
+                  resource or triggers the relevant action. Buttons appear ONLY when
+                  the resource exists, so an empty section never renders. */}
+              
+              {/* Gallery section */}
+              {viewProperty?.galleryImages?.length > 0 && (
+                <View style={pd.actionSection}>
+                  <Text style={pd.actionSectionTitle}>
+                    📷 Gallery ({viewProperty.galleryImages.length} photos)
                   </Text>
-
-                  {viewProperty?.galleryImages?.length > 0 && (
-                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
-                      {viewProperty.galleryImages.map((url: string, i: number) => (
-                        <Pressable key={`${url}-${i}`} onPress={() => Linking.openURL(url)}>
-                          <Image source={{ uri: url }} style={pd.mediaThumb} resizeMode="cover" />
-                        </Pressable>
-                      ))}
-                    </ScrollView>
-                  )}
-
-                  <View style={pd.mediaActions}>
-                    {viewProperty?.layoutImage && (
-                      <Pressable style={pd.mediaBtn} onPress={() => Linking.openURL(viewProperty.layoutImage)}>
-                        <ImageIcon size={13} color={colors.brand} /><Text style={pd.mediaBtnText}>Layout</Text>
-                      </Pressable>
-                    )}
-                    {(viewProperty?.videos || []).map((url: string, i: number) => (
-                      <Pressable key={`${url}-${i}`} style={pd.mediaBtn} onPress={() => Linking.openURL(url)}>
-                        <FileText size={13} color={colors.brand} /><Text style={pd.mediaBtnText}>Video {i + 1}</Text>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+                    {viewProperty.galleryImages.map((url: string, i: number) => (
+                      <Pressable key={`${url}-${i}`} onPress={() => Linking.openURL(url)}>
+                        <Image source={{ uri: url }} style={pd.mediaThumb} resizeMode="cover" />
                       </Pressable>
                     ))}
-                    {viewProperty?.brochureUrl && (
-                      <Pressable
-                        style={pd.mediaBtn}
-                        onPress={() => Linking.openURL(viewProperty.brochureUrl).catch(() => toast.show('Could not open the brochure', 'error'))}
-                      >
-                        <FileText size={13} color={colors.brand} /><Text style={pd.mediaBtnText}>Brochure PDF</Text>
-                      </Pressable>
-                    )}
-                  </View>
+                  </ScrollView>
                 </View>
               )}
+
+              {/* Action buttons — each row is icon + label, all brand-orange on white */}
+              <View style={pd.actionSection}>
+                {viewProperty?.brochureUrl && (
+                  <Pressable
+                    style={pd.actionRow}
+                    onPress={() => Linking.openURL(viewProperty.brochureUrl).catch(() => toast.show('Could not open brochure', 'error'))}
+                  >
+                    <FileText size={18} color={colors.brand} />
+                    <Text style={pd.actionLabel}>Download Brochure</Text>
+                    <Download size={14} color={colors.muted} style={{ marginLeft: 'auto' }} />
+                  </Pressable>
+                )}
+
+                {viewProperty?.layoutImage && (
+                  <Pressable
+                    style={pd.actionRow}
+                    onPress={() => Linking.openURL(viewProperty.layoutImage).catch(() => toast.show('Could not open layout', 'error'))}
+                  >
+                    <ImageIcon size={18} color={colors.brand} />
+                    <Text style={pd.actionLabel}>View Layout Plan</Text>
+                    <Download size={14} color={colors.muted} style={{ marginLeft: 'auto' }} />
+                  </Pressable>
+                )}
+
+                {(viewProperty?.videos || []).map((url: string, i: number) => (
+                  <Pressable
+                    key={`${url}-${i}`}
+                    style={pd.actionRow}
+                    onPress={() => Linking.openURL(url).catch(() => toast.show('Could not open video', 'error'))}
+                  >
+                    <FileText size={18} color={colors.brand} />
+                    <Text style={pd.actionLabel}>Watch Video {i + 1}</Text>
+                    <Eye size={14} color={colors.muted} style={{ marginLeft: 'auto' }} />
+                  </Pressable>
+                ))}
+
+                {viewProperty?.shareProjectId && (
+                  <Pressable
+                    style={pd.actionRow}
+                    onPress={() => handleShareProject(viewProperty.shareProjectId)}
+                    disabled={sharingId === viewProperty.shareProjectId}
+                  >
+                    {sharingId === viewProperty.shareProjectId ? (
+                      <ActivityIndicator size="small" color={colors.brand} />
+                    ) : (
+                      <Share2 size={18} color={colors.brand} />
+                    )}
+                    <Text style={pd.actionLabel}>Share Property Link</Text>
+                    <LinkIcon size={14} color={colors.muted} style={{ marginLeft: 'auto' }} />
+                  </Pressable>
+                )}
+
+                {(viewProperty?.googleMapLink || (viewProperty?.latitude && viewProperty?.longitude)) && (
+                  <Pressable
+                    style={pd.actionRow}
+                    onPress={() => {
+                      const url = viewProperty.googleMapLink || 
+                        `https://www.google.com/maps/search/?api=1&query=${viewProperty.latitude},${viewProperty.longitude}`;
+                      Linking.openURL(url).catch(() => toast.show('Could not open maps', 'error'));
+                    }}
+                  >
+                    <MapPin size={18} color={colors.brand} />
+                    <Text style={pd.actionLabel}>Open in Maps</Text>
+                    <Eye size={14} color={colors.muted} style={{ marginLeft: 'auto' }} />
+                  </Pressable>
+                )}
+
+                {/* Always show even if empty, so the sheet never looks completely blank */}
+                {!viewProperty?.brochureUrl && !viewProperty?.layoutImage && 
+                 (viewProperty?.videos || []).length === 0 && !viewProperty?.googleMapLink && 
+                 !viewProperty?.latitude && (viewProperty?.galleryImages || []).length === 0 && (
+                  <View style={{ paddingVertical: 20, alignItems: 'center' }}>
+                    <Text style={{ fontSize: 13, color: colors.muted }}>No resources available for this property yet.</Text>
+                  </View>
+                )}
+              </View>
             </ScrollView>
           </Pressable>
         </Pressable>
@@ -4130,25 +4909,38 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
               ListHeaderComponent={(
                 <View style={gi.header}>
                   {/* The only entry point to the profile-picture sheet, the way
-                      WhatsApp does it: tap the group's avatar in group info. */}
-                  <Pressable 
-                    style={gi.avatar}
-                    onPress={() => setShowProfilePicModal(true)}
-                    accessibilityRole="button"
-                    accessibilityLabel="Change group profile picture"
-                  >
-                    {customProfileImage ? (
-                      <Image 
-                        source={{ uri: customProfileImage }} 
-                        style={{ width: 70, height: 70, borderRadius: 35 }} 
-                        resizeMode="cover"
-                      />
-                    ) : (
-                      <Text style={{ fontSize: 30 }}>
-                        {customProfileIcon || ROOM_ICON[activeRoom.roomType] || '💬'}
-                      </Text>
-                    )}
-                  </Pressable>
+                      WhatsApp does it: tap the group's avatar in group info.
+
+                      It is a Pressable ONLY for a caller who may actually change
+                      the picture; everyone else gets a plain View with the same
+                      style. Deliberately not a Pressable with no onPress — that
+                      still announces itself as a button to TalkBack, which is a
+                      lie to exactly the users who cannot see that nothing
+                      happened. Same reasoning the Project-map card body records.
+
+                      To be clear about what this is NOT: hiding the tap target
+                      is not the permission check. The server refuses a
+                      non-admin with 403 regardless, and would still refuse if
+                      this branch were deleted.
+
+                      Both branches render the SAME groupInfoAvatar element (a
+                      shared RoomAvatar, built above). They each used to carry
+                      their own copy of the image/emoji markup, and neither copy
+                      had an onError or a localUri hop — so a 70×70 blank circle
+                      was the normal offline outcome right where the user goes to
+                      change the picture. */}
+                  {canManageRoomAvatar ? (
+                    <Pressable
+                      style={gi.avatar}
+                      onPress={() => setShowProfilePicModal(true)}
+                      accessibilityRole="button"
+                      accessibilityLabel="Change group profile picture"
+                    >
+                      {groupInfoAvatar}
+                    </Pressable>
+                  ) : (
+                    <View style={gi.avatar}>{groupInfoAvatar}</View>
+                  )}
                   <View style={gi.nameRow}>
                     <Text style={gi.name} numberOfLines={2}>{roomDisplayName(activeRoom)}</Text>
                     {/* Green stays the verification colour everywhere in the app. */}
@@ -4420,11 +5212,15 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                 <Text style={pd.headTitle}>Your Matches</Text>
                 {/* No "0 matches" line: a zero in the header reads as a failure.
                     An empty result is explained in the body instead. */}
+                {/* visibleMatches, not matchingResults: the subtitle, the pill's
+                    badge and the rows below are all derived from the one
+                    post-filter array, so the header can never claim a match the
+                    list does not show. */}
                 <Text style={pd.headSub}>
                   {matchingLoading
                     ? 'Searching…'
-                    : matchingResults.length > 0
-                      ? `${matchingResults.length} ${matchingResults.length === 1 ? 'match' : 'matches'} across your requirements`
+                    : visibleMatches.length > 0
+                      ? `${visibleMatches.length} ${visibleMatches.length === 1 ? 'match' : 'matches'} across your requirements`
                       : 'Lead → Inventory auto-match'}
                 </Text>
               </View>
@@ -4446,9 +5242,17 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                   <Text style={ld.findText}>Retry</Text>
                 </Pressable>
               </View>
-            ) : matchingResults.length > 0 ? (
-              <ScrollView style={{ maxHeight: 500 }} contentContainerStyle={{ paddingHorizontal: 14, paddingBottom: 14, gap: 8 }} showsVerticalScrollIndicator={false}>
-                {matchingResults.map(m => (
+            ) : visibleMatches.length > 0 ? (
+              /* flexShrink: 1, not a fixed maxHeight. This was `maxHeight: 500` —
+                 a dp constant that is dead white space below the last card on a
+                 tall phone and a crop through the middle of a card on a short
+                 one, because it is unrelated to the height pd.sheet actually got
+                 (the sheet is content-driven, clamped at maxHeight: '88%'). RN
+                 children default to flexShrink: 0, so without this the list sizes
+                 to ALL its rows and the sheet's own clamp does the cropping.
+                 Same reasoning as the group-info FlatList and the My Posts list. */
+              <ScrollView style={{ flexShrink: 1 }} contentContainerStyle={{ paddingHorizontal: 14, paddingBottom: 14, gap: 8 }} showsVerticalScrollIndicator={false}>
+                {visibleMatches.map(m => (
                   /* Dismiss the sheet BEFORE joining. handleJoinPropertyGroup
                      ends in openRoom(), but nothing used to clear showMatching,
                      so this full-screen modal stayed on top of the thread it had
@@ -4457,7 +5261,18 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                      fix. The close is done HERE, not inside
                      handleJoinPropertyGroup, because the AI Assist results
                      bubble and the inventory cards share that handler and have
-                     no modal in play. */
+                     no modal in play.
+
+                     Second round of the same report ("Join Group pe kuch nahi
+                     hota"): this wiring was NOT the cause and is deliberately
+                     left alone — there is one join path in this component and
+                     this is it. The room really did open; what was missing was
+                     its CHROME. In the AI Leads pane `aiAllowed` was decided by
+                     the autoOpenUniversal prop, so the freshly opened property
+                     room inherited the assistant's starter chips while
+                     `headerless` hid its title and back arrow, leaving a
+                     nameless thread that looked unchanged. Fixed at isAiRoom /
+                     showThreadHeader instead of here. */
                   <MatchResultCard
                     key={m.projectId}
                     match={m}
@@ -4470,7 +5285,12 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                  "No matching properties available" through fabricated data that
                  was always empty, so it was never telling the truth about the
                  user's account. This says what is actually missing and what to do
-                 about it. */
+                 about it.
+
+                 This branch is also where "I joined my last remaining match"
+                 lands, because the chain above tests visibleMatches — so the
+                 sheet shows this copy instead of an empty scroll area, and the
+                 pill's badge disappears rather than rendering a 0. */
               <View style={{ paddingVertical: 40, alignItems: 'center', paddingHorizontal: 24, gap: 12 }}>
                 <Search size={26} color={colors.muted} />
                 <Text style={{ fontSize: 13, color: colors.muted2, textAlign: 'center', lineHeight: 19 }}>
@@ -4541,6 +5361,30 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                   ))}
                 </View>
               </View>
+
+              {/* Remove photo. The picker only ever offered REPLACEMENTS before,
+                  so once a group had a picture there was no way back to its
+                  default room-type icon — DELETE /rooms/:roomId/avatar existed
+                  on the server with nothing calling it.
+
+                  Shown only when there is something to remove (activeRoom.avatar,
+                  i.e. the SERVER has one — a stale local cache entry is not worth
+                  offering a server delete for) and only to a caller who may
+                  manage it. It is red rather than brand-orange because it is
+                  destructive; the two upload buttons above keep the brand
+                  treatment. */}
+              {!!activeRoom?.avatar && canManageRoomAvatar && (
+                <Pressable
+                  style={[pd.removeRow, updatingProfilePic && { opacity: 0.6 }]}
+                  onPress={() => !updatingProfilePic && handleClearAvatar()}
+                  disabled={updatingProfilePic}
+                  accessibilityRole="button"
+                  accessibilityLabel="Remove group photo"
+                >
+                  <Trash2 size={18} color={colors.red} />
+                  <Text style={pd.removeText}>Remove photo</Text>
+                </Pressable>
+              )}
 
               {updatingProfilePic && (
                 <View style={{ alignItems: 'center', paddingVertical: 12 }}>
@@ -5231,13 +6075,26 @@ const MessageBubble = React.memo(function MessageBubble({
     );
   }
 
-  // text
+  // text — long-press to delete, matching the image/file pattern already above.
+  // Previously text messages had NO delete option, which meant only media could
+  // be removed. This unifies the interaction: any message type can now be
+  // long-pressed by its sender or a moderator.
   return (
     <View style={[{ flexDirection: 'row' }, isMe ? { justifyContent: 'flex-end' } : { justifyContent: 'flex-start' }]}>
-      <View style={[mbs.textBubble, isMe ? mbs.textMe : mbs.textThem]}>
+      <Pressable
+        onLongPress={canDelete ? () => onDeleteMessage(msg) : undefined}
+        delayLongPress={400}
+        style={[mbs.textBubble, isMe ? mbs.textMe : mbs.textThem]}
+        accessibilityHint={canDelete ? 'Long press to delete' : undefined}
+      >
         {!isMe && <Text style={mbs.textSender}>{msg.sender.name} · {msg.sender.role}</Text>}
         <Text style={[mbs.textContent, { color: isMe ? '#fff' : colors.ink }]}>{msg.content}</Text>
-      </View>
+        {canDelete && (
+          <Text style={[mbs.deleteHint, { color: isMe ? 'rgba(255,255,255,0.7)' : colors.muted }]}>
+            Hold to delete
+          </Text>
+        )}
+      </Pressable>
     </View>
   );
 });
@@ -5560,6 +6417,26 @@ const pd = StyleSheet.create({
   mediaActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 },
   mediaBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 9, paddingVertical: 7, borderRadius: 9, backgroundColor: colors.brandTint, borderWidth: 1, borderColor: `${colors.brand}33` },
   mediaBtnText: { fontSize: 10.5, fontWeight: '700', color: colors.brand },
+  // Action section styles — clean button-list view replacing text detail sections.
+  // Previous: text dumps (Overview / Pricing / Configuration / Amenities) with ~20
+  // label-value rows, most empty. New: one action button per resource, each opens
+  // or downloads its target. White background, brand-orange icons, muted trailing
+  // icon. Sectioned: gallery gets its own titled block, everything else in one list.
+  actionSection: { gap: 0, paddingTop: 0 },
+  actionSectionTitle: { fontSize: 12, fontWeight: '800', color: colors.ink, marginBottom: 10 },
+  actionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    backgroundColor: colors.white,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.line,
+    marginBottom: 8,
+  },
+  actionLabel: { flex: 1, fontSize: 13, fontWeight: '700', color: colors.ink },
   // tags row (BHK / area / type)
   tagsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   tag: { backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4 },
@@ -5580,6 +6457,11 @@ const pd = StyleSheet.create({
   optButton: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, padding: 16, backgroundColor: colors.brandTint, borderRadius: 12, borderWidth: 1, borderColor: `${colors.brand}33` },
   optText: { fontSize: 14, fontWeight: '700', color: colors.brand },
   iconButton: { width: 50, height: 50, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.cream, borderRadius: 12, borderWidth: 1, borderColor: colors.line },
+  // Remove photo: the same geometry as optButton above, in the red tokens rather
+  // than the brand ones, because it destroys something and the two buttons above
+  // do not.
+  removeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, padding: 14, backgroundColor: colors.redBg, borderRadius: 12, borderWidth: 1, borderColor: colors.redBorder },
+  removeText: { fontSize: 14, fontWeight: '700', color: colors.redText },
 });
 
 // Group info sheet — avatar / counts / admins / media / member rows / actions.
