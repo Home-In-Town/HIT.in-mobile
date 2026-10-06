@@ -4861,7 +4861,11 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
 
                 {/* Edit button — admin only, opens web dashboard edit URL. Previous behavior:
                     no edit access from property detail sheet in group chat. User requirement:
-                    "admin edit kr ske" — admin needs ability to edit project from group context. */}
+                    "admin edit kr ske" — admin needs ability to edit project from group context.
+                    canManageRoomAvatar allows platform admins, group creators, and room admins to
+                    moderate all projects in their group. This is intentional: builders who create
+                    groups need the ability to moderate any property posted in their community,
+                    not just their own properties. */}
                 {viewProperty?.projectId && canManageRoomAvatar && (
                   <Pressable
                     style={pd.actionRow}
@@ -5108,7 +5112,10 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
       </Modal>
 
       {/* Share sheet (tracked link, QR, brochure) for a builder's property —
-          opened from the card's Share icon or the detail sheet's Share button. */}
+          opened from the card's Share icon or the detail sheet's Share button.
+          Join Group button appears in all discoverable rooms (builder, area, property groups)
+          because share context is universal — user can join any group from share screen,
+          not limited to property-specific groups only. roomType === 'project' catches all three. */}
       {shareProject && (
         <ShareModal
           project={shareProject}
