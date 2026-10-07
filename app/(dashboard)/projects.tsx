@@ -61,14 +61,23 @@ function ProjectMenuSheet({ project, user, onClose, onEdit, onLayout, onAnalytic
   // user.role string values from backend were not matching the strict equality checks.
   // FIX: Normalize role to lowercase for comparison, handle null/undefined user gracefully,
   // and log diagnostic info in dev mode to track any future mismatches.
-  if (__DEV__) {
-    console.log('[ProjectMenuSheet] user:', JSON.stringify(user));
-    console.log('[ProjectMenuSheet] user.role:', user?.role);
+  
+  // PRODUCTION DEBUG: Always log to catch role issues (can remove after confirming fix works)
+  console.log('[ASSIGNMENT DEBUG] user:', JSON.stringify(user));
+  console.log('[ASSIGNMENT DEBUG] user.role:', user?.role);
+  
+  // EMERGENCY DEBUG: Show alert if user is missing
+  if (!user) {
+    console.error('[ASSIGNMENT DEBUG] USER IS NULL/UNDEFINED!');
+    Alert.alert('Debug Info', 'User object is null. Assignment buttons cannot be shown.');
   }
 
-  const userRole = user?.role?.toLowerCase() || '';
+  const userRole = (user?.role || '').toString().trim().toLowerCase();
   const isAdmin = userRole === 'admin';
   const isCaptain = userRole === 'captain';
+  
+  console.log('[ASSIGNMENT DEBUG] normalized role:', userRole);
+  console.log('[ASSIGNMENT DEBUG] isAdmin:', isAdmin, '| isCaptain:', isCaptain);
 
   // Visibility mirrors the website (ProjectTable kebab): Analytics + Visit only
   // appear for a published project; Visit also needs a slug.
