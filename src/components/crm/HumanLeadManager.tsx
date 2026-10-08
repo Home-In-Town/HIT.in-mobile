@@ -77,7 +77,7 @@ export function stageColor(stage: string): { bg: string; text: string; border: s
   }
 }
 
-export default function HumanLeadManager() {
+export default function HumanLeadManager({ onNavigateToLearn }: { onNavigateToLearn?: () => void } = {}) {
   const toast = useToast();
   const { user } = useAuth();
   // Only captains can (re)assign leads to their team agents
@@ -371,8 +371,8 @@ export default function HumanLeadManager() {
             <Text style={s.headerSub}>{filteredLeads.length} total leads</Text>
           </View>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-            <Pressable onPress={() => Linking.openURL('https://sales.homeintown.in')} style={s.advBtn}>
-              <Text style={s.advBtnText}>Advanced</Text>
+            <Pressable onPress={onNavigateToLearn} style={s.advBtn}>
+              <Text style={s.advBtnText}>Learn</Text>
             </Pressable>
             <Pressable onPress={() => setShowAddLead(true)} style={s.addBtn}>
               <Plus size={14} color="#fff" strokeWidth={2.5} />

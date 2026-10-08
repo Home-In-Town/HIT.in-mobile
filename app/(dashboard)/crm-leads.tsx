@@ -29,7 +29,7 @@ const STATUS_C: Record<string, { bg: string; text: string; dot: string }> = {
 export default function CrmLeadsScreen({ embedded = false }: { embedded?: boolean } = {}) {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const [mode, setMode] = useState<'ai' | 'human' | 'course'>('ai');
+  const [mode, setMode] = useState<'ai' | 'human' | 'course'>('human');
 
   const [leads, setLeads] = useState<CrmLead[]>([]);
   const [loading, setLoading] = useState(false);
@@ -64,9 +64,8 @@ export default function CrmLeadsScreen({ embedded = false }: { embedded?: boolea
   };
 
   const modes: { key: 'ai' | 'human' | 'course'; label: string; Icon: typeof Monitor }[] = [
-    { key: 'ai', label: 'AI Lead Qualification', Icon: Monitor },
     { key: 'human', label: 'Human Lead Qualification', Icon: Users },
-    { key: 'course', label: 'Learn', Icon: GraduationCap },
+    { key: 'ai', label: 'Lead Matching', Icon: Monitor },
   ];
 
   return (
@@ -178,7 +177,7 @@ export default function CrmLeadsScreen({ embedded = false }: { embedded?: boolea
       )}
 
       {mode === 'human' && (
-        <ScrollView contentContainerStyle={{ paddingBottom: 40 }}><HumanLeadManager /></ScrollView>
+        <ScrollView contentContainerStyle={{ paddingBottom: 40 }}><HumanLeadManager onNavigateToLearn={() => setMode('course')} /></ScrollView>
       )}
       {mode === 'course' && (
         <ScrollView contentContainerStyle={{ paddingBottom: 40 }}><LeadCourse /></ScrollView>

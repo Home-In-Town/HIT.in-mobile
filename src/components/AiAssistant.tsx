@@ -1879,9 +1879,10 @@ const MATCH_PREVIEW_COUNT = 3;
  * must be exactly one match card in the app. Pure extraction: the markup and the
  * `rs` styles are byte-identical, so the AI Assist chat looks the same.
  */
-export const MatchResultCard = React.memo(function MatchResultCard({ match: m, onJoinGroup }: {
+export const MatchResultCard = React.memo(function MatchResultCard({ match: m, onJoinGroup, isJoined }: {
   match: MatchCard;
   onJoinGroup?: (projectId: string) => void;
+  isJoined?: boolean;
 }) {
   const spec = [
     (m.bhkOptions || []).filter(Boolean).join('/'),
@@ -1923,9 +1924,11 @@ export const MatchResultCard = React.memo(function MatchResultCard({ match: m, o
       </View>
 
       <View style={rs.actionRow}>
-        <Pressable onPress={() => onJoinGroup?.(m.projectId)} style={[rs.actionBtn, rs.actionBtnPrimary]}>
-          <UsersIcon size={13} color="#fff" />
-          <Text style={[rs.actionText, { color: '#fff' }]}>Join Group</Text>
+        <Pressable onPress={() => onJoinGroup?.(m.projectId)} style={[rs.actionBtn, isJoined ? rs.actionBtnSecondary : rs.actionBtnPrimary]}>
+          <UsersIcon size={13} color={isJoined ? colors.brand : "#fff"} />
+          <Text style={[rs.actionText, { color: isJoined ? colors.brand : '#fff' }]}>
+            {isJoined ? 'View Group' : 'Join Group'}
+          </Text>
         </Pressable>
         {/* Only offered when the builder actually published a number —
             a WhatsApp button that opens nothing is worse than no button. */}
@@ -2227,6 +2230,7 @@ const rs = StyleSheet.create({
   actionBtn: { flex: 1, flexBasis: 0, minWidth: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, paddingVertical: 9, borderRadius: 10 },
   actionBtnGhost: { borderWidth: 1, borderColor: `${colors.brand}55`, backgroundColor: colors.brandTint },
   actionBtnPrimary: { backgroundColor: colors.brand },
+  actionBtnSecondary: { borderWidth: 1, borderColor: colors.brand, backgroundColor: colors.white },
   actionBtnWhatsapp: { backgroundColor: '#25D366' },
   actionText: { fontSize: 11.5, fontWeight: '800' },
 });

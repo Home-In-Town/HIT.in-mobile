@@ -2597,9 +2597,12 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     () => new Set(myRooms.map(r => String(r.project?.id || '')).filter(Boolean)),
     [myRooms],
   );
+  // WHY: Previously filtered out joined properties, showing empty state even when matches existed.
+  // User requirement: "jo join he use view group kr skte he" — show ALL matches, change button
+  // to "View Group" for already-joined properties instead of hiding them.
   const visibleMatches = useMemo(
-    () => matchingResults.filter(m => !joinedProjectIds.has(String(m.projectId))),
-    [matchingResults, joinedProjectIds],
+    () => matchingResults, // Show all matches, don't filter joined ones
+    [matchingResults],
   );
 
   // ONE number feeds the pill badge, the sheet's "N matches…" subtitle and the
@@ -5304,33 +5307,37 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                  to ALL its rows and the sheet's own clamp does the cropping.
                  Same reasoning as the group-info FlatList and the My Posts list. */
               <ScrollView style={{ flexShrink: 1 }} contentContainerStyle={{ paddingHorizontal: 14, paddingBottom: 14, gap: 8 }} showsVerticalScrollIndicator={false}>
-                {visibleMatches.map(m => (
-                  /* Dismiss the sheet BEFORE joining. handleJoinPropertyGroup
-                     ends in openRoom(), but nothing used to clear showMatching,
-                     so this full-screen modal stayed on top of the thread it had
-                     just opened and the tap read as a no-op apart from a toast —
-                     the same "kuch bhi nahi hua" symptom this feature exists to
-                     fix. The close is done HERE, not inside
-                     handleJoinPropertyGroup, because the AI Assist results
-                     bubble and the inventory cards share that handler and have
-                     no modal in play.
+                {visibleMatches.map(m => {
+                  const isJoined = joinedProjectIds.has(String(m.projectId));
+                  return (
+                    /* Dismiss the sheet BEFORE joining. handleJoinPropertyGroup
+                       ends in openRoom(), but nothing used to clear showMatching,
+                       so this full-screen modal stayed on top of the thread it had
+                       just opened and the tap read as a no-op apart from a toast —
+                       the same "kuch bhi nahi hua" symptom this feature exists to
+                       fix. The close is done HERE, not inside
+                       handleJoinPropertyGroup, because the AI Assist results
+                       bubble and the inventory cards share that handler and have
+                       no modal in play.
 
-                     Second round of the same report ("Join Group pe kuch nahi
-                     hota"): this wiring was NOT the cause and is deliberately
-                     left alone — there is one join path in this component and
-                     this is it. The room really did open; what was missing was
-                     its CHROME. In the AI Leads pane `aiAllowed` was decided by
-                     the autoOpenUniversal prop, so the freshly opened property
-                     room inherited the assistant's starter chips while
-                     `headerless` hid its title and back arrow, leaving a
-                     nameless thread that looked unchanged. Fixed at isAiRoom /
-                     showThreadHeader instead of here. */
-                  <MatchResultCard
-                    key={m.projectId}
-                    match={m}
-                    onJoinGroup={(id) => { setShowMatching(false); handleJoinPropertyGroup(id); }}
-                  />
-                ))}
+                       Second round of the same report ("Join Group pe kuch nahi
+                       hota"): this wiring was NOT the cause and is deliberately
+                       left alone — there is one join path in this component and
+                       this is it. The room really did open; what was missing was
+                       its CHROME. In the AI Leads pane `aiAllowed` was decided by
+                       the autoOpenUniversal prop, so the freshly opened property
+                       room inherited the assistant's starter chips while
+                       `headerless` hid its title and back arrow, leaving a
+                       nameless thread that looked unchanged. Fixed at isAiRoom /
+                       showThreadHeader instead of here. */
+                    <MatchResultCard
+                      key={m.projectId}
+                      match={m}
+                      isJoined={isJoined}
+                      onJoinGroup={(id) => { setShowMatching(false); handleJoinPropertyGroup(id); }}
+                    />
+                  );
+                })}
               </ScrollView>
             ) : (
               /* Honest empty state. The previous version reached
