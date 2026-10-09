@@ -26,6 +26,8 @@ import {
 import { projectsApiExtended, mediaApi } from '../../src/lib/api';
 import { useToast } from '../../src/components/Toast';
 import { colors } from '../../src/theme';
+import UnitSetupForm, { UnitSetupDraft, draftToSetup, emptyUnitDraft } from '../../src/components/units/UnitSetupForm';
+import { previewUnitSetup } from '../../src/lib/units';
 
 // ── Options (mirror HIT_Frontend propertyConfig + project.ts) ──
 const CATEGORIES = ['Residential', 'Commercial', 'Mixed Use'];
@@ -121,6 +123,10 @@ export default function AddProjectScreen() {
   const [floorRange, setFloorRange] = useState('');
   const [plotSizeRange, setPlotSizeRange] = useState('');
   const [gatedCommunity, setGatedCommunity] = useState(false);
+  // Optional unit inventory (flats only). Sent as `unitSetup`; the server
+  // generates the units, so a raw unit list is never posted from here.
+  const [unitsEnabled, setUnitsEnabled] = useState(false);
+  const [unitDraft, setUnitDraft] = useState<UnitSetupDraft>(() => emptyUnitDraft());
   const [facingOptions, setFacingOptions] = useState<string[]>([]);
 
   // Section 5 — Pricing
@@ -263,6 +269,10 @@ export default function AddProjectScreen() {
     }
 
     if (!isPlot && !isMixed && bhkOptions.length === 0) return 'Select at least one BHK option';
+    if (unitsEnabled && !isPlot) {
+      const unitErr = previewUnitSetup(draftToSetup(unitDraft)).error;
+      if (unitErr) return `Unit inventory: ${unitErr}`;
+    }
     if (amenities.length === 0) return 'Select at least one amenity';
     if (!coverImage) return 'Cover image is required';
     if (!ctaButtonText.trim()) return 'CTA button text is required';
@@ -338,6 +348,8 @@ export default function AddProjectScreen() {
         whatsappNumber: whatsappNumber.replace(/\D/g, ''),
         callNumber: callNumber.replace(/\D/g, ''),
       },
+      // Only when switched on, and never for plots (flat inventory only).
+      ...(unitsEnabled && !isPlot ? { unitSetup: draftToSetup(unitDraft) } : {}),
     };
   }
 
@@ -538,6 +550,30 @@ export default function AddProjectScreen() {
             <Field label="Direction / Facing">
               <Chips options={FACING_OPTIONS} selected={facingOptions} onToggle={(v) => toggleIn(facingOptions, v, setFacingOptions)} />
             </Field>
+
+            {/* Unit inventory — the vacant/booked grid shown in the property's
+                group. Optional, flats only; can also be set up later from the
+                property detail sheet ("Setup Units"). */}
+            {!isPlot ? (
+              <>
+                <View style={s.toggleRow}>
+                  <Text style={s.toggleLabel}>Unit Inventory (vacant / booked grid)</Text>
+                  <Switch
+                    value={unitsEnabled}
+                    onValueChange={(on) => {
+                      setUnitsEnabled(on);
+                      // Pre-fill BHK when exactly one is selected above.
+                      if (on && !unitDraft.bhk && bhkOptions.length === 1) setUnitDraft({ ...unitDraft, bhk: bhkOptions[0] });
+                    }}
+                    trackColor={{ true: colors.brand }}
+                    thumbColor="#fff"
+                  />
+                </View>
+                {unitsEnabled ? (
+                  <UnitSetupForm value={unitDraft} onChange={setUnitDraft} bhkOptions={BHK_OPTIONS} />
+                ) : null}
+              </>
+            ) : null}
           </Section>
         ) : null}
 

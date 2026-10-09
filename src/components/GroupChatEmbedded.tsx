@@ -33,7 +33,11 @@ import { postedListStorage, disappearStorage } from '../lib/storage';
 import { useAuth } from '../lib/authContext';
 import { useSocket } from '../hooks/useSocket';
 import { useToast } from './Toast';
-import { colors } from '../theme';
+import { colors, unitColors } from '../theme';
+import type { ProjectUnit, UnitStatus } from '../lib/api';
+import { canEditUnits, statusMeta, setupFromUnits, previewUnitSetup } from '../lib/units';
+import UnitGrid from './units/UnitGrid';
+import UnitSetupForm, { UnitSetupDraft, draftFromSetup, draftToSetup, emptyUnitDraft } from './units/UnitSetupForm';
 
 const ROOM_ICON: Record<string, string> = { project: '🏗', builder: '🏢', area: '📍', universal: '🌐' };
 
@@ -1114,6 +1118,38 @@ const BuilderPropertyCard = React.memo(function BuilderPropertyCard({ project, o
           )}
         </View>
       </Pressable>
+
+      {/* Vacant/booked summary from the public portfolio's unitCounts (counts
+          only — that endpoint never returns unit-level data). Hidden when the
+          project has no grid, so cards without units look as they did.
+          It is its own tap target, OUTSIDE the body Pressable (nested
+          pressables swallow taps), and opens the detail sheet with the full
+          grid — the body tap is Share, so without this the grid would not be
+          reachable from a builder group at all. */}
+      {project.unitCounts && project.unitCounts.total > 0 ? (
+        <Pressable
+          onPress={() => onDetails(project)}
+          disabled={loadingDetails}
+          style={({ pressed }) => [bp.unitRow, pressed && { opacity: 0.7 }]}
+          accessibilityRole="button"
+          accessibilityLabel={`${project.unitCounts.available} of ${project.unitCounts.total} units vacant. View unit availability`}
+        >
+          {([
+            ['available', project.unitCounts.available],
+            ['booked', project.unitCounts.booked],
+            ['sold', project.unitCounts.sold],
+            ['on-hold', project.unitCounts.onHold],
+          ] as [UnitStatus, number][])
+            .filter(([st, n]) => n > 0 || st === 'available')
+            .map(([st, n]) => (
+              <View key={st} style={bp.unitItem}>
+                <View style={[bp.unitDot, { backgroundColor: unitColors[st] }]} />
+                <Text style={bp.unitText}>{n} {statusMeta(st).label.toLowerCase()}</Text>
+              </View>
+            ))}
+          {loadingDetails ? <ActivityIndicator size="small" color={colors.brand} /> : <Text style={bp.unitMore}>›</Text>}
+        </Pressable>
+      ) : null}
     </View>
   );
 });
@@ -1709,6 +1745,31 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     });
     return unsub;
   }, [socket.onGroupAvatarUpdated, socket.ready, applyRoomAvatar]);
+
+  // Live unit-grid updates. Someone else marked a unit (or regenerated the
+  // grid) in a room this user has open: patch the open detail sheet if it shows
+  // that project, refresh the builder card's counts, and drop the project cache
+  // so the next sheet open does not serve the old grid for up to 60 s.
+  useEffect(() => {
+    const unsub = socket.onProjectUnitsUpdated(({ projectId, unit, units, counts }) => {
+      const pid = String(projectId || '');
+      if (!pid) return;
+      projectsApiExtended.invalidateProjectCache(pid);
+      setViewProperty((vp: any) => {
+        if (!vp || vp.shareProjectId !== pid) return vp;
+        if (Array.isArray(units)) return { ...vp, units: units.map((u: any) => ({ ...u, _id: String(u._id) })) };
+        if (unit?._id) {
+          const id = String(unit._id);
+          return { ...vp, units: (vp.units || []).map((u: ProjectUnit) => (u._id === id ? { ...u, ...unit, _id: id } : u)) };
+        }
+        return vp;
+      });
+      if (counts) {
+        setBuilderProjects(prev => prev.map(p => (p.id === pid ? { ...p, unitCounts: counts } : p)));
+      }
+    });
+    return unsub;
+  }, [socket.onProjectUnitsUpdated, socket.ready]);
 
   // Another member may delete the group while this screen is open. Close the
   // thread immediately instead of leaving a dead composer that only fails on
@@ -2950,6 +3011,15 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
         latitude: p.latitude,
         longitude: p.longitude,
         sourceMessageId,
+        // Unit grid + who may edit it (mirrors authorizeProjectAccess; see canEditUnits).
+        units: p.units || [],
+        projectType: p.type,
+        bhkOptions: p.bhkOptions || [],
+        unitPerms: {
+          ownerId: p.owner?.id || '',
+          coCaptains: p.coCaptains || [],
+          assignedAgentId: p.assignedAgent?.id || '',
+        },
       });
     } catch {
       // Project fetch failed (deleted / not visible) — still show the card data
@@ -3063,7 +3133,81 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
    */
   const handleClosePropertyDetail = useCallback(() => {
     setViewProperty(null);
+    setUnitDraft(null);
   }, []);
+
+  // ── Unit inventory grid (detail sheet) ──
+  const [unitBusyId, setUnitBusyId] = useState<string | null>(null);
+  // Non-null while the sheet shows the Setup/Edit Units form instead of the grid.
+  const [unitDraft, setUnitDraft] = useState<UnitSetupDraft | null>(null);
+  const [unitSaving, setUnitSaving] = useState(false);
+
+  const canEditViewUnits = useMemo(
+    () => !!viewProperty?.shareProjectId && canEditUnits(user, viewProperty?.unitPerms),
+    [user, viewProperty?.shareProjectId, viewProperty?.unitPerms],
+  );
+
+  /**
+   * Change one unit's status from the grid. Optimistic, so the cell recolours on
+   * tap; rolled back with a toast if the server refuses (403, network…). The
+   * server posts the group auto-messages itself — nothing is sent from here.
+   */
+  const handleUnitStatusChange = useCallback(async (unit: ProjectUnit, status: UnitStatus) => {
+    const projectId: string | undefined = viewProperty?.shareProjectId;
+    if (!projectId || unitBusyId) return;
+    const patchUnit = (next: ProjectUnit) => setViewProperty((vp: any) => (
+      vp && vp.shareProjectId === projectId
+        ? { ...vp, units: (vp.units || []).map((u: ProjectUnit) => (u._id === next._id ? next : u)) }
+        : vp
+    ));
+    setUnitBusyId(unit._id);
+    patchUnit({ ...unit, status });
+    try {
+      const res = await projectsApiExtended.updateUnitStatus(projectId, unit._id, status);
+      patchUnit(res.unit);
+      if (res.changed) toast.show(`${unit.label} marked ${statusMeta(status).label}`, 'success');
+    } catch (e: any) {
+      patchUnit(unit);
+      toast.show(e?.message || 'Could not update unit', 'error');
+    } finally {
+      setUnitBusyId(null);
+    }
+  }, [viewProperty?.shareProjectId, unitBusyId, toast]);
+
+  const handleOpenUnitSetup = useCallback(() => {
+    const existing = setupFromUnits(viewProperty?.units);
+    const defaultBhk = (viewProperty?.bhkOptions || []).length === 1 ? viewProperty.bhkOptions[0] : '';
+    setUnitDraft(existing ? draftFromSetup(existing) : emptyUnitDraft(defaultBhk));
+  }, [viewProperty?.units, viewProperty?.bhkOptions]);
+
+  const handleSaveUnitSetup = useCallback(async () => {
+    const projectId: string | undefined = viewProperty?.shareProjectId;
+    if (!projectId || !unitDraft || unitSaving) return;
+    const setup = draftToSetup(unitDraft);
+    const check = previewUnitSetup(setup);
+    if (check.error) { toast.show(check.error, 'error'); return; }
+    setUnitSaving(true);
+    try {
+      const res = await projectsApiExtended.setupUnits(projectId, setup);
+      setViewProperty((vp: any) => (vp && vp.shareProjectId === projectId ? { ...vp, units: res.units } : vp));
+      setUnitDraft(null);
+      toast.show(`${res.counts.total} units saved`, 'success');
+    } catch (e: any) {
+      // 409: the new setup would delete booked/sold units. The server saved
+      // nothing; spell out which ones so the user can fix the setup.
+      if (e?.status === 409 && Array.isArray(e?.data?.conflicts)) {
+        const list: string[] = e.data.conflicts;
+        Alert.alert(
+          'Booked/Sold units would be removed',
+          `${list.slice(0, 12).join(', ')}${list.length > 12 ? ` and ${list.length - 12} more` : ''}\n\nMark them Vacant first, or keep these floors/units in the setup.`,
+        );
+      } else {
+        toast.show(e?.message || 'Could not save units', 'error');
+      }
+    } finally {
+      setUnitSaving(false);
+    }
+  }, [viewProperty?.shareProjectId, unitDraft, unitSaving, toast]);
 
   /**
    * Details / card-body tap on a builder property card.
@@ -4803,6 +4947,44 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
             <ScrollView style={{ maxHeight: 520 }} contentContainerStyle={{ paddingBottom: 6, gap: 12 }} showsVerticalScrollIndicator={false}>
               {/* Cover image removed - user requirement: "uper photo dhik rahi he vo bhi nahi dhikni chiye" */}
 
+              {/* Unit availability grid (GitHub-contributions style). Shown above
+                  the action rows because vacancy is the first thing a buyer's
+                  agent asks. Editors (owner / co-captain / assigned agent / admin)
+                  can change a unit's status from the grid, and get Setup/Edit
+                  Units. Flats only — plot projects never offer setup. Hidden
+                  entirely for non-editors when the project has no units. */}
+              {unitDraft ? (
+                <View style={pd.unitSetupBox}>
+                  <Text style={pd.unitSetupTitle}>{(viewProperty?.units || []).length ? 'Edit Units' : 'Setup Units'}</Text>
+                  <UnitSetupForm value={unitDraft} onChange={setUnitDraft} />
+                  <View style={pd.unitSetupActions}>
+                    <Pressable onPress={() => setUnitDraft(null)} disabled={unitSaving} style={pd.unitBtnGhost} accessibilityRole="button">
+                      <Text style={pd.unitBtnGhostText}>Cancel</Text>
+                    </Pressable>
+                    <Pressable onPress={handleSaveUnitSetup} disabled={unitSaving} style={[pd.unitBtn, unitSaving && { opacity: 0.6 }]} accessibilityRole="button" accessibilityLabel="Save units">
+                      {unitSaving ? <ActivityIndicator size="small" color={colors.white} /> : <Text style={pd.unitBtnText}>Save</Text>}
+                    </Pressable>
+                  </View>
+                </View>
+              ) : (
+                <>
+                  {(viewProperty?.units || []).length > 0 ? (
+                    <UnitGrid
+                      units={viewProperty.units}
+                      canEdit={canEditViewUnits}
+                      onChangeStatus={handleUnitStatusChange}
+                      busyUnitId={unitBusyId}
+                    />
+                  ) : null}
+                  {canEditViewUnits && viewProperty?.projectType !== 'plot' ? (
+                    <Pressable style={pd.actionRow} onPress={handleOpenUnitSetup} accessibilityRole="button">
+                      <Building2 size={18} color={colors.brand} />
+                      <Text style={pd.actionLabel}>{(viewProperty?.units || []).length ? 'Edit Units (towers / floors)' : 'Setup Units (vacant / booked grid)'}</Text>
+                    </Pressable>
+                  ) : null}
+                </>
+              )}
+
               {/* Clean action-button list replaces all text detail sections. Previous
                   behavior: showed text sections (Overview/Pricing/Configuration/
                   Amenities/Contact) with ~20+ fields, most empty, making the sheet
@@ -5678,6 +5860,10 @@ function normalizeMsg(m: any, roomId: string): GroupMessage {
     requirementCard: m.requirementCard,
     inventoryCard: m.inventoryCard,
     matchResults: m.matchResults,
+    // project arrives as an ObjectId string, or populated on some REST paths.
+    unitUpdate: m.unitUpdate
+      ? { ...m.unitUpdate, project: String(m.unitUpdate.project?._id || m.unitUpdate.project || '') }
+      : undefined,
     createdAt: m.createdAt || new Date().toISOString(),
   };
 }
@@ -5849,6 +6035,32 @@ const MessageBubble = React.memo(function MessageBubble({
   if (msg.messageType === 'system') {
     if (msg.content?.startsWith('📋 Project:')) return null;
     return <Text style={mbs.system}>{msg.content}</Text>;
+  }
+
+  // Unit status auto-message (server posts it on every PATCH that changes a
+  // status). Without this branch it fell through to a plain text bubble that
+  // looked like the actor had typed it. Rendered as a centred pill coloured by
+  // the new status; tapping opens that property's detail sheet with the grid.
+  if (msg.messageType === 'unit_update' && msg.unitUpdate) {
+    const uu = msg.unitUpdate;
+    const meta = statusMeta(uu.toStatus);
+    return (
+      <Pressable
+        onPress={() => uu.project && onPropertyViewDetails(uu.project)}
+        style={mbs.unitPill}
+        accessibilityRole="button"
+        accessibilityLabel={`${uu.label} marked ${meta.label}${uu.projectName ? ` in ${uu.projectName}` : ''}. Open property`}
+      >
+        <View style={[mbs.unitDot, { backgroundColor: meta.color }]} />
+        <Text style={mbs.unitPillText} numberOfLines={2}>
+          <Text style={{ fontWeight: '700' }}>{uu.label}</Text>
+          {' · '}
+          <Text style={{ fontWeight: '700', color: meta.color }}>{meta.label}</Text>
+          {uu.projectName ? ` · ${uu.projectName}` : ''}
+          {uu.updatedByName ? ` · by ${uu.updatedByName}` : ''}
+        </Text>
+      </Pressable>
+    );
   }
 
   if (msg.messageType === 'inventory_card' && msg.inventoryCard) {
@@ -6411,6 +6623,11 @@ const ld = StyleSheet.create({
 // Sell / Buy / Rent starter chips shown above the composer.
 // Builder property cards — the horizontal strip inside a company group.
 const bp = StyleSheet.create({
+  unitRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 6, paddingHorizontal: 10, paddingBottom: 8 },
+  unitMore: { fontSize: 14, color: colors.brand, fontWeight: '700' },
+  unitItem: { flexDirection: 'row', alignItems: 'center', gap: 3 },
+  unitDot: { width: 8, height: 8, borderRadius: 2 },
+  unitText: { fontSize: 10, color: colors.muted2 },
   strip: { backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.line, paddingTop: 10, paddingBottom: 10 },
   stripHead: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, marginBottom: 8 },
   stripTitle: { fontSize: 10, fontWeight: '800', color: colors.muted, letterSpacing: 0.4, textTransform: 'uppercase' },
@@ -6475,6 +6692,13 @@ const dp = StyleSheet.create({
 });
 
 const pd = StyleSheet.create({
+  unitSetupBox: { borderWidth: 1, borderColor: colors.line, borderRadius: 12, padding: 12, gap: 10 },
+  unitSetupTitle: { fontSize: 14, fontWeight: '700', color: colors.ink },
+  unitSetupActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8 },
+  unitBtn: { backgroundColor: colors.brand, borderRadius: 999, paddingHorizontal: 18, paddingVertical: 8, minWidth: 72, alignItems: 'center' },
+  unitBtnText: { color: colors.white, fontSize: 13, fontWeight: '700' },
+  unitBtnGhost: { borderWidth: 1, borderColor: colors.line, borderRadius: 999, paddingHorizontal: 16, paddingVertical: 8 },
+  unitBtnGhostText: { color: colors.ink, fontSize: 13, fontWeight: '600' },
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
   sheet: { backgroundColor: colors.white, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 16, paddingBottom: 28, gap: 14, maxHeight: '88%' },
   head: { flexDirection: 'row', alignItems: 'center', gap: 10 },
@@ -6588,6 +6812,9 @@ const cs = StyleSheet.create({
 
 const mbs = StyleSheet.create({
   system: { textAlign: 'center', fontSize: 10, color: colors.muted2, backgroundColor: colors.slateBg, alignSelf: 'center', paddingHorizontal: 12, paddingVertical: 5, borderRadius: 12, overflow: 'hidden' },
+  unitPill: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'center', maxWidth: '92%', backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line, borderRadius: 14, paddingHorizontal: 12, paddingVertical: 6 },
+  unitDot: { width: 10, height: 10, borderRadius: 2 },
+  unitPillText: { flexShrink: 1, fontSize: 12, color: colors.ink },
   cardWrap: { width: '92%', maxWidth: 380, minWidth: 0 },
   card: { borderWidth: 1, borderRadius: 16, padding: 12, gap: 4 },
   cardTag: { fontSize: 10, fontWeight: '800' },

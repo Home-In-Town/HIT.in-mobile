@@ -980,7 +980,53 @@ export interface Project {
   cta?: { buttonText?: string; whatsappNumber?: string; callNumber?: string };
   owner?: { id: string; name: string; role: string; companyName?: string };
   assignedAgent?: { id: string; name: string; role: string } | null;
+  // Co-captain ids. Needed by canEditUnits (src/lib/units.ts) to mirror the
+  // server's authorizeProjectAccess rule; previously dropped by transformProject.
+  coCaptains?: string[];
+  // Flat unit inventory (server-generated; see HIT_Backend UnitInventoryService).
+  units?: ProjectUnit[];
   createdAt?: string;
+}
+
+export type UnitStatus = 'available' | 'booked' | 'sold' | 'on-hold';
+
+export interface ProjectUnit {
+  _id: string;
+  tower: string;
+  floor: number;
+  unitNo: number;
+  label: string;
+  bhk: string;
+  status: UnitStatus;
+  updatedBy?: string | null;
+  updatedAt?: string | null;
+}
+
+export interface UnitCounts {
+  available: number;
+  booked: number;
+  sold: number;
+  onHold: number;
+  total: number;
+}
+
+export interface UnitSetup {
+  towers: { name: string; floors: number; unitsPerFloor: number }[];
+  bhk?: string;
+}
+
+function transformUnit(u: any): ProjectUnit {
+  return {
+    _id: String(u?._id || u?.id || ''),
+    tower: String(u?.tower || ''),
+    floor: Number(u?.floor) || 0,
+    unitNo: Number(u?.unitNo) || 0,
+    label: String(u?.label || ''),
+    bhk: u?.bhk || '',
+    status: (u?.status || 'available') as UnitStatus,
+    updatedBy: u?.updatedBy ? String(u.updatedBy?._id || u.updatedBy) : null,
+    updatedAt: u?.updatedAt || null,
+  };
 }
 
 function transformProject(p: any): Project {
@@ -1030,6 +1076,9 @@ function transformProject(p: any): Project {
     } : undefined,
     owner: p?.owner ? { ...p.owner, id: String(p.owner.id || p.owner._id || '') } : undefined,
     assignedAgent: p?.assignedAgent ? { ...p.assignedAgent, id: String(p.assignedAgent.id || p.assignedAgent._id || '') } : null,
+    // coCaptains arrives populated from getById ({ _id, name, … }) and as bare ids elsewhere.
+    coCaptains: Array.isArray(p?.coCaptains) ? p.coCaptains.map((c: any) => String(c?._id || c?.id || c)).filter(Boolean) : [],
+    units: Array.isArray(p?.units) ? p.units.map(transformUnit) : [],
     createdAt: p?.createdAt,
   };
 }
@@ -1077,6 +1126,9 @@ export interface OwnerPortfolioProject {
   startingPrice: number;
   bhkOptions: string[];
   carpetAreaRange: string;
+  // Vacant/booked summary for the card. Counts only — the public endpoint never
+  // returns unit-level data. total 0 = no grid set up.
+  unitCounts?: UnitCounts;
 }
 
 export const projectsApiExtended = {
@@ -1202,8 +1254,32 @@ export const projectsApiExtended = {
         startingPrice: Number(p.pricing?.startingPrice) || 0,
         bhkOptions: p.configuration?.bhkOptions || [],
         carpetAreaRange: p.configuration?.carpetAreaRange || '',
+        unitCounts: p.unitCounts || undefined,
       })),
     };
+  },
+  /**
+   * Create or regenerate a project's unit grid from a towers/floors setup.
+   * The server generates the units; existing unit statuses are preserved by
+   * label. A 409 (ApiError.status) carries `data.conflicts` — the booked/sold
+   * labels the new setup would have removed.
+   */
+  async setupUnits(id: string, unitSetup: UnitSetup): Promise<{ units: ProjectUnit[]; counts: UnitCounts }> {
+    const r = await fetch(`${API_URL}/projects/${encodeURIComponent(id)}/units`, {
+      method: 'PUT', headers: await authHeaders(), body: JSON.stringify({ unitSetup }),
+    });
+    invalidateProject(id);
+    const data = await handleResponse<{ units: any[]; counts: UnitCounts }>(r);
+    return { units: (data.units || []).map(transformUnit), counts: data.counts };
+  },
+  /** Change one unit's status. `changed: false` = it already had that status. */
+  async updateUnitStatus(id: string, unitId: string, status: UnitStatus): Promise<{ unit: ProjectUnit; counts: UnitCounts; changed: boolean }> {
+    const r = await fetch(`${API_URL}/projects/${encodeURIComponent(id)}/units/${encodeURIComponent(unitId)}`, {
+      method: 'PATCH', headers: await authHeaders(), body: JSON.stringify({ status }),
+    });
+    invalidateProject(id);
+    const data = await handleResponse<{ unit: any; counts: UnitCounts; changed: boolean }>(r);
+    return { unit: transformUnit(data.unit), counts: data.counts, changed: !!data.changed };
   },
   async matchCounts(projectIds: string[]): Promise<Record<string, number>> {
     const ids = (projectIds || []).filter(Boolean).map(String);
@@ -1653,12 +1729,25 @@ export interface GroupMessage {
      */
     phone?: string;
   };
-  messageType: 'text' | 'requirement_card' | 'inventory_card' | 'system' | 'image' | 'file';
+  messageType: 'text' | 'requirement_card' | 'inventory_card' | 'system' | 'image' | 'file' | 'unit_update';
   content: string;
   attachment?: { name?: string; mimeType?: string; size?: number; key?: string };
   requirementCard?: any;
   inventoryCard?: InventoryCard;
   matchResults?: any[];
+  // Server auto-message when a unit's status changes (snapshot, never edited).
+  unitUpdate?: {
+    project: string;
+    projectName?: string;
+    unitId?: string;
+    label: string;
+    tower?: string;
+    floor?: number;
+    bhk?: string;
+    fromStatus?: UnitStatus;
+    toStatus: UnitStatus;
+    updatedByName?: string;
+  };
   createdAt: string;
 }
 
