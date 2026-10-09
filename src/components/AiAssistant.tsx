@@ -243,6 +243,14 @@ export default function AiAssistant({
   // makes confirming valid again.
   const confirmingRef = useRef(false);
   const scrollRef = useRef<FlatList<Msg>>(null);
+  // Tracks whether we're bulk-loading chat history from the API (on open).
+  // Prevents auto-scroll during history restore — scroll should ONLY happen
+  // when the user sends a new message or the AI responds, not when reopening
+  // the assistant and loading 20+ old messages. Previous behavior: opening
+  // the assistant always scrolled to end, causing excessive auto-scroll
+  // ('bohot scroll hota he automatically'). New behavior: scroll only on
+  // genuine new messages, not on history restore.
+  const isRestoringHistoryRef = useRef(false);
   // Last property draft the user described (persisted), so "Post" still works
   // after the AI session resets or the app restarts.
   const savedDraftRef = useRef<AiPostDraft | null>(null);
@@ -325,6 +333,7 @@ export default function AiAssistant({
   // The backend history/match data is preserved (nothing is deleted).
   const open = useCallback(async () => {
     setLoading(true);
+    isRestoringHistoryRef.current = true; // Bulk history load — suppress scroll
     try {
       const res = await leadChatApi.open();
       const sid = res.sessionId;
@@ -375,10 +384,10 @@ export default function AiAssistant({
       // Clear undo/redo history so old state can't be restored.
       setUndoStack([]);
       setRedoStack([]);
-      scrollDown(200);
     } catch (e: any) {
       toast.show(e?.message || 'Failed to open assistant', 'error');
     } finally {
+      isRestoringHistoryRef.current = false; // History restored — resume normal scroll behavior
       setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1011,7 +1020,14 @@ export default function AiAssistant({
         contentContainerStyle={{ paddingHorizontal: 12, paddingTop: 12, paddingBottom: 16, gap: 6 }}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
-        onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: false })}
+        // Only scroll on content size change when NOT restoring history. Previous
+        // behavior: scrolled on every message add, including bulk history restore,
+        // causing excessive auto-scroll on open. New: scroll only for new messages.
+        onContentSizeChange={() => {
+          if (!isRestoringHistoryRef.current) {
+            scrollRef.current?.scrollToEnd({ animated: false });
+          }
+        }}
         initialNumToRender={12}
         maxToRenderPerBatch={10}
         windowSize={7}
