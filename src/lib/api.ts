@@ -1918,6 +1918,11 @@ export const groupChatApi = {
       requirementCard: m.requirementCard,
       inventoryCard: m.inventoryCard,
       matchResults: m.matchResults,
+      // Was missing, so history-loaded unit_update messages had no unitUpdate,
+      // missed the pill branch and rendered as the actor's own text bubble.
+      unitUpdate: m.unitUpdate
+        ? { ...m.unitUpdate, project: String(m.unitUpdate.project?._id || m.unitUpdate.project || '') }
+        : undefined,
       createdAt: m.createdAt || '',
     }));
   },

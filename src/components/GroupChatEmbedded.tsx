@@ -1087,18 +1087,16 @@ const BuilderPropertyCard = React.memo(function BuilderPropertyCard({ project, o
 
   return (
     <View style={bp.card}>
-      {/* Card body tap now opens Share sheet instead of Details. Previous
-          behavior: tapping the card body opened a detail view, and the three
-          buttons below offered Details / Open Group / Share. User requirement:
-          remove ALL three buttons and make the card body itself open Share.
-          This consolidates the share action into the only tap target on the
-          card, making the interaction model simpler — one card, one action. */}
+      {/* Card body tap opens the property detail sheet (unit grid, gallery,
+          brochure, Share). It previously opened the Share sheet directly, which
+          hid the grid and media behind an extra step; Share is still one tap
+          away in the sheet's header and its "Share Property Link" row. */}
       <Pressable
-        onPress={() => onShare(project)}
-        disabled={sharing}
+        onPress={() => onDetails(project)}
+        disabled={loadingDetails}
         style={({ pressed }) => [pressed && { opacity: 0.7 }]}
         accessibilityRole="button"
-        accessibilityLabel={`Share ${project.name}`}
+        accessibilityLabel={`${project.name}. View details`}
       >
         {project.coverImage ? (
           <Image source={{ uri: project.coverImage }} style={bp.cover} resizeMode="cover" />
@@ -6182,8 +6180,24 @@ const MessageBubble = React.memo(function MessageBubble({
       inv.commissionPercent ? `💼 ${inv.commissionPercent}%` : '',
     ].filter(Boolean);
 
+    // The whole card is the tap target and opens the property's own group.
+    // It used to carry three buttons (View Details / Join Group / Call); the
+    // product now wants one card, one action. Details (grid, gallery, brochure)
+    // and the project's Call number are one tap away inside that group. A card
+    // not linked to a real project has no group to open, so it falls back to
+    // its own detail view instead of a dead tap.
+    const openCard = () => {
+      if (cardProjectId) onJoinPropertyGroup(cardProjectId);
+      else onPropertyViewDetails('', inv, msg.id);
+    };
+
     return (
-      <View style={[mbs.cardWrap, { alignSelf: 'flex-start' }]}>
+      <Pressable
+        onPress={openCard}
+        style={({ pressed }) => [mbs.cardWrap, { alignSelf: 'flex-start' }, pressed && { opacity: 0.85 }]}
+        accessibilityRole="button"
+        accessibilityLabel={cardProjectId ? `${title}. Open property group` : `${title}. View details`}
+      >
         <Animated.View style={[mbs.propertyCard, { backgroundColor: bgColor }]}>
           {/* Top strip: label + who posted it */}
           <View style={mbs.propertyHeaderRow}>
@@ -6246,40 +6260,12 @@ const MessageBubble = React.memo(function MessageBubble({
             ))}
           </View>
 
-          <CardActions
-            tone="brand"
-            actions={[
-              { key: 'details', label: 'View Details', icon: 'details', ghost: true, onPress: () => onPropertyViewDetails(cardProjectId, inv, msg.id) },
-              { key: 'join', label: 'Join Group', icon: 'join', onPress: () => onJoinPropertyGroup(cardProjectId) },
-              { key: 'call', label: 'Call', icon: 'call', onPress: () => onPropertyCall(cardProjectId, inv.callNumber, msg.sender.phone) },
-            ]}
-          />
-
-          {/* The CardActions row above is now the ONLY action row on this card.
-              A second, icon-only `mbs.propertyActions` row used to render right
-              beneath it with four bare icons — Phone, MessageCircle, MapPin and
-              Share2 — which made Call appear TWICE on one card (labelled in
-              CardActions, unlabelled here) and, worse, put an unlabelled green
-              speech bubble next to Join Group. That bubble read as the `Chat Now`
-              affordance we deliberately removed: it was never a chat, it deep-linked
-              to WhatsApp. Two rows of the same actions also pushed the card's
-              timestamp off the visible area in a dense thread.
-              Everything dropped with that row is still reachable:
-                • Call — in CardActions, with a label.
-                • WhatsApp — the phone +91 normalisation it duplicated is owned by
-                  handleMemberWhatsApp, reached from group info.
-                • Location — the detail sheet already shows the full location, and
-                  the icon only rendered when the project carried lat/lng anyway.
-                • Share — the detail sheet's Share2 (verified above `shareProjectId`)
-                  goes through shareApi and renders under exactly the same
-                  condition this icon did, a real resolved project id. A plain
-                  Share.share text blob was strictly the worse of the two. */}
-
+          {/* No action row: the card itself opens the project group (openCard). */}
           {!!messageClock(msg.createdAt) && (
             <Text style={mbs.propertyTime}>{messageClock(msg.createdAt)}</Text>
           )}
         </Animated.View>
-      </View>
+      </Pressable>
     );
   }
 
