@@ -56,7 +56,18 @@ interface JourneyStage {
   scriptMessage: string;
   photos: string[];
   assets?: StepAsset[];
+  editHistory?: EditHistory[];
 }
+
+// Who last changed a journey field. Session-only, like the journey edits
+// themselves — nothing here is persisted to the server yet.
+interface EditHistory {
+  fieldName: string;
+  editedBy: string;
+  editedAt: string;
+}
+
+type EditingField = { stageId: string; field: string } | null;
 
 interface Props {
   lead: DemoLead;
@@ -111,15 +122,19 @@ const fill = (t: string, lead: DemoLead) => t.replace(/\{name\}/g, lead.name.spl
 export default function LeadDetailView({ lead, onBack, stages, onStageChange, projectAssets = [] }: Props) {
   const { user } = useAuth();
   const toast = useToast();
-  // Admin and captain can edit the sales journey playbook
-  const canEditJourney = user?.role === 'admin' || user?.role === 'captain';
+  // Anyone can edit the sales journey playbook (was admin/captain only). The
+  // edits are local to this screen and never sent to the server, so opening
+  // them up cannot change anyone else's data.
+  const canEditJourney = true;
   // Stage whose "View Assets" modal is open (null = closed)
   const [assetsModalStageId, setAssetsModalStageId] = useState<string | null>(null);
+  // Inline editing: tap a field to edit just that field. Replaces the old global
+  // Edit/Done toggle, which turned every field into an input at once.
+  const [editingField, setEditingField] = useState<EditingField>(null);
 
   const [journeyType, setJourneyType] = useState<JourneyType>(lead.leadType === 'outbound' ? 'outbound' : 'inbound');
   const [journeys, setJourneys] = useState<Record<JourneyType, JourneyStage[]>>({ inbound: INBOUND, outbound: OUTBOUND, ai: AI_GUIDE });
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [isEditing, setIsEditing] = useState(false);
 
   const [showNote, setShowNote] = useState<string | null>(null);
   const [noteText, setNoteText] = useState('');
@@ -252,8 +267,22 @@ export default function LeadDetailView({ lead, onBack, stages, onStageChange, pr
   const availableJourneyTypes: JourneyType[] =
     lead.leadType === 'outbound' ? ['outbound', 'ai'] : ['inbound', 'ai'];
 
+  // Called once on Save, not per keystroke (EditableField buffers the text), so
+  // each save adds exactly one history entry.
   const editField = (stageId: string, field: keyof JourneyStage, value: string) => {
-    setJourneys((prev) => ({ ...prev, [journeyType]: prev[journeyType].map((st) => (st.id === stageId ? { ...st, [field]: value } : st)) }));
+    setJourneys((prev) => ({
+      ...prev,
+      [journeyType]: prev[journeyType].map((st) => {
+        if (st.id !== stageId) return st;
+        const entry: EditHistory = {
+          fieldName: field,
+          editedBy: user?.name || 'Unknown User',
+          editedAt: new Date().toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }),
+        };
+        return { ...st, [field]: value, editHistory: [...(st.editHistory || []), entry] };
+      }),
+    }));
+    setEditingField(null);
   };
 
   const addStage = () => {
@@ -333,41 +362,36 @@ export default function LeadDetailView({ lead, onBack, stages, onStageChange, pr
   };
 
   return (
-    <ScrollView contentContainerStyle={{ padding: 16, gap: 20 }}>
+    <ScrollView contentContainerStyle={{ padding: 12, gap: 12 }}>
       {/* Header */}
       <View style={s.rowBetween}>
         <Pressable onPress={onBack} style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
           <ChevronLeft size={16} color={colors.muted2} />
           <Text style={{ fontSize: 13, fontWeight: '600', color: colors.muted2 }}>Client Dashboard</Text>
         </Pressable>
-        {canEditJourney && (
-          <Pressable onPress={() => setIsEditing(!isEditing)} style={[s.editBtn, isEditing ? { backgroundColor: colors.brand } : { borderWidth: 1, borderColor: colors.line }]}>
-            <Text style={{ fontSize: 11, fontWeight: 'bold', color: isEditing ? '#fff' : colors.muted2 }}>{isEditing ? 'Done' : 'Edit'}</Text>
-          </Pressable>
-        )}
       </View>
 
-      {/* Client card */}
+      {/* Client card (compact) */}
       <View style={s.clientCard}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
           <View style={s.clientAvatar}>
-            <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 13 }}>{lead.name.split(' ').map((n) => n[0]).join('')}</Text>
+            <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 11 }}>{lead.name.split(' ').map((n) => n[0]).join('')}</Text>
           </View>
-          <View>
-            <Text style={{ fontSize: 15, fontWeight: 'bold', color: '#fff' }}>{lead.name}</Text>
-            <Text style={{ fontSize: 11, color: colors.brand }}>{lead.phone}</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 13, fontWeight: 'bold', color: '#fff' }}>{lead.name}</Text>
+            <Text style={{ fontSize: 10, color: colors.brand }}>{lead.phone}</Text>
           </View>
         </View>
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 12 }}>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 8 }}>
           <Tag text={lead.project} dark />
           <Tag text={lead.source} dark />
           {(() => { const lt = leadTypeColor(lead.leadType); return (
-            <View style={{ backgroundColor: lt.bg, borderColor: lt.border, borderWidth: 1, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6 }}>
-              <Text style={{ color: lt.text, fontSize: 9, fontWeight: '700', textTransform: 'uppercase' }}>{lead.leadType}</Text>
+            <View style={{ backgroundColor: lt.bg, borderColor: lt.border, borderWidth: 1, paddingHorizontal: 6, paddingVertical: 1, borderRadius: 4 }}>
+              <Text style={{ color: lt.text, fontSize: 8, fontWeight: '700', textTransform: 'uppercase' }}>{lead.leadType}</Text>
             </View>
           ); })()}
-          <View style={{ backgroundColor: sc.bg, borderColor: sc.border, borderWidth: 1, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6 }}>
-            <Text style={{ color: sc.text, fontSize: 9, fontWeight: '700' }}>{lead.stage}</Text>
+          <View style={{ backgroundColor: sc.bg, borderColor: sc.border, borderWidth: 1, paddingHorizontal: 6, paddingVertical: 1, borderRadius: 4 }}>
+            <Text style={{ color: sc.text, fontSize: 8, fontWeight: '700' }}>{lead.stage}</Text>
           </View>
         </View>
       </View>
@@ -375,9 +399,9 @@ export default function LeadDetailView({ lead, onBack, stages, onStageChange, pr
       {/* Move to Stage selector */}
       {onStageChange && (
         <View>
-          <Text style={[s.sectionLabel, { marginBottom: 8 }]}>Move to Stage</Text>
+          <Text style={[s.sectionLabel, { marginBottom: 6 }]}>Move to Stage</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-            <View style={{ flexDirection: 'row', gap: 6 }}>
+            <View style={{ flexDirection: 'row', gap: 5 }}>
               {stages.map((st) => {
                 const active = lead.stage === st;
                 return (
@@ -393,13 +417,13 @@ export default function LeadDetailView({ lead, onBack, stages, onStageChange, pr
 
       {/* Sales Journey */}
       <View>
-        <View style={[s.rowBetween, { marginBottom: 12 }]}>
+        <View style={[s.rowBetween, { marginBottom: 8 }]}>
           <Text style={{ fontSize: 13, fontWeight: 'bold', color: colors.ink }}>Sales Journey</Text>
           <Text style={{ fontSize: 11, fontWeight: 'bold', color: colors.brand }}>{lead.stage}</Text>
         </View>
 
         {/* Journey type toggle */}
-        <View style={{ flexDirection: 'row', gap: 8, marginBottom: 16 }}>
+        <View style={{ flexDirection: 'row', gap: 6, marginBottom: 10 }}>
           {availableJourneyTypes.map((t) => {
             const active = journeyType === t;
             return (
@@ -410,7 +434,7 @@ export default function LeadDetailView({ lead, onBack, stages, onStageChange, pr
           })}
         </View>
 
-        <Text style={{ fontSize: 11, color: colors.muted, fontStyle: 'italic', marginBottom: 12 }}>
+        <Text style={{ fontSize: 11, color: colors.muted, fontStyle: 'italic', marginBottom: 10 }}>
           {journeyType === 'inbound' && 'Inbound rasta ~23 din. Client ne khud enquiry ki hai.'}
           {journeyType === 'outbound' && 'Outbound rasta 30+ din. Cold leads — trust build karo pehle.'}
           {journeyType === 'ai' && 'AI-assisted — fastest close ~15 din.'}
@@ -422,23 +446,35 @@ export default function LeadDetailView({ lead, onBack, stages, onStageChange, pr
             const isOpen = true; // Always open since we show only current stage
             const done = stages.indexOf(lead.stage) >= 0;
             const actualIdx = currentStages.findIndex(s => s.id === stage.id);
+            const lastEdit = stage.editHistory?.length ? stage.editHistory[stage.editHistory.length - 1] : null;
+            const editProps = { stageId: stage.id, editingField, setEditingField, enabled: canEditJourney };
             return (
               <View key={stage.id} style={[s.stageCard, { borderColor: colors.brand + '4D', backgroundColor: done ? '#fff' : colors.cream }]}>
                 <View style={s.stageHeader}>
                   <View style={[s.stageNum, { backgroundColor: done ? colors.brand : colors.line }]}>
                     <Text style={{ color: done ? '#fff' : colors.muted, fontWeight: '700', fontSize: 11 }}>{actualIdx + 1}</Text>
                   </View>
-                  <Text style={{ flex: 1, fontSize: 13, fontWeight: 'bold', color: colors.ink }}>{stage.name}</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontSize: 13, fontWeight: 'bold', color: colors.ink }}>{stage.name}</Text>
+                    {lastEdit && (
+                      <Text style={{ fontSize: 9, color: colors.muted, marginTop: 2 }}>
+                        Last edited by {lastEdit.editedBy} • {lastEdit.editedAt}
+                      </Text>
+                    )}
+                  </View>
                   <Text style={{ fontSize: 9, fontWeight: 'bold', color: colors.brand }}>{stage.duration}</Text>
                 </View>
 
                 <View style={s.stageBody}>
                   {/* Description */}
-                  {isEditing ? (
-                    <TextInput multiline value={stage.description} onChangeText={(v) => editField(stage.id, 'description', v)} style={s.editArea} />
-                  ) : (
-                    <Text style={{ fontSize: 13, color: colors.muted2, lineHeight: 20 }}>{stage.description}</Text>
-                  )}
+                  <EditableField
+                    {...editProps}
+                    fieldName="description"
+                    value={stage.description}
+                    onSave={(v) => editField(stage.id, 'description', v)}
+                    textStyle={{ fontSize: 13, color: colors.muted2, lineHeight: 20 }}
+                    inputStyle={s.editArea}
+                  />
 
                   {/* View project assets */}
                   <Pressable onPress={() => setAssetsModalStageId(stage.id)} style={s.viewAssetsBtn}>
@@ -499,17 +535,42 @@ export default function LeadDetailView({ lead, onBack, stages, onStageChange, pr
                   )}
 
                   {/* Touch Plan */}
-                  <InfoBlock label="Touch Plan" value={stage.touchPlan} editing={isEditing} onChange={(v) => editField(stage.id, 'touchPlan', v)} mono />
+                  <View style={s.infoBlock}>
+                    <Text style={[s.sectionLabel, { marginBottom: 6 }]}>Touch Plan</Text>
+                    <EditableField
+                      {...editProps}
+                      fieldName="touchPlan"
+                      value={stage.touchPlan}
+                      onSave={(v) => editField(stage.id, 'touchPlan', v)}
+                      textStyle={[s.infoText, { fontFamily: 'monospace' }]}
+                      inputStyle={[s.editAreaSm, { fontFamily: 'monospace' }]}
+                    />
+                  </View>
                   {/* Next Step */}
-                  <InfoBlock label="Aage Kab" value={stage.nextStep} editing={isEditing} onChange={(v) => editField(stage.id, 'nextStep', v)} />
-                  {/* Script */}
+                  <View style={s.infoBlock}>
+                    <Text style={[s.sectionLabel, { marginBottom: 6 }]}>Aage Kab</Text>
+                    <EditableField
+                      {...editProps}
+                      fieldName="nextStep"
+                      value={stage.nextStep}
+                      onSave={(v) => editField(stage.id, 'nextStep', v)}
+                      textStyle={s.infoText}
+                      inputStyle={s.editAreaSm}
+                    />
+                  </View>
+                  {/* Script — the editor shows the raw template ({name}, {project});
+                      the read view shows it filled in for this lead. */}
                   <View style={s.scriptBox}>
                     <Text style={[s.sectionLabel, { marginBottom: 6 }]}>Script / Message</Text>
-                    {isEditing ? (
-                      <TextInput multiline value={stage.scriptMessage} onChangeText={(v) => editField(stage.id, 'scriptMessage', v)} style={s.editAreaSm} />
-                    ) : (
-                      <Text style={{ fontSize: 11, color: colors.ink }}>{fill(stage.scriptMessage, lead)}</Text>
-                    )}
+                    <EditableField
+                      {...editProps}
+                      fieldName="scriptMessage"
+                      value={stage.scriptMessage}
+                      display={fill(stage.scriptMessage, lead)}
+                      onSave={(v) => editField(stage.id, 'scriptMessage', v)}
+                      textStyle={{ fontSize: 11, color: colors.ink }}
+                      inputStyle={s.editAreaSm}
+                    />
                   </View>
 
                   {/* Actions */}
@@ -582,9 +643,9 @@ export default function LeadDetailView({ lead, onBack, stages, onStageChange, pr
 
       {/* Activity */}
       <View>
-        <Text style={{ fontSize: 13, fontWeight: 'bold', color: colors.ink, marginBottom: 12 }}>Full Activity</Text>
-        <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12 }}>
-          <View style={{ borderRadius: 999, backgroundColor: colors.brand, marginTop: 6, width: 10, height: 10 }} />
+        <Text style={{ fontSize: 13, fontWeight: 'bold', color: colors.ink, marginBottom: 8 }}>Full Activity</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10 }}>
+          <View style={{ borderRadius: 999, backgroundColor: colors.brand, marginTop: 6, width: 8, height: 8 }} />
           <View>
             <Text style={{ fontSize: 9, color: colors.muted }}>{lead.date}</Text>
             <Text style={{ fontSize: 11, fontWeight: '500', color: colors.ink }}>Lead Added - {lead.source}</Text>
@@ -653,24 +714,71 @@ function Tag({ text, dark }: { text: string; dark?: boolean }) {
   );
 }
 
-function InfoBlock({ label, value, editing, onChange, mono }: { label: string; value: string; editing: boolean; onChange: (v: string) => void; mono?: boolean }) {
+/**
+ * Tap-to-edit text with Save / Cancel.
+ *
+ * Typing goes into a local buffer and the parent is told only on Save. The
+ * version this came from wired description and script straight to editField on
+ * every keystroke — and editField closes the editor — so the input closed after
+ * the first character and each letter added its own "edited by" entry.
+ */
+function EditableField({
+  value, display, stageId, fieldName, editingField, setEditingField, onSave, enabled, textStyle, inputStyle,
+}: {
+  value: string;
+  /** What to show when not editing (e.g. the script with {name} filled in). Defaults to value. */
+  display?: string;
+  stageId: string;
+  fieldName: string;
+  editingField: EditingField;
+  setEditingField: (v: EditingField) => void;
+  onSave: (v: string) => void;
+  enabled: boolean;
+  textStyle?: any;
+  inputStyle?: any;
+}) {
+  const isEditing = enabled && editingField?.stageId === stageId && editingField?.field === fieldName;
+  const [draft, setDraft] = useState(value);
+
+  useEffect(() => {
+    if (isEditing) setDraft(value);
+  }, [isEditing, value]);
+
+  if (isEditing) {
+    return (
+      <View>
+        <TextInput multiline value={draft} onChangeText={setDraft} autoFocus style={inputStyle} accessibilityLabel={`Edit ${fieldName}`} />
+        <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+          <Pressable onPress={() => onSave(draft)} style={s.saveChip} accessibilityRole="button">
+            <Text style={{ color: '#fff', fontSize: 10, fontWeight: 'bold' }}>Save</Text>
+          </Pressable>
+          <Pressable onPress={() => setEditingField(null)} style={s.cancelChip} accessibilityRole="button">
+            <Text style={{ color: colors.muted2, fontSize: 10, fontWeight: 'bold' }}>Cancel</Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+  }
+
+  const text = <Text style={textStyle}>{display ?? value}</Text>;
+  if (!enabled) return text;
   return (
-    <View style={{ borderRadius: 8, backgroundColor: colors.cream, borderWidth: 1, borderColor: colors.line, padding: 12 }}>
-      <Text style={[s.sectionLabel, { marginBottom: 6 }]}>{label}</Text>
-      {editing ? (
-        <TextInput multiline value={value} onChangeText={onChange} style={[s.editAreaSm, mono ? { fontFamily: 'monospace' } : null]} />
-      ) : (
-        <Text style={[{ fontSize: 11, color: colors.ink, fontWeight: '500' }, mono ? { fontFamily: 'monospace' } : null]}>{value}</Text>
-      )}
-    </View>
+    <Pressable
+      onPress={() => setEditingField({ stageId, field: fieldName })}
+      accessibilityRole="button"
+      accessibilityHint="Tap to edit"
+    >
+      {text}
+    </Pressable>
   );
 }
 
 const s = StyleSheet.create({
   rowBetween: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  editBtn: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8 },
-  clientCard: { borderRadius: 16, backgroundColor: colors.night, padding: 16 },
-  clientAvatar: { width: 44, height: 44, borderRadius: 999, backgroundColor: colors.muted2, alignItems: 'center', justifyContent: 'center' },
+  infoBlock: { borderRadius: 8, backgroundColor: colors.cream, borderWidth: 1, borderColor: colors.line, padding: 12 },
+  infoText: { fontSize: 11, color: colors.ink, fontWeight: '500' },
+  clientCard: { borderRadius: 12, backgroundColor: colors.night, padding: 12 },
+  clientAvatar: { width: 36, height: 36, borderRadius: 999, backgroundColor: colors.muted2, alignItems: 'center', justifyContent: 'center' },
   sectionLabel: { fontSize: 9, fontWeight: 'bold', color: colors.muted, textTransform: 'uppercase', letterSpacing: 1 },
   pill: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
   pillActive: { backgroundColor: colors.brand },
