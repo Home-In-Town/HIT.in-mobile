@@ -387,7 +387,9 @@ export default function AiAssistant({
     } catch (e: any) {
       toast.show(e?.message || 'Failed to open assistant', 'error');
     } finally {
-      isRestoringHistoryRef.current = false; // History restored — resume normal scroll behavior
+      // Flag is cleared in onContentSizeChange AFTER the first layout pass,
+      // not here — clearing it here happens before the FlatList mounts, so the
+      // gate check would see flag = false and scroll anyway.
       setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1023,10 +1025,16 @@ export default function AiAssistant({
         // Only scroll on content size change when NOT restoring history. Previous
         // behavior: scrolled on every message add, including bulk history restore,
         // causing excessive auto-scroll on open. New: scroll only for new messages.
+        // The flag is cleared here on the first layout pass (after history renders),
+        // not in open()'s finally block — clearing it there would happen before the
+        // FlatList mounts, so the gate would fail and scroll would happen anyway.
         onContentSizeChange={() => {
-          if (!isRestoringHistoryRef.current) {
-            scrollRef.current?.scrollToEnd({ animated: false });
+          if (isRestoringHistoryRef.current) {
+            // First layout pass after history load — suppress scroll and clear flag
+            isRestoringHistoryRef.current = false;
+            return;
           }
+          scrollRef.current?.scrollToEnd({ animated: false });
         }}
         initialNumToRender={12}
         maxToRenderPerBatch={10}

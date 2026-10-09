@@ -3008,6 +3008,26 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   }, [sharingId, toast]);
 
   /**
+   * Download QR code for property detail modal.
+   * Generates QR from the property share URL.
+   */
+  const handleDownloadPropertyQR = useCallback(async () => {
+    if (!viewProperty?.shareProjectId) {
+      toast.show('No project available', 'error');
+      return;
+    }
+    toast.show('Generating QR…', 'info');
+    try {
+      const project = await projectsApiExtended.getById(viewProperty.shareProjectId);
+      const shareUrl = `https://homeintown.in/projects/${project.slug || viewProperty.shareProjectId}`;
+      qrRef.current = null;
+      setQrExport({ url: shareUrl, fileName: `${project.name || 'Property'}-QR.png` });
+    } catch (e: any) {
+      toast.show(e?.message || 'Failed to generate QR', 'error');
+    }
+  }, [viewProperty?.shareProjectId, toast]);
+
+  /**
    * Auto-scroll to source message when property detail sheet opens.
    * 
    * Triggers when viewProperty changes from null to an object with sourceMessageId.
@@ -4781,10 +4801,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
             </View>
 
             <ScrollView style={{ maxHeight: 520 }} contentContainerStyle={{ paddingBottom: 6, gap: 12 }} showsVerticalScrollIndicator={false}>
-              {/* Cover image at the top */}
-              {!!viewProperty?.image && (
-                <Image source={{ uri: viewProperty.image }} style={pd.detailHero} resizeMode="cover" />
-              )}
+              {/* Cover image removed - user requirement: "uper photo dhik rahi he vo bhi nahi dhikni chiye" */}
 
               {/* Clean action-button list replaces all text detail sections. Previous
                   behavior: showed text sections (Overview/Pricing/Configuration/
@@ -4795,19 +4812,17 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                   resource or triggers the relevant action. Buttons appear ONLY when
                   the resource exists, so an empty section never renders. */}
               
-              {/* Gallery section */}
+              {/* Gallery section - show count but hide thumbnails */}
               {viewProperty?.galleryImages?.length > 0 && (
                 <View style={pd.actionSection}>
-                  <Text style={pd.actionSectionTitle}>
-                    📷 Gallery ({viewProperty.galleryImages.length} photos)
-                  </Text>
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
-                    {viewProperty.galleryImages.map((url: string, i: number) => (
-                      <Pressable key={`${url}-${i}`} onPress={() => Linking.openURL(url)}>
-                        <Image source={{ uri: url }} style={pd.mediaThumb} resizeMode="cover" />
-                      </Pressable>
-                    ))}
-                  </ScrollView>
+                  <Pressable
+                    style={pd.actionRow}
+                    onPress={() => handleDownloadGallery()}
+                  >
+                    <ImageIcon size={18} color={colors.brand} />
+                    <Text style={pd.actionLabel}>Download Gallery ({viewProperty.galleryImages.length} photos)</Text>
+                    <Download size={14} color={colors.muted} style={{ marginLeft: 'auto' }} />
+                  </Pressable>
                 </View>
               )}
 
@@ -4860,6 +4875,18 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                     )}
                     <Text style={pd.actionLabel}>Share Property Link</Text>
                     <LinkIcon size={14} color={colors.muted} style={{ marginLeft: 'auto' }} />
+                  </Pressable>
+                )}
+
+                {/* QR Code Download */}
+                {viewProperty?.shareProjectId && (
+                  <Pressable
+                    style={pd.actionRow}
+                    onPress={() => handleDownloadPropertyQR()}
+                  >
+                    <QrCode size={18} color={colors.brand} />
+                    <Text style={pd.actionLabel}>Download QR Code</Text>
+                    <Download size={14} color={colors.muted} style={{ marginLeft: 'auto' }} />
                   </Pressable>
                 )}
 

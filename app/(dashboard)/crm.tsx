@@ -181,11 +181,11 @@ export default function HomeDashboard() {
         <View style={s.tabPill} accessibilityRole="tablist">
           <SectionTab
             active={tab === 'ai'}
-            // Always bump the reset signal — tapping "AI Leads" should land on the
+            // Always bump the reset signal — tapping "Lead Matching" should land on the
             // default page whether we're switching to it or already on it.
             onPress={() => { setTab('ai'); setAiResetKey((k) => k + 1); }}
             icon={<Zap size={14} color={tab === 'ai' ? '#fff' : colors.muted2} />}
-            label="AI Leads"
+            label="Lead Matching"
           />
           <SectionTab
             active={tab === 'crm'}
