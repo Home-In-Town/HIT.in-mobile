@@ -125,6 +125,20 @@ export function useSocket() {
     return () => { s?.off('group_avatar_updated', handler); };
   }, []);
 
+  /**
+   * A project's unit grid changed. Two payload forms from the server:
+   * setup/regenerate sends the whole `units` array; a single status change
+   * sends one `unit`. Both carry fresh `counts`.
+   *
+   * Same channel caveat as onGroupAvatarUpdated: only the room the user has
+   * open receives it, so a sheet opened later still reads GET /projects/:id.
+   */
+  const onProjectUnitsUpdated = useCallback((handler: (data: { projectId: string; unit?: any; units?: any[]; counts?: any }) => void) => {
+    const s = socketRef.current;
+    s?.on('project_units_updated', handler);
+    return () => { s?.off('project_units_updated', handler); };
+  }, []);
+
   return {
     // 1:1
     joinChat, leaveChat, sendMessage, sendTyping, markRead,
@@ -132,7 +146,7 @@ export function useSocket() {
     // Group
     joinGroup, leaveGroup, sendGroupMessage, sendGroupTyping,
     onGroupMessage, onGroupTyping, onMatchResults, onGroupDeleted, onGroupMessageDeleted,
-    onGroupAvatarUpdated,
+    onGroupAvatarUpdated, onProjectUnitsUpdated,
     // Increments once the underlying socket is available. Include it in the deps
     // of any effect that subscribes, so the subscription is (re)attached rather
     // than silently no-op'ing when the socket wasn't ready on first run.

@@ -51,7 +51,17 @@ export const colors = {
   slateBg: '#F8FAFC',
   slateBorder: '#E2E8F0',
   slateText: '#475569',
+  yellow: '#EAB308',
 };
+
+// Unit-inventory grid colours (GitHub-contributions style). Booked is a plain
+// orange rather than `brand` so a booked cell never reads as a tappable button.
+export const unitColors = {
+  available: colors.green,
+  booked: '#EA580C',
+  sold: colors.slate,
+  'on-hold': colors.yellow,
+} as const;
 
 export const radius = {
   sm: 8,
