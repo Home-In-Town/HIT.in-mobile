@@ -4427,6 +4427,19 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
             instead of the menu and the sheet both offering it. */}
         {showRoomMenu && (
           <View style={s.menu}>
+            {/* View Property Details — opens the full property detail modal with
+                unit grid, gallery, etc. Only shown in property groups. */}
+            {activeRoom.roomType === 'project' && activeRoom.project?.id && (
+              <Pressable
+                style={s.menuItem}
+                onPress={() => {
+                  setShowRoomMenu(false);
+                  if (activeRoom.project?.id) handlePropertyViewDetails(activeRoom.project.id);
+                }}
+              >
+                <Eye size={15} color={colors.muted2} /><Text style={s.menuText}>View Property Details</Text>
+              </Pressable>
+            )}
             {hasProjectMedia && (
               <>
                 <Pressable style={s.menuItem} onPress={handleShareLink}>
