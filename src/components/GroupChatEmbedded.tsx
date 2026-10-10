@@ -4428,54 +4428,6 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
             </View>
           </>
         )}
-
-        {/* Project-media menu, opened only by the banner dots now that the header
-            dots are gone. The media actions used to sit behind a nested "Project
-            media" item, so the first tap showed only two options and the download
-            actions needed a second hop.
-            Exit Group / Delete Group used to be here too. They now live ONLY in
-            the group-info sheet, so each action exists in exactly one place
-            instead of the menu and the sheet both offering it. */}
-        {showRoomMenu && (
-          <View style={s.menu}>
-            {/* View Property Details — opens the full property detail modal with
-                unit grid, gallery, etc. Only shown in property groups. Falls back
-                to scanning messages for a project ID when activeRoom.project is
-                undefined (backend didn't populate it). */}
-            {activeRoom.roomType === 'project' && (() => {
-              const projId = activeRoom.project?.id ||
-                messages.find(m => m.messageType === 'unit_update' && m.unitUpdate?.project)?.unitUpdate?.project;
-              if (!projId) return null;
-              return (
-                <Pressable
-                  style={s.menuItem}
-                  onPress={() => {
-                    setShowRoomMenu(false);
-                    handlePropertyViewDetails(projId);
-                  }}
-                >
-                  <Eye size={15} color={colors.muted2} /><Text style={s.menuText}>View Property Details</Text>
-                </Pressable>
-              );
-            })()}
-            {hasProjectMedia && (
-              <>
-                <Pressable style={s.menuItem} onPress={handleShareLink}>
-                  <LinkIcon size={15} color={colors.muted2} /><Text style={s.menuText}>Share link</Text>
-                </Pressable>
-                <Pressable style={s.menuItem} onPress={handleDownloadPdf}>
-                  <FileText size={15} color={colors.muted2} /><Text style={s.menuText}>Download PDF</Text>
-                </Pressable>
-                <Pressable style={s.menuItem} onPress={handleDownloadQr}>
-                  <QrCode size={15} color={colors.muted2} /><Text style={s.menuText}>Download QR</Text>
-                </Pressable>
-                <Pressable style={s.menuItem} onPress={handleDownloadGallery}>
-                  <ImageIcon size={15} color={colors.muted2} /><Text style={s.menuText}>Download Gallery</Text>
-                </Pressable>
-              </>
-            )}
-          </View>
-        )}
       </View>
       )}
 
@@ -4657,6 +4609,49 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
       {/* Tap-catcher to close the menu */}
       {showRoomMenu && (
         <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowRoomMenu(false)} />
+      )}
+
+      {/* Property room menu dropdown — positioned near the banner's ⋮ button or
+          header's fallback button. Rendered outside both so it can float on top. */}
+      {showRoomMenu && (
+        <View style={[s.menu, { top: proj ? 100 : 52 }]}>
+          {/* View Property Details — opens the full property detail modal with
+              unit grid, gallery, etc. Only shown in property groups. Falls back
+              to scanning messages for a project ID when activeRoom.project is
+              undefined (backend didn't populate it). */}
+          {activeRoom.roomType === 'project' && (() => {
+            const projId = activeRoom.project?.id ||
+              messages.find(m => m.messageType === 'unit_update' && m.unitUpdate?.project)?.unitUpdate?.project;
+            if (!projId) return null;
+            return (
+              <Pressable
+                style={s.menuItem}
+                onPress={() => {
+                  setShowRoomMenu(false);
+                  handlePropertyViewDetails(projId);
+                }}
+              >
+                <Eye size={15} color={colors.muted2} /><Text style={s.menuText}>View Property Details</Text>
+              </Pressable>
+            );
+          })()}
+          {hasProjectMedia && (
+            <>
+              <Pressable style={s.menuItem} onPress={handleShareLink}>
+                <LinkIcon size={15} color={colors.muted2} /><Text style={s.menuText}>Share link</Text>
+              </Pressable>
+              <Pressable style={s.menuItem} onPress={handleDownloadPdf}>
+                <FileText size={15} color={colors.muted2} /><Text style={s.menuText}>Download PDF</Text>
+              </Pressable>
+              <Pressable style={s.menuItem} onPress={handleDownloadQr}>
+                <QrCode size={15} color={colors.muted2} /><Text style={s.menuText}>Download QR</Text>
+              </Pressable>
+              <Pressable style={s.menuItem} onPress={handleDownloadGallery}>
+                <ImageIcon size={15} color={colors.muted2} /><Text style={s.menuText}>Download Gallery</Text>
+              </Pressable>
+            </>
+          )}
+        </View>
       )}
 
       {/* Messages — the group chat is ALWAYS the base view. */}
