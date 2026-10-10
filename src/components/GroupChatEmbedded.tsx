@@ -4578,6 +4578,74 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const dVideos   = dSrc ? mediaUrls(dSrc.videos)        : mediaUrls(proj?.media?.videos);
   const dBrochure = dSrc ? oneUrl(dSrc.brochureUrl)      : oneUrl(proj?.media?.brochurePdf);
   const dUnits    = dSrc?.units ?? [];
+
+  /**
+   * The drawer's Details rows, in the order the suppressed `📋` server dump used
+   * them, so a user who knew that block finds the same facts in the same
+   * sequence. Every row is omitted when its field is empty — the old sheet
+   * printed '—' for missing values, which filled a sparse property with dashes.
+   *
+   * Built from drawerProject only: every field below is already FLAT on
+   * transformProject's output, so there is no second fetch and no nested
+   * `configuration` / `pricing` reads.
+   *
+   * Deliberately NOT carried over from the dump: name / location / starting price
+   * (they are in the header right above), the photo count (it is on the Share
+   * Gallery row), brochure presence (implied by the brochure rows existing at
+   * all), layout-plan presence (the drawer has no layout viewer — the web
+   * dashboard owns the layout editor, so advertising it here would dead-end), and
+   * the map URL (that is the Open in Map row).
+   *
+   * The dump's land-vs-flat `isLand` switch is backend-only
+   * (propertyTypeNormalizer has no client equivalent), so `carpetAreaRange ||
+   * plotSizeRange` with an adaptive label is the client-side approximation —
+   * the same thing handlePreviewMatch already does.
+   */
+  const dDetails: Array<{ label: string; value: string }> = (() => {
+    const p = drawerProject;
+    if (!p) return [];
+    const out: Array<{ label: string; value: string }> = [];
+    const push = (label: string, value?: string | null) => { if (value) out.push({ label, value }); };
+    // Enum slugs ('ready-to-move', 'construction_linked') printed verbatim put
+    // storage values in front of the user — same normalisation the detail sheet
+    // already applies.
+    const words = (v?: string) => (v ? String(v).replace(/[-_]/g, ' ') : '');
+
+    push('Type', [p.category, p.propertyType || p.type].filter(Boolean).join(' · '));
+    push('Configuration', (p.bhkOptions || []).filter(Boolean).join(', '));
+    if (p.carpetAreaRange) push('Area', p.carpetAreaRange);
+    else push('Plot Size', p.plotSizeRange);
+    push('Price Range', p.totalPriceRange);
+    push('Rate', p.pricePerSqFt ? `${fmtPrice(p.pricePerSqFt)}/sq.ft` : '');
+    push('Possession', words(p.projectStatus));
+    push('Floors', p.floorRange);
+    push('Facing', (p.facingOptions || []).filter(Boolean).join(', '));
+    if (p.gatedCommunity === true) push('Gated Community', 'Yes');
+    if (p.bankLoanAvailable === true) push('Bank Loan', 'Available');
+    push('Payment Plan', words(p.paymentPlan));
+    push('Maintenance', p.maintenanceCharges);
+    push('RERA', p.reraNumber || (p.reraApproved ? 'RERA Approved' : ''));
+    push('Amenities', (p.amenities || []).slice(0, 8).join(', '));
+    return out;
+  })();
+
+  // Map target for the drawer's Open in Map row. Number.isFinite, not a
+  // truthiness test: latitude 0 is a real coordinate, and `lat && lng` would
+  // reject it while also accepting NaN-free-but-undefined pairs as a URL of
+  // 'undefined,undefined'.
+  const dMapUrl = (() => {
+    if (proj?.googleMapLink) return String(proj.googleMapLink);
+    const lat = Number(proj?.latitude);
+    const lng = Number(proj?.longitude);
+    return Number.isFinite(lat) && Number.isFinite(lng)
+      ? `https://www.google.com/maps?q=${lat},${lng}`
+      : '';
+  })();
+
+  // When every guard below is false the drawer would show a title and nothing
+  // else — which is exactly what the collapsed-sheet defect looked like. One
+  // honest line instead.
+  const dHasAnyAction = !!dBrochure || dGallery.length > 0 || dVideos.length > 0 || hasProjectMedia || !!dMapUrl;
   // Group info exists for every real group. Area rooms are included because
   // Exit Group moved into this sheet — leaving them out would strand area members
   // with no way to leave, since their 3-dot no longer carries it.
@@ -5650,10 +5718,14 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
       </Modal>
 
       {/* ── Property Drawer (Bottom Sheet) ──
-          Replaces the removed blue banner. Shows property details, unit grid, and
-          action buttons. Opened by tapping the ⋮ button in project room headers. */}
+          The single property surface for a project room, replacing the removed
+          blue banner. Opened by the ⋮ in the thread header.
+
+          `visible` is gated on activeRoom as well: the JSX below dereferences
+          activeRoom.name with no optional chaining, and closeRoom() can race an
+          open drawer (another member deleting the group does exactly that). */}
       <Modal 
-        visible={propertyDrawerVisible} 
+        visible={propertyDrawerVisible && !!activeRoom} 
         transparent 
         animationType="slide" 
         onRequestClose={() => setPropertyDrawerVisible(false)}
@@ -5671,16 +5743,23 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
             <ScrollView 
               style={pd.drawerScroll} 
               contentContainerStyle={pd.drawerContent} 
-              showsVerticalScrollIndicator={false}
+              // The unit grid contains horizontal ScrollViews, so the vertical
+              // parent has to allow nesting on Android.
+              nestedScrollEnabled
+              // Was false. An invisible scrollbar is what made a sheet that DID
+              // have more content below read as "cut off".
+              showsVerticalScrollIndicator
             >
-              {/* Property header section - use proj or fallback to activeRoom.project */}
-              {(proj || activeRoom.project) && (() => {
-                const property = proj || (activeRoom.project as any);
-                return (
+              {/* Property header.
+                  This used to be wrapped in `{(proj || activeRoom.project) && (() => {
+                  const property = proj || (activeRoom.project as any); … })()}` — a
+                  tautology, because `proj` IS `activeRoom.project` (see its
+                  declaration). One source of truth instead. */}
+              {proj && (
                 <View style={pd.drawerPropertyHeader}>
-                  {property.media?.coverImage?.url ? (
+                  {proj.media?.coverImage?.url ? (
                     <Image 
-                      source={{ uri: property.media.coverImage.url }} 
+                      source={{ uri: proj.media.coverImage.url }} 
                       style={pd.drawerThumb} 
                       resizeMode="cover" 
                     />
@@ -5691,29 +5770,69 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                   )}
                   <View style={{ flex: 1 }}>
                     <Text style={pd.drawerPropertyName} numberOfLines={2}>
-                      {property.projectName || activeRoom.name}
+                      {proj.projectName || activeRoom.name}
                     </Text>
-                    {!![property.location, property.city].filter(Boolean).length && (
+                    {!![proj.location, proj.city].filter(Boolean).length && (
                       <Text style={pd.drawerPropertyMeta} numberOfLines={1}>
-                        📍 {[property.location, property.city].filter(Boolean).join(', ')}
+                        📍 {[proj.location, proj.city].filter(Boolean).join(', ')}
                       </Text>
                     )}
-                    {property.pricing?.startingPrice && (
+                    {proj.pricing?.startingPrice && (
                       <Text style={pd.drawerPropertyPrice}>
-                        {fmtPrice(property.pricing.startingPrice)}+
+                        {fmtPrice(proj.pricing.startingPrice)}+
                       </Text>
                     )}
                   </View>
                 </View>
-                );
-              })()}
+              )}
 
-              {/* Unit Availability Grid */}
-              {((proj || activeRoom.project) as any)?.units && ((proj || activeRoom.project) as any).units.length > 0 && (
+              {/* Details — the structured replacement for the suppressed `📋`
+                  server dump. While the fetch is in flight there is a spinner in
+                  its place; if the fetch FAILED the section is omitted entirely
+                  (the header above still carries name / locality / price) and no
+                  toast fires, because a half-loaded sheet is still useful. */}
+              {(drawerLoading && !drawerProject) ? (
                 <View style={pd.drawerSection}>
-                  <Text style={pd.drawerSectionTitle}>Unit Availability</Text>
+                  <Text style={pd.drawerSectionTitle}>Details</Text>
+                  <ActivityIndicator color={colors.brand} style={{ paddingVertical: 10 }} />
+                </View>
+              ) : dDetails.length > 0 ? (
+                <View style={pd.drawerSection}>
+                  <Text style={pd.drawerSectionTitle}>Details</Text>
+                  {dDetails.map(row => (
+                    <View key={row.label} style={pd.drawerDetailRow}>
+                      <Text style={pd.drawerDetailLabel}>{row.label}</Text>
+                      <Text
+                        style={pd.drawerDetailValue}
+                        numberOfLines={row.label === 'Amenities' ? 2 : undefined}
+                      >
+                        {row.value}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              ) : null}
+
+              {/* Unit availability — READ-ONLY, deliberately (canEdit={false}).
+                  The user asked for availability, not editing; owner editing stays
+                  in the viewProperty sheet's grid + UnitSetupForm, reached via
+                  builder group → property card → View Details. Freshness comes
+                  from the setDrawerProject patch in the onProjectUnitsUpdated
+                  effect, which is the drawer's ONLY unit write path.
+
+                  Units come from `dUnits` (the fetched project), never from the
+                  room projection: `units` is not in ROOM_PROJECT_FIELDS, so the
+                  previous `activeRoom.project.units` guard could never pass.
+
+                  No pd.drawerSectionTitle here: UnitGrid renders its OWN header
+                  ("Unit Availability" + "N/M vacant"), so a wrapper title printed
+                  the label twice. The length guard is belt-and-braces — UnitGrid
+                  already returns null for an empty array — and keeps the empty
+                  section wrapper and its margin out of the tree. */}
+              {dUnits.length > 0 && (
+                <View style={pd.drawerSection}>
                   <UnitGrid
-                    units={((proj || activeRoom.project) as any).units}
+                    units={dUnits}
                     canEdit={false}
                     onChangeStatus={async () => {}}
                     busyUnitId={null}
@@ -5721,90 +5840,127 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                 </View>
               )}
 
-              {/* Action buttons section */}
+              {/* Actions — the seven rows the user listed, in their order.
+                  A row whose asset does not exist is NOT RENDERED: not rendered
+                  and disabled, and not rendered-then-toasting. Open in Map used to
+                  do the latter ("No map location available"), which is a dead
+                  button that only admits it on tap. */}
               <View style={pd.drawerSection}>
                 <Text style={pd.drawerSectionTitle}>Actions</Text>
-                
-                <Pressable style={pd.drawerActionRow} onPress={() => handleDownloadPdf(dBrochure)}>
-                  <FileText size={20} color={colors.brand} />
-                  <Text style={pd.drawerActionLabel}>Share PDF</Text>
-                  <ChevronLeft 
-                    size={16} 
-                    color={colors.muted} 
-                    style={{ transform: [{ rotate: '180deg' }], marginLeft: 'auto' }} 
-                  />
-                </Pressable>
 
-                <Pressable style={pd.drawerActionRow} onPress={handleDownloadGallery}>
-                  <ImageIcon size={20} color={colors.brand} />
-                  <Text style={pd.drawerActionLabel}>Share Gallery</Text>
-                  <ChevronLeft 
-                    size={16} 
-                    color={colors.muted} 
-                    style={{ transform: [{ rotate: '180deg' }], marginLeft: 'auto' }} 
-                  />
-                </Pressable>
+                {/* Share PDF and Share Brochure are BOTH shipped on purpose and
+                    share one guard, so they appear together or not at all. The
+                    user listed "share pdf" and "share brochure" as separate items
+                    in their spec, was shown that media.brochurePdf is a SINGLE
+                    file, and chose to keep both labels rather than merge them.
+                    Without this note the next reader will "fix" it into one row.
+                    Both call the same handler with the same resolved URL — there
+                    is no second download path. The arrow matters: a bare
+                    `onPress={handleDownloadPdf}` would pass the press event
+                    object in as the URL. */}
+                {!!dBrochure && (
+                  <>
+                    <Pressable style={pd.drawerActionRow} onPress={() => handleDownloadPdf(dBrochure)}>
+                      <FileText size={20} color={colors.brand} />
+                      <Text style={pd.drawerActionLabel}>Share PDF</Text>
+                      <ChevronLeft 
+                        size={16} 
+                        color={colors.muted} 
+                        style={{ transform: [{ rotate: '180deg' }], marginLeft: 'auto' }} 
+                      />
+                    </Pressable>
 
-                <Pressable style={pd.drawerActionRow} onPress={handleShareLink}>
-                  <LinkIcon size={20} color={colors.brand} />
-                  <Text style={pd.drawerActionLabel}>Share Property Link</Text>
-                  <ChevronLeft 
-                    size={16} 
-                    color={colors.muted} 
-                    style={{ transform: [{ rotate: '180deg' }], marginLeft: 'auto' }} 
-                  />
-                </Pressable>
+                    <Pressable style={pd.drawerActionRow} onPress={() => handleDownloadPdf(dBrochure)}>
+                      <FileText size={20} color={colors.brand} />
+                      <Text style={pd.drawerActionLabel}>Share Brochure</Text>
+                      <ChevronLeft 
+                        size={16} 
+                        color={colors.muted} 
+                        style={{ transform: [{ rotate: '180deg' }], marginLeft: 'auto' }} 
+                      />
+                    </Pressable>
+                  </>
+                )}
 
-                <Pressable style={pd.drawerActionRow} onPress={handleDownloadQr}>
-                  <QrCode size={20} color={colors.brand} />
-                  <Text style={pd.drawerActionLabel}>Share QR Code</Text>
-                  <ChevronLeft 
-                    size={16} 
-                    color={colors.muted} 
-                    style={{ transform: [{ rotate: '180deg' }], marginLeft: 'auto' }} 
-                  />
-                </Pressable>
+                {dGallery.length > 0 && (
+                  <Pressable style={pd.drawerActionRow} onPress={handleDownloadGallery}>
+                    <ImageIcon size={20} color={colors.brand} />
+                    <Text style={pd.drawerActionLabel}>
+                      Share Gallery ({dGallery.length} photo{dGallery.length === 1 ? '' : 's'})
+                    </Text>
+                    <ChevronLeft 
+                      size={16} 
+                      color={colors.muted} 
+                      style={{ transform: [{ rotate: '180deg' }], marginLeft: 'auto' }} 
+                    />
+                  </Pressable>
+                )}
 
-                {/* Open in Map */}
-                <Pressable 
-                  style={pd.drawerActionRow}
-                  onPress={() => {
-                    const lat = proj?.latitude;
-                    const lng = proj?.longitude;
-                    const mapUrl = proj?.googleMapLink || (lat && lng ? `https://www.google.com/maps?q=${lat},${lng}` : null);
-                    if (mapUrl) {
-                      Linking.openURL(mapUrl).catch(() => toast.show('Could not open map', 'error'));
-                    } else {
-                      toast.show('No map location available', 'error');
-                    }
-                  }}
-                >
-                  <MapPin size={20} color={colors.brand} />
-                  <Text style={pd.drawerActionLabel}>Open in Map</Text>
-                  <ExternalLink size={16} color={colors.muted} style={{ marginLeft: 'auto' }} />
-                </Pressable>
+                {/* Videos are links, not files — see handleShareVideos. The count
+                    is appended only when it adds something. */}
+                {dVideos.length > 0 && (
+                  <Pressable style={pd.drawerActionRow} onPress={() => handleShareVideos(dVideos)}>
+                    <Share2 size={20} color={colors.brand} />
+                    <Text style={pd.drawerActionLabel}>
+                      {dVideos.length > 1 ? `Share Videos (${dVideos.length})` : 'Share Videos'}
+                    </Text>
+                    <ChevronLeft 
+                      size={16} 
+                      color={colors.muted} 
+                      style={{ transform: [{ rotate: '180deg' }], marginLeft: 'auto' }} 
+                    />
+                  </Pressable>
+                )}
 
-                {/* View Full Details - opens the existing handlePropertyViewDetails */}
-                <Pressable 
-                  style={pd.drawerActionRow}
-                  onPress={() => {
-                    const projectId = proj?.id || (activeRoom?.project as any)?.id || (activeRoom?.project as any)?._id;
-                    if (projectId) {
-                      setPropertyDrawerVisible(false);
-                      handlePropertyViewDetails(String(projectId));
-                    } else {
-                      toast.show('No project details available', 'error');
-                    }
-                  }}
-                >
-                  <Eye size={20} color={colors.brand} />
-                  <Text style={pd.drawerActionLabel}>View Full Details</Text>
-                  <ChevronLeft 
-                    size={16} 
-                    color={colors.muted} 
-                    style={{ transform: [{ rotate: '180deg' }], marginLeft: 'auto' }} 
-                  />
-                </Pressable>
+                {hasProjectMedia && (
+                  <>
+                    <Pressable style={pd.drawerActionRow} onPress={handleShareLink}>
+                      <LinkIcon size={20} color={colors.brand} />
+                      <Text style={pd.drawerActionLabel}>Share Property Link</Text>
+                      <ChevronLeft 
+                        size={16} 
+                        color={colors.muted} 
+                        style={{ transform: [{ rotate: '180deg' }], marginLeft: 'auto' }} 
+                      />
+                    </Pressable>
+
+                    <Pressable style={pd.drawerActionRow} onPress={handleDownloadQr}>
+                      <QrCode size={20} color={colors.brand} />
+                      <Text style={pd.drawerActionLabel}>Share QR Code</Text>
+                      <ChevronLeft 
+                        size={16} 
+                        color={colors.muted} 
+                        style={{ transform: [{ rotate: '180deg' }], marginLeft: 'auto' }} 
+                      />
+                    </Pressable>
+                  </>
+                )}
+
+                {!!dMapUrl && (
+                  <Pressable 
+                    style={pd.drawerActionRow}
+                    onPress={() => {
+                      Linking.openURL(dMapUrl).catch(() => toast.show('Could not open map', 'error'));
+                    }}
+                  >
+                    <MapPin size={20} color={colors.brand} />
+                    <Text style={pd.drawerActionLabel}>Open in Map</Text>
+                    <ExternalLink size={16} color={colors.muted} style={{ marginLeft: 'auto' }} />
+                  </Pressable>
+                )}
+
+                {/* A 'View Full Details' row used to sit here, opening
+                    handlePropertyViewDetails. It is deleted: it was the one place
+                    the drawer was a doorway into a SECOND property surface, and
+                    everything it showed is now the Details section above.
+                    Accepted navigation (design review #6): Unit Setup, Edit
+                    Project and Layout Plan are reached via builder group →
+                    property card → View Details → those actions. No doorway back
+                    into viewProperty is to be re-added from inside a project
+                    room. */}
+                {!dHasAnyAction && (
+                  <Text style={pd.drawerEmpty}>No shareable files for this property yet.</Text>
+                )}
               </View>
             </ScrollView>
           </Pressable>
@@ -7276,7 +7432,12 @@ const pd = StyleSheet.create({
     backgroundColor: colors.white, 
     borderTopLeftRadius: 20, 
     borderTopRightRadius: 20, 
+    // Valid as-is: the overlay's height IS definite (flex:1 inside the Modal),
+    // so a percentage maxHeight resolves. Keeping it is what lets a long drawer
+    // stop at 85% and scroll.
     maxHeight: '85%',
+    // So the rounded top corners clip the scroll content, matching sh.sheet.
+    overflow: 'hidden',
     shadowColor: '#000',
     shadowOpacity: 0.25,
     shadowRadius: 16,
@@ -7297,19 +7458,35 @@ const pd = StyleSheet.create({
     fontWeight: '800', 
     color: colors.ink 
   },
+  // DEFECT FIX, and the reason the drawer looked EMPTY: this was `flex: 1`
+  // inside `drawerSheet`, which sets no height and no flexGrow — only
+  // maxHeight. Yoga content-sizes such a parent from what its children consume,
+  // and `flex: 1` expands to `flexBasis: 0%`, so the ScrollView consumed nothing
+  // in the basis pass, had no free space to receive, and was laid out at
+  // HEIGHT 0. All the user saw was the title row and the X, in a sheet collapsed
+  // into the bottom few percent of the screen.
+  //
+  // `flexShrink: 1` is the fix: RN defaults children to flexShrink 0, so with
+  // shrink allowed the ScrollView is content-sized, the sheet grows to fit, and
+  // maxHeight: '85%' takes over and scrolls beyond that. This is the same bug and
+  // the same fix already documented in this file for the My Posts list and the
+  // group-info list.
   drawerScroll: { 
-    flex: 1 
+    flexShrink: 1 
   },
+  // `gap: 16` became a margin on each section (see drawerSection /
+  // drawerPropertyHeader): `gap` has produced a width-0 / height-0 layout bug in
+  // this component before, so it is not used in the drawer or pill subtrees.
   drawerContent: { 
-    paddingBottom: 24, 
-    gap: 16 
+    paddingBottom: 24 
   },
   drawerPropertyHeader: { 
     flexDirection: 'row', 
     alignItems: 'flex-start', 
     gap: 12, 
     paddingHorizontal: 16, 
-    paddingTop: 16 
+    paddingTop: 16,
+    marginBottom: 16,
   },
   drawerThumb: { 
     width: 64, 
@@ -7342,9 +7519,12 @@ const pd = StyleSheet.create({
     color: colors.brand, 
     marginTop: 4 
   },
+  // Was `gap: 10`; the spacing between a section's rows is a margin on the rows
+  // themselves now (drawerActionRow / drawerDetailRow), and the spacing BETWEEN
+  // sections is this marginBottom.
   drawerSection: { 
-    paddingHorizontal: 16, 
-    gap: 10 
+    paddingHorizontal: 16,
+    marginBottom: 16,
   },
   drawerSectionTitle: { 
     fontSize: 13, 
@@ -7363,13 +7543,38 @@ const pd = StyleSheet.create({
     backgroundColor: colors.white, 
     borderWidth: 1, 
     borderColor: colors.line, 
-    borderRadius: 12 
+    borderRadius: 12,
+    marginBottom: 10,
   },
   drawerActionLabel: { 
     fontSize: 14, 
     fontWeight: '600', 
     color: colors.ink, 
     flex: 1 
+  },
+  // Details rows: label on the left at a fixed-ish width, value taking the rest,
+  // so a column of them reads as a table without a nested layout per row.
+  drawerDetailRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginBottom: 8,
+  },
+  drawerDetailLabel: {
+    width: 120,
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: colors.muted2,
+  },
+  drawerDetailValue: {
+    flex: 1,
+    fontSize: 12.5,
+    color: colors.ink,
+  },
+  drawerEmpty: {
+    fontSize: 12.5,
+    color: colors.muted,
+    textAlign: 'center',
+    paddingVertical: 10,
   },
 });
 
