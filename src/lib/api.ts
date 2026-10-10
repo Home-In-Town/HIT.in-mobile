@@ -1735,6 +1735,16 @@ export interface GroupMessage {
   requirementCard?: any;
   inventoryCard?: InventoryCard;
   matchResults?: any[];
+  /**
+   * Set by the server on the pinned project-summary system message that every
+   * project room gets (`upsertProjectDetailsMessage`). Mobile HIDES it: the dump
+   * is a long plain-text block of the same fields the property drawer now shows
+   * in a structured section, and it rendered as a wall of grey text at the top of
+   * every project thread. It was always on the wire — `sanitizeMessage` returns
+   * the whole document — but both client mappers dropped it, so the client was
+   * left trying to recognise the message by its text.
+   */
+  isProjectDetails?: boolean;
   // Server auto-message when a unit's status changes (snapshot, never edited).
   unitUpdate?: {
     project: string;
@@ -1918,6 +1928,10 @@ export const groupChatApi = {
       requirementCard: m.requirementCard,
       inventoryCard: m.inventoryCard,
       matchResults: m.matchResults,
+      // Also missing: without it the client could only guess at the project
+      // summary from its text, and the guess it made never matched (see
+      // isProjectSummaryMessage in GroupChatEmbedded).
+      isProjectDetails: m.isProjectDetails === true,
       // Was missing, so history-loaded unit_update messages had no unitUpdate,
       // missed the pill branch and rendered as the actor's own text bubble.
       unitUpdate: m.unitUpdate
