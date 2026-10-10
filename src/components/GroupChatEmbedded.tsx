@@ -4614,7 +4614,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
       {/* Property room menu dropdown — positioned near the banner's ⋮ button or
           header's fallback button. Rendered outside both so it can float on top. */}
       {showRoomMenu && (
-        <View style={[s.menu, { top: proj ? 100 : 52 }]}>
+        <View style={[s.menu, { top: proj ? 150 : 52 }]}>
           {/* View Property Details — opens the full property detail modal with
               unit grid, gallery, etc. Only shown in property groups. Falls back
               to scanning messages for a project ID when activeRoom.project is
