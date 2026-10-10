@@ -5416,12 +5416,14 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
               contentContainerStyle={pd.drawerContent} 
               showsVerticalScrollIndicator={false}
             >
-              {/* Property header section */}
-              {proj && (
+              {/* Property header section - use proj or fallback to activeRoom.project */}
+              {(proj || activeRoom.project) && (() => {
+                const property = proj || (activeRoom.project as any);
+                return (
                 <View style={pd.drawerPropertyHeader}>
-                  {proj.media?.coverImage?.url ? (
+                  {property.media?.coverImage?.url ? (
                     <Image 
-                      source={{ uri: proj.media.coverImage.url }} 
+                      source={{ uri: property.media.coverImage.url }} 
                       style={pd.drawerThumb} 
                       resizeMode="cover" 
                     />
@@ -5432,28 +5434,29 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                   )}
                   <View style={{ flex: 1 }}>
                     <Text style={pd.drawerPropertyName} numberOfLines={2}>
-                      {proj.projectName || activeRoom.name}
+                      {property.projectName || activeRoom.name}
                     </Text>
-                    {!![proj.location, proj.city].filter(Boolean).length && (
+                    {!![property.location, property.city].filter(Boolean).length && (
                       <Text style={pd.drawerPropertyMeta} numberOfLines={1}>
-                        📍 {[proj.location, proj.city].filter(Boolean).join(', ')}
+                        📍 {[property.location, property.city].filter(Boolean).join(', ')}
                       </Text>
                     )}
-                    {proj.pricing?.startingPrice && (
+                    {property.pricing?.startingPrice && (
                       <Text style={pd.drawerPropertyPrice}>
-                        {fmtPrice(proj.pricing.startingPrice)}+
+                        {fmtPrice(property.pricing.startingPrice)}+
                       </Text>
                     )}
                   </View>
                 </View>
-              )}
+                );
+              })()}
 
               {/* Unit Availability Grid */}
-              {proj?.units && proj.units.length > 0 && (
+              {((proj || activeRoom.project) as any)?.units && ((proj || activeRoom.project) as any).units.length > 0 && (
                 <View style={pd.drawerSection}>
                   <Text style={pd.drawerSectionTitle}>Unit Availability</Text>
                   <UnitGrid
-                    units={proj.units}
+                    units={((proj || activeRoom.project) as any).units}
                     canEdit={false}
                     onChangeStatus={async () => {}}
                     busyUnitId={null}
@@ -6286,8 +6289,8 @@ const MessageBubble = React.memo(function MessageBubble({
           <Text style={mbs.unitDayLabel}>{dateLabel}:</Text>
           <View style={mbs.unitDayStats}>
             {parts.map((p, i) => (
-              <View key={i} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                <View style={[mbs.unitDot, { backgroundColor: p.color }]} />
+              <View key={i} style={{ flexDirection: 'row', alignItems: 'center', marginRight: 8 }}>
+                <View style={[mbs.unitDot, { backgroundColor: p.color, marginRight: 4 }]} />
                 <Text style={mbs.unitDayStatText}>
                   <Text style={{ fontWeight: '700' }}>{p.count}</Text> {p.label}
                 </Text>
