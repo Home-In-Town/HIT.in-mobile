@@ -1609,6 +1609,14 @@ export interface GroupRoom {
       galleryImages?: Array<{ url: string }>;
       brochurePdf?: { url: string };
       layoutImage?: { url: string };
+      /**
+       * Always was on the wire — ROOM_PROJECT_FIELDS selects the whole `media`
+       * subdocument and transformGroupRoom spreads `{ ...raw.project }` — this
+       * type simply omitted it, so the property drawer could not read the
+       * project's videos without an `as any`. Type-only addition, no runtime
+       * change.
+       */
+      videos?: Array<{ url: string }>;
     };
     /**
      * `isVerified` was always on the wire — ROOM_PROJECT_POPULATE in

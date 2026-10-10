@@ -1533,6 +1533,19 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   // Property drawer (bottom sheet) for project rooms — replaces the blue banner
   // that was removed. Opened by the ⋮ button in the thread header.
   const [propertyDrawerVisible, setPropertyDrawerVisible] = useState(false);
+  /**
+   * The FULL project behind the open drawer, fetched on open.
+   *
+   * Why a fetch at all, when activeRoom.project exists: `units` is NOT in the
+   * server's ROOM_PROJECT_FIELDS, so `activeRoom.project.units` is always
+   * undefined — the old drawer's `…?.units && …length > 0` guard could never
+   * pass even with its layout fixed, which is why it never showed a unit grid.
+   * The Details fields are also shaped differently: nested under
+   * `configuration` / `pricing` on the room projection, but FLAT on
+   * transformProject's output.
+   */
+  const [drawerProject, setDrawerProject] = useState<Project | null>(null);
+  const [drawerLoading, setDrawerLoading] = useState(false);
   
   // Unit update daily summary state — tracks which dates are expanded to show
   // individual unit pills. Without this, unit_update messages flood the chat.
@@ -1890,10 +1903,42 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     return unsub;
   }, [socket.onGroupAvatarUpdated, socket.ready, applyRoomAvatar]);
 
+  // activeProjectId() is a plain function and cannot go in a dep array, hence
+  // this memo — it is the id the drawer fetches and the key both effects watch.
+  const drawerProjectId = useMemo(
+    () => String((activeRoom?.project as any)?.id || (activeRoom?.project as any)?._id || ''),
+    [activeRoom?.project]
+  );
+
+  // Clearing on a room switch is NOT cosmetic: without it the drawer's first
+  // frame for room B renders room A's units, videos and brochure, because the
+  // header comes from activeRoom.project instantly while the assets come from
+  // the previously fetched project.
+  useEffect(() => { setDrawerProject(null); }, [drawerProjectId]);
+
+  // Fetch the full project when the drawer opens. getById is REUSED on purpose:
+  // it already has a short-TTL cache plus in-flight dedupe, so repeated opens
+  // cost nothing and no second fetch path is introduced. The catch is SILENT —
+  // an error toast over a sheet that still shows name / locality / price is
+  // noise, and it matches handlePropertyViewDetails' own silent catch. A failure
+  // is not retried while the drawer stays open; closing and reopening retries,
+  // and the cache makes a successful retry cheap.
+  useEffect(() => {
+    if (!propertyDrawerVisible || !drawerProjectId) return;
+    let alive = true;
+    setDrawerLoading(true);
+    projectsApiExtended.getById(drawerProjectId)
+      .then(p => { if (alive) setDrawerProject(p); })
+      .catch(() => {})
+      .finally(() => { if (alive) setDrawerLoading(false); });
+    return () => { alive = false; };
+  }, [propertyDrawerVisible, drawerProjectId]);
+
   // Live unit-grid updates. Someone else marked a unit (or regenerated the
   // grid) in a room this user has open: patch the open detail sheet if it shows
-  // that project, refresh the builder card's counts, and drop the project cache
-  // so the next sheet open does not serve the old grid for up to 60 s.
+  // that project, patch the open property drawer too, refresh the builder card's
+  // counts, and drop the project cache so the next sheet open does not serve the
+  // old grid for up to 60 s.
   useEffect(() => {
     const unsub = socket.onProjectUnitsUpdated(({ projectId, unit, units, counts }) => {
       const pid = String(projectId || '');
@@ -1907,6 +1952,20 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
           return { ...vp, units: (vp.units || []).map((u: ProjectUnit) => (u._id === id ? { ...u, ...unit, _id: id } : u)) };
         }
         return vp;
+      });
+      // Same patch for the property drawer's read-only grid. This is the ONLY
+      // write path the drawer has: without it a member with the drawer open
+      // while someone else marks a flat keeps seeing a stale grid until they
+      // close and reopen. transformUnit stringifies `_id`, so comparing ids this
+      // way is consistent on both the fetched and the socket path.
+      setDrawerProject((dp) => {
+        if (!dp || String(dp.id || (dp as any)._id) !== pid) return dp;
+        if (Array.isArray(units)) return { ...dp, units: units.map((u: any) => ({ ...u, _id: String(u._id) })) };
+        if (unit?._id) {
+          const id = String(unit._id);
+          return { ...dp, units: (dp.units || []).map((u: ProjectUnit) => (u._id === id ? { ...u, ...unit, _id: id } : u)) };
+        }
+        return dp;
       });
       if (counts) {
         setBuilderProjects(prev => prev.map(p => (p.id === pid ? { ...p, unitCounts: counts } : p)));
@@ -3895,16 +3954,27 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     return slug ? `https://homeintown.in/visit/${slug}` : 'https://homeintown.in';
   };
 
-  /** Resolve a tracked share URL, with a stable public project URL fallback. */
-  const resolveShareUrl = async (type: 'link' | 'pdf' | 'qr') => {
+  /**
+   * Resolve a tracked share URL, with a stable public project URL fallback.
+   *
+   * Narrowed from `'link' | 'pdf' | 'qr'`: the 'pdf' arm existed only for
+   * handleDownloadPdf's fallback, and that fallback was harmful —
+   * shareApi.generateToken returns an HTML `/s/<token>` LANDING PAGE for every
+   * type, so it handed a web page to a PDF download. With 'pdf' gone the
+   * `if (type === 'link' || type === 'qr')` test in the catch is always true, so
+   * it collapses to a plain return and the unreachable
+   * `throw new Error('No PDF brochure available…')` after it is deleted
+   * (design review #4). The only callers are handleShareLink and
+   * handleDownloadQr.
+   */
+  const resolveShareUrl = async (type: 'link' | 'qr') => {
     const pid = activeProjectId();
     if (!pid) throw new Error('No project linked to this group');
     try {
       const result = await shareApi.generateToken(pid, type);
       return result.shareUrl || plainProjectUrl();
     } catch {
-      if (type === 'link' || type === 'qr') return plainProjectUrl();
-      throw new Error('No PDF brochure available for this project');
+      return plainProjectUrl();
     }
   };
 
@@ -3928,17 +3998,31 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     }
   };
 
-  /** Download the real brochure/token PDF and hand the file to the OS. */
-  const handleDownloadPdf = async () => {
+  /**
+   * Download the real brochure PDF and hand the file to the OS.
+   *
+   * Takes the already-resolved URL now, so the drawer can pass the FRESH
+   * brochure it fetched instead of this handler re-deriving a stale one from the
+   * room projection. Callers must pass it explicitly —
+   * `onPress={() => handleDownloadPdf(dBrochure)}`, never
+   * `onPress={handleDownloadPdf}`, which would hand the press EVENT in as the
+   * URL.
+   *
+   * The `|| await resolveShareUrl('pdf')` fallback that used to sit here is
+   * gone: generateToken returns an HTML landing page for every share type, so
+   * when there was no brochure this downloaded HTML, got `status === 200` (the
+   * guard below never fired) and saved it as application/pdf — a corrupt file
+   * handed to the OS viewer. No brochure now means a clear toast.
+   */
+  const handleDownloadPdf = async (explicitUrl?: string) => {
     const pid = activeProjectId();
     if (!pid) { toast.show('No project linked to this group', 'error'); return; }
 
+    const url = explicitUrl || oneUrl(activeProject().media?.brochurePdf);
+    if (!url) { toast.show('No brochure uploaded for this property', 'error'); return; }
+
     toast.show('Downloading PDF…', 'info');
     try {
-      const p = activeProject();
-      const rawBrochure = p.media?.brochurePdf;
-      const brochureUrl = typeof rawBrochure === 'string' ? rawBrochure : rawBrochure?.url;
-      const url = brochureUrl || await resolveShareUrl('pdf');
       const target = `${FileSystem.cacheDirectory}${safeProjectFileName('Brochure.pdf')}`;
       const result = await FileSystem.downloadAsync(url, target);
       if (result.status !== 200) throw new Error('PDF download failed');
@@ -3954,6 +4038,27 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
       }
     } catch (e: any) {
       toast.show(e?.message || 'Failed to download PDF', 'error');
+    }
+  };
+
+  /**
+   * Share the project's video links.
+   *
+   * Videos are external / R2 URLs, not local files — there is nothing to
+   * download and hand to the OS the way the brochure and the gallery zip are, so
+   * "share videos" means sharing the links. Modelled on handleShareLink,
+   * including the Clipboard fallback, so the row never dead-ends when the OS
+   * share sheet cannot be shown.
+   */
+  const handleShareVideos = async (urls: string[]) => {
+    if (!urls.length) { toast.show('No videos uploaded for this property', 'error'); return; }
+    const name = activeProject().projectName || activeRoom?.name || 'this property';
+    const body = urls.length === 1 ? urls[0] : `${name}\n${urls.join('\n')}`;
+    try {
+      await Share.share({ message: body, url: urls[0] });
+    } catch {
+      await Clipboard.setStringAsync(urls.join('\n'));
+      toast.show('Video links copied', 'success');
     }
   };
 
@@ -4444,8 +4549,35 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     return [memberText, projectText, joined, context].filter(Boolean).join(' · ');
   })();
   // Share link / PDF / QR / Gallery all act on the linked project, so they are
-  // only offered when the group actually has one (area groups do not).
+  // only offered when the group actually has one (area groups do not). This is
+  // also exactly the guard the drawer's Share Property Link / Share QR Code rows
+  // need, which is why it survived the deletion of the dropdown that used to be
+  // its only consumer.
   const hasProjectMedia = !!(proj?.slug || proj?.id || proj?._id);
+
+  // ── Drawer asset accessors — ONE rule for every asset ──────────────────────
+  //
+  // `drawerProject` is the only source once it has loaded; `proj` (the room
+  // projection) is read only while it is still null, so the drawer has something
+  // to show on its first frame.
+  //
+  // Per-field `??` mixing would be WRONG, not just untidy: transformProject
+  // returns `[]` for a missing gallery/videos and `null` for a missing brochure,
+  // so `fresh ?? stale` would fall back to the stale room projection exactly when
+  // fresh data says the asset was DELETED — rendering the row and handing a dead
+  // URL to FileSystem.downloadAsync.
+  //
+  // The two sources are also shaped differently: `drawerProject` has been through
+  // transformProject (flat `galleryImages` / `videos` / `units`, brochure renamed
+  // to `brochureUrl`, and stored as an object rather than a string — hence
+  // `oneUrl`), while `proj` is the raw room projection (`media.galleryImages` /
+  // `media.videos` / `media.brochurePdf`). `dUnits` never reads `proj` at all,
+  // because `units` is not in ROOM_PROJECT_FIELDS.
+  const dSrc = drawerProject;
+  const dGallery  = dSrc ? mediaUrls(dSrc.galleryImages) : mediaUrls(proj?.media?.galleryImages);
+  const dVideos   = dSrc ? mediaUrls(dSrc.videos)        : mediaUrls(proj?.media?.videos);
+  const dBrochure = dSrc ? oneUrl(dSrc.brochureUrl)      : oneUrl(proj?.media?.brochurePdf);
+  const dUnits    = dSrc?.units ?? [];
   // Group info exists for every real group. Area rooms are included because
   // Exit Group moved into this sheet — leaving them out would strand area members
   // with no way to leave, since their 3-dot no longer carries it.
@@ -5593,7 +5725,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
               <View style={pd.drawerSection}>
                 <Text style={pd.drawerSectionTitle}>Actions</Text>
                 
-                <Pressable style={pd.drawerActionRow} onPress={handleDownloadPdf}>
+                <Pressable style={pd.drawerActionRow} onPress={() => handleDownloadPdf(dBrochure)}>
                   <FileText size={20} color={colors.brand} />
                   <Text style={pd.drawerActionLabel}>Share PDF</Text>
                   <ChevronLeft 
