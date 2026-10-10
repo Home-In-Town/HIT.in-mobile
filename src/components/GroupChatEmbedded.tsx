@@ -3830,6 +3830,23 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     }
   }, [toast, activeRoom?.id, canManageRoomAvatar, applyRoomAvatar]);
 
+  // One pass over the thread per `messages` change, keyed on the id of each
+  // local day's FIRST unit_update. The group objects live inside the memo and
+  // are reused until `messages` changes, so no fresh object or array identity is
+  // ever handed to a memoised bubble — the exact mistake this file already
+  // documents for the toast context.
+  //
+  // Accepted scope (design review #9): the loaded 50-message page is the only
+  // input, so a day group describes that window, not the room's full history.
+  // A thread left open across local midnight also keeps yesterday's label until
+  // `messages` changes — accepted, because the alternative is a timer-driven
+  // re-render per bubble for a cosmetic word.
+  const unitDayGroups = useMemo(() => buildUnitDayGroups(messages, new Date()), [messages]);
+  const unitDayKeyOf = useCallback(
+    (m: GroupMessage) => unitDayGroups.get(m.id)?.dateKey || '',
+    [unitDayGroups]
+  );
+
   // Stable renderItem so the memoised MessageBubble can actually bail out.
   // Previously this was an inline arrow with a fresh onInterested on every
   // render, which defeated memoisation entirely.
@@ -3847,12 +3864,22 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
         canModerate={canUploadMedia}
         projectId={(activeRoom?.project as any)?.id || (activeRoom?.project as any)?._id || ''}
         highlighted={msg.id === highlightedMessageId}
-        messages={messages}
-        expandedUnitDates={expandedUnitDates}
+        // The whole `messages` array and the `expandedUnitDates` Set used to be
+        // passed down here. Both were wrong: the array made every bubble do an
+        // O(n) filter to find its day-mates (O(n²) per render pass), and the Set
+        // gets a NEW identity on every toggle, so one pill tap changed a prop on
+        // every bubble in the thread and React.memo could not stop any of them
+        // re-rendering. Each bubble now gets only its own group and its own
+        // boolean, both derived from one memo in this component.
+        unitDay={msg.messageType === 'unit_update' ? unitDayGroups.get(msg.id) : undefined}
+        unitDayExpanded={expandedUnitDates.has(unitDayKeyOf(msg))}
         setExpandedUnitDates={setExpandedUnitDates}
       />
     ),
-    [user?.id, handleInterested, handlePropertyViewDetails, handlePropertyCall, handleJoinPropertyGroup, handlePreviewMatch, handleDeleteMessage, canUploadMedia, activeRoom?.project, highlightedMessageId, messages, expandedUnitDates, setExpandedUnitDates]
+    // `expandedUnitDates` stays in the deps — the boolean above would otherwise
+    // go stale. That recreates renderMessage on a toggle, but every bubble's own
+    // props still compare equal, so the memo keeps blocking their re-renders.
+    [user?.id, handleInterested, handlePropertyViewDetails, handlePropertyCall, handleJoinPropertyGroup, handlePreviewMatch, handleDeleteMessage, canUploadMedia, activeRoom?.project, highlightedMessageId, unitDayGroups, unitDayKeyOf, expandedUnitDates, setExpandedUnitDates]
   );
 
   // ── Project media menu ──
@@ -6281,7 +6308,7 @@ const GroupMatchCard = React.memo(function GroupMatchCard({
 // GroupChatEmbedded) re-rendered every visible bubble in the thread.
 const MessageBubble = React.memo(function MessageBubble({ 
   msg, meId, onInterested, onPropertyViewDetails, onPropertyCall, onJoinPropertyGroup, onPreviewMatch, onDeleteMessage, canModerate, projectId, highlighted,
-  messages, expandedUnitDates, setExpandedUnitDates
+  unitDay, unitDayExpanded, setExpandedUnitDates
 }: {
   msg: GroupMessage; 
   meId: string; 
@@ -6295,11 +6322,15 @@ const MessageBubble = React.memo(function MessageBubble({
   canModerate: boolean;
   projectId: string;
   highlighted: boolean;
-  /** All messages in the thread - needed for unit_update daily grouping */
-  messages: GroupMessage[];
-  /** Which unit_update dates are expanded */
-  expandedUnitDates: Set<string>;
-  /** Toggle a date's expanded state */
+  /**
+   * This message's day group, present ONLY on the first unit_update of a local
+   * day; every later one gets undefined and renders nothing. Built once by the
+   * parent (buildUnitDayGroups), never derived here — see the parent's memo.
+   */
+  unitDay?: UnitDayGroup;
+  /** Whether this bubble's own day is expanded. A boolean, not the whole Set. */
+  unitDayExpanded: boolean;
+  /** Toggle a date's expanded state (a useState setter, so already stable). */
   setExpandedUnitDates: React.Dispatch<React.SetStateAction<Set<string>>>;
 }) {
   // Toast context moved inside MessageBubble to avoid breaking memo on every
@@ -6320,66 +6351,27 @@ const MessageBubble = React.memo(function MessageBubble({
 
   // Unit status auto-message (server posts it on every PATCH that changes a
   // status). Without this branch it fell through to a plain text bubble that
-  // Unit update pills — grouped by date into daily summaries.
-  // Previous behavior: each unit_update message rendered its own pill, so 20 updates
-  // = 20 pills flooding the chat with "A101 · Booked", "A102 · Vacant", etc.
-  // Why it was wrong: took massive vertical space, hard to scan, users complained.
-  // New behavior: one summary pill per day showing "Aaj: 3 Booked · 2 Vacant · 1 Hold",
-  // tap to expand full list. This implementation collects all unit_update messages,
-  // groups them by date, and renders only the FIRST message of each date as a
-  // summary pill (others return null).
+  // One compact summary pill per local day of unit updates, tap to expand.
+  //
+  // Previous behaviour, in two layers of wrong:
+  //  1. Before the summaries, EVERY unit_update drew its own pill — 20 updates
+  //     meant 20 pills ("A101 · Booked", "A102 · Vacant", …) flooding the thread.
+  //  2. The first summary attempt then computed the grouping HERE: each bubble
+  //     filtered the whole `messages` array to find its day-mates and to decide
+  //     whether it was that day's first. That is O(n²) over the thread, redone on
+  //     every render of every memoised bubble, so one composer keystroke re-ran
+  //     the lot. It also keyed on UTC dates — see localDateKey.
+  // The grouping now arrives as a prop from one memo in the parent.
+  //
+  // The `&& msg.unitUpdate` conjunct stays (design review #3): a malformed
+  // unit_update with no payload must keep falling through to a plain text bubble
+  // rather than being swallowed here.
   if (msg.messageType === 'unit_update' && msg.unitUpdate) {
-    const uu = msg.unitUpdate;
-    
-    // Group key: YYYY-MM-DD in local timezone
-    const msgDate = new Date(msg.createdAt);
-    const dateKey = msgDate.toISOString().split('T')[0];
-    
-    // Gather ALL unit_update messages for this date from the messages array
-    const todayUpdates = messages.filter(m => {
-      if (m.messageType !== 'unit_update' || !m.unitUpdate) return false;
-      const mDate = new Date(m.createdAt).toISOString().split('T')[0];
-      return mDate === dateKey;
-    });
-    
-    // Check if THIS message is the first one for this date
-    const isFirst = todayUpdates[0]?.id === msg.id;
-    
-    // If not the first, render nothing (it's included in the summary above)
-    if (!isFirst) {
-      return null;
-    }
-    
-    // Count by status
-    const counts: Record<string, number> = {};
-    todayUpdates.forEach(m => {
-      const status = m.unitUpdate!.toStatus;
-      counts[status] = (counts[status] || 0) + 1;
-    });
-    
-    // Format date label: "Aaj" for today, "Kal" for yesterday, otherwise "DD MMM"
-    const now = new Date();
-    const today = now.toISOString().split('T')[0];
-    const yesterday = new Date(now.getTime() - 86400000).toISOString().split('T')[0];
-    let dateLabel = dateKey;
-    if (dateKey === today) dateLabel = 'Aaj';
-    else if (dateKey === yesterday) dateLabel = 'Kal';
-    else {
-      const d = new Date(dateKey);
-      dateLabel = `${d.getDate()} ${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getMonth()]}`;
-    }
-    
-    // Build summary text: "3 Booked · 2 Vacant · 1 Hold"
-    const parts: { label: string; color: string; count: number }[] = [];
-    (['booked', 'available', 'sold', 'on-hold'] as UnitStatus[]).forEach(st => {
-      if (counts[st]) {
-        const meta = statusMeta(st);
-        parts.push({ label: meta.label, color: meta.color, count: counts[st] });
-      }
-    });
-    
-    const isExpanded = expandedUnitDates.has(dateKey);
-    
+    // No group means this is not the day's first update; it is already counted in
+    // that day's pill. Same visible result as the old `isFirst` check, without
+    // the scan.
+    if (!unitDay) return null;
+
     return (
       <View style={mbs.unitDaySummary}>
         {/* Summary pill */}
@@ -6387,19 +6379,19 @@ const MessageBubble = React.memo(function MessageBubble({
           onPress={() => {
             setExpandedUnitDates(prev => {
               const next = new Set(prev);
-              if (next.has(dateKey)) next.delete(dateKey);
-              else next.add(dateKey);
+              if (next.has(unitDay.dateKey)) next.delete(unitDay.dateKey);
+              else next.add(unitDay.dateKey);
               return next;
             });
           }}
           style={mbs.unitDayPill}
           accessibilityRole="button"
-          accessibilityLabel={`Unit updates for ${dateLabel}. Tap to ${isExpanded ? 'collapse' : 'expand'}`}
+          accessibilityLabel={`Unit updates for ${unitDay.dateLabel}. Tap to ${unitDayExpanded ? 'collapse' : 'expand'}`}
         >
-          <Text style={mbs.unitDayLabel}>{dateLabel}:</Text>
+          <Text style={mbs.unitDayLabel}>{unitDay.dateLabel}:</Text>
           <View style={mbs.unitDayStats}>
-            {parts.map((p, i) => (
-              <View key={i} style={{ flexDirection: 'row', alignItems: 'center', marginRight: 8 }}>
+            {unitDay.segments.map(p => (
+              <View key={p.key} style={mbs.unitDaySeg}>
                 <View style={[mbs.unitDot, { backgroundColor: p.color, marginRight: 4 }]} />
                 <Text style={mbs.unitDayStatText}>
                   <Text style={{ fontWeight: '700' }}>{p.count}</Text> {p.label}
@@ -6407,15 +6399,20 @@ const MessageBubble = React.memo(function MessageBubble({
               </View>
             ))}
           </View>
-          {isExpanded ? <ChevronUp size={16} color={colors.muted} /> : <ChevronDown size={16} color={colors.muted} />}
+          {/* marginLeft here, not a `gap` on the pill — see mbs.unitDayPill. */}
+          {unitDayExpanded
+            ? <ChevronUp size={16} color={colors.muted} style={{ marginLeft: 6 }} />
+            : <ChevronDown size={16} color={colors.muted} style={{ marginLeft: 6 }} />}
         </Pressable>
         
         {/* Expanded list */}
-        {isExpanded && (
+        {unitDayExpanded && (
           <View style={mbs.unitDayExpanded}>
-            {todayUpdates.map((m, i) => {
+            {unitDay.items.map((m, i) => {
               const u = m.unitUpdate!;
-              const meta = statusMeta(u.toStatus);
+              // unitStatusMeta, not statusMeta: an unknown status key must show
+              // its own name, not be relabelled "Vacant" (design review #8).
+              const meta = unitStatusMeta(u.toStatus);
               return (
                 <Pressable
                   key={`${m.id}-${i}`}
@@ -7488,10 +7485,26 @@ const mbs = StyleSheet.create({
   deleteHint: { fontSize: 8, color: colors.muted, textAlign: 'center', marginTop: 3, marginBottom: 1 },
   fileRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 2 },
   fileName: { fontSize: 12.5, fontWeight: '600', maxWidth: 180 },
-  // Unit update daily summary pills — groups unit_update messages by date.
-  // Previous behavior: each unit_update was its own pill (20 updates = 20 pills).
-  // Why it was wrong: flooded the chat, hard to scan, users complained.
-  // New behavior: one collapsible summary per day ("Aaj: 3 Booked · 2 Vacant").
+  // Unit update daily summary pills — one collapsible pill per local day
+  // ("Aaj: 3 Booked · 2 Vacant"), replacing one pill per unit_update message.
+  //
+  // DEFECT FIX, and the reason the counts text was INVISIBLE: `unitDayStats` had
+  // `flex: 1`. In Yoga `flex: 1` implies `flexBasis: 0%`, and this row sits
+  // inside the auto-width `unitDayPill`, under the width-`auto` `unitDaySummary`
+  // — a content-sized subtree with no free space to distribute. So the row was
+  // laid out at WIDTH 0: the text collapsed to nothing (hence no "3 Booked ·
+  // 2 Vacant" on screen) while the fixed-size `unitDot`s kept painting and spilled
+  // outside the pill. It is now content-sized with `flexShrink: 1`.
+  //
+  // Every `gap` in this subtree is also gone, replaced by explicit margins: `gap`
+  // has produced exactly this class of layout bug on this RN version, twice in
+  // this file.
+  //
+  // Compacted per the user's "chhota karo": smaller padding and radius, one step
+  // down in font size, and no elevation — a drop shadow on a wrapping row is part
+  // of what made it read as a floating box rather than a chat pill. Palette is
+  // unchanged: white pill on colors.line, with status colour carried only by the
+  // dots.
   unitDaySummary: { 
     alignSelf: 'center', 
     maxWidth: '90%', 
@@ -7500,38 +7513,39 @@ const mbs = StyleSheet.create({
   unitDayPill: { 
     flexDirection: 'row', 
     alignItems: 'center', 
-    gap: 10, 
-    paddingHorizontal: 14, 
-    paddingVertical: 10, 
+    paddingHorizontal: 10, 
+    paddingVertical: 6, 
     backgroundColor: colors.white, 
     borderWidth: 1, 
     borderColor: colors.line, 
-    borderRadius: 16,
-    shadowColor: '#000',
-    shadowOpacity: 0.06,
-    shadowRadius: 4,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 2,
+    borderRadius: 14,
   },
   unitDayLabel: { 
-    fontSize: 12, 
+    fontSize: 11, 
     fontWeight: '800', 
-    color: colors.ink 
+    color: colors.ink,
+    marginRight: 6,
   },
   unitDayStats: { 
-    flex: 1, 
     flexDirection: 'row', 
     flexWrap: 'wrap', 
     alignItems: 'center', 
-    gap: 10 
+    flexShrink: 1,
+  },
+  unitDaySeg: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginRight: 8,
+    marginVertical: 1,
   },
   unitDayStatText: { 
-    fontSize: 11, 
+    // Lets a long segment wrap instead of pushing the chevron out of the pill.
+    flexShrink: 1,
+    fontSize: 10.5, 
     color: colors.muted2 
   },
   unitDayExpanded: { 
     marginTop: 6, 
-    gap: 4, 
     paddingLeft: 8 
   },
   unitExpandedItem: { 
@@ -7541,7 +7555,10 @@ const mbs = StyleSheet.create({
     paddingHorizontal: 12, 
     paddingVertical: 8, 
     backgroundColor: colors.cream, 
-    borderRadius: 12 
+    borderRadius: 12,
+    // Was `gap: 4` on the parent `unitDayExpanded`; moved here as a margin for
+    // the same reason the pill dropped its gaps.
+    marginBottom: 4,
   },
   unitExpandedText: { 
     flex: 1, 
