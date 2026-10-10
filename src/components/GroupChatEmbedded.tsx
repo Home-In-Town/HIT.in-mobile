@@ -1311,7 +1311,10 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   // Thread UI state
   const [postMode, setPostMode] = useState<PostMode>('text');
   const [text, setText] = useState('');
-  const [showRoomMenu, setShowRoomMenu] = useState(false);
+  // `showRoomMenu` used to live here. It drove the project-room dropdown that
+  // hung off the blue banner's ⋮; the banner is gone, nothing set it to true any
+  // more, and its menu was deleted as dead code. The property drawer below
+  // (propertyDrawerVisible) is its replacement.
   // QR export is rendered off-screen just long enough for react-native-qrcode-svg
   // to produce a PNG. This avoids opening the generic Share bottom sheet when
   // the user explicitly chose "Download QR" from the project menu.
@@ -1787,10 +1790,10 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
       setMyRooms(prev => prev.filter(r => r.id !== activeRoom.id));
       setActiveRoom(null);
       setMessages([]);
-      setShowRoomMenu(false);
-      // Group info has to close too. It only cleared showRoomMenu before, so the
-      // sheet unmounted with the thread while its flag stayed true — and then
-      // re-mounted already visible over the next room the user opened.
+      // Group info has to close explicitly. This path used to close only the
+      // (now deleted) room dropdown, so the sheet unmounted with the thread
+      // while its visible flag stayed true — and then re-mounted already open
+      // over the next room the user entered.
       setShowGroupInfo(false);
       toast.show(data.message || 'This group was deleted', 'info');
     });
@@ -1978,7 +1981,6 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const closeRoom = () => {
     if (activeRoom) socket.leaveGroup(activeRoom.id);
     setActiveRoom(null);
-    setShowRoomMenu(false);
     // Group info describes the room being left — leaving it open over the room
     // list would show a sheet whose Exit/Delete actions no longer have a target.
     setShowGroupInfo(false);
@@ -3751,7 +3753,6 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
    * does NOT use the share sheet — that was a separate bug.)
    */
   const handleShareLink = async () => {
-    setShowRoomMenu(false);
     try {
       const url = await resolveShareUrl('link');
       const name = activeProject().projectName || activeRoom?.name || 'this property';
@@ -3768,7 +3769,6 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
 
   /** Download the real brochure/token PDF and hand the file to the OS. */
   const handleDownloadPdf = async () => {
-    setShowRoomMenu(false);
     const pid = activeProjectId();
     if (!pid) { toast.show('No project linked to this group', 'error'); return; }
 
@@ -3798,7 +3798,6 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
 
   /** Generate a QR token and render it off-screen for PNG export. */
   const handleDownloadQr = async () => {
-    setShowRoomMenu(false);
     if (!activeProjectId()) { toast.show('No project linked to this group', 'error'); return; }
     toast.show('Generating QR…', 'info');
     try {
@@ -3856,7 +3855,6 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   }, [qrExport, toast]);
 
   const handleDownloadGallery = async () => {
-    setShowRoomMenu(false);
     const pid = (activeRoom?.project as any)?.id || (activeRoom?.project as any)?._id;
     if (!pid) { toast.show('No project linked to this group', 'error'); return; }
     toast.show('Downloading gallery…', 'info');
@@ -3888,7 +3886,6 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const canLeave = !!activeRoom && !activeRoom.isUniversal && !isGroupOwner && activeRoom.canLeave !== false;
 
   const handleLeave = () => {
-    setShowRoomMenu(false);
     // Both actions are now reached from group info, so that sheet has to come
     // down before the confirm alert — otherwise the alert sits behind the modal.
     setShowGroupInfo(false);
@@ -3909,7 +3906,6 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   };
 
   const handleDelete = () => {
-    setShowRoomMenu(false);
     setShowGroupInfo(false);
     if (!activeRoom) return;
     Alert.alert('Delete group?', `This will close "${roomDisplayName(activeRoom)}" for everyone.`, [
@@ -4395,13 +4391,13 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
           </View>
         )}
 
-        {/* Property room three-dot menu — opens the property drawer.
-            Previous behavior: button only showed as fallback when proj was undefined,
-            and when proj existed the button was in the blue banner below.
-            Why it was wrong: after removing the blue banner (user requirement), project
-            rooms had no consistent way to access property details.
-            Now shows for ALL project rooms, opening the new property drawer with details,
-            unit grid, and action buttons. */}
+        {/* The ONE and ONLY entry point to the property drawer, for every project
+            room. Previous behaviour: this ⋮ rendered only as a fallback for when
+            `proj` was undefined, because when `proj` existed the real ⋮ sat in
+            the blue banner below. Why that was wrong: the banner is gone (user
+            requirement), so in the common case — a project room whose project IS
+            populated — there was no ⋮ at all and the property details were
+            unreachable. It is now unconditional for roomType 'project'. */}
         {activeRoom.roomType === 'project' && (
           <Pressable 
             onPress={() => setPropertyDrawerVisible(true)} 
@@ -4425,8 +4421,10 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
             moved into the group-info sheet, and the only items left (Share link /
             PDF / QR / Gallery) all act on a linked project, which builder and area
             rooms do not have — so the button could only ever open an empty sheet.
-            Project rooms still reach those items from the dots on the blue banner
-            below, which drive the same showRoomMenu state. */}
+            For project rooms those items moved into the property drawer, which the
+            ⋮ above opens. (That sentence used to point at "the dots on the blue
+            banner below, which drive the same showRoomMenu state" — both the
+            banner and that state are gone.) */}
 
         {/* AI 3-dot dropdown (End Chat / Exit Chat) */}
         {aiActive && showAiMenu && (
@@ -4584,53 +4582,19 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
         </View>
       )}
 
-      {/* Tap-catcher to close the menu */}
-      {showRoomMenu && (
-        <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowRoomMenu(false)} />
-      )}
-
-      {/* Property room menu dropdown — positioned near the banner's ⋮ button or
-          header's fallback button. Rendered outside both so it can float on top. */}
-      {showRoomMenu && (
-        <View style={[s.menu, { top: proj ? 150 : 52 }]}>
-          {/* View Property Details — opens the full property detail modal with
-              unit grid, gallery, etc. Only shown in property groups. Falls back
-              to scanning messages for a project ID when activeRoom.project is
-              undefined (backend didn't populate it). */}
-          {activeRoom.roomType === 'project' && (() => {
-            const projId = activeRoom.project?.id ||
-              messages.find(m => m.messageType === 'unit_update' && m.unitUpdate?.project)?.unitUpdate?.project;
-            if (!projId) return null;
-            return (
-              <Pressable
-                style={s.menuItem}
-                onPress={() => {
-                  setShowRoomMenu(false);
-                  handlePropertyViewDetails(projId);
-                }}
-              >
-                <Eye size={15} color={colors.muted2} /><Text style={s.menuText}>View Property Details</Text>
-              </Pressable>
-            );
-          })()}
-          {hasProjectMedia && (
-            <>
-              <Pressable style={s.menuItem} onPress={handleShareLink}>
-                <LinkIcon size={15} color={colors.muted2} /><Text style={s.menuText}>Share link</Text>
-              </Pressable>
-              <Pressable style={s.menuItem} onPress={handleDownloadPdf}>
-                <FileText size={15} color={colors.muted2} /><Text style={s.menuText}>Download PDF</Text>
-              </Pressable>
-              <Pressable style={s.menuItem} onPress={handleDownloadQr}>
-                <QrCode size={15} color={colors.muted2} /><Text style={s.menuText}>Download QR</Text>
-              </Pressable>
-              <Pressable style={s.menuItem} onPress={handleDownloadGallery}>
-                <ImageIcon size={15} color={colors.muted2} /><Text style={s.menuText}>Download Gallery</Text>
-              </Pressable>
-            </>
-          )}
-        </View>
-      )}
+      {/* The project-room dropdown that used to live here is GONE.
+          Previous behaviour: a `showRoomMenu` floating menu (View Property
+          Details / Share link / Download PDF / QR / Gallery) anchored at
+          `top: proj ? 150 : 52` — i.e. under the blue banner's ⋮.
+          Why it was wrong: the banner was removed, and with it the only caller
+          that ever set `showRoomMenu` to true. Every surviving reference in this
+          file was `setShowRoomMenu(false)`, so the menu was UNREACHABLE dead
+          code — it could not open, yet it still carried a second
+          handlePropertyViewDetails call site and a second handleDownloadPdf one,
+          which both had to be reasoned about on every change to those handlers.
+          All of its items now live in the property drawer, opened by the ⋮ in
+          the thread header. The AI dropdowns are a different state
+          (`showAiMenu`) and are untouched. */}
 
       {/* Messages — the group chat is ALWAYS the base view. */}
       {loadingMsgs ? <ActivityIndicator color={colors.brand} style={{ marginTop: 40 }} /> : (
@@ -5630,7 +5594,10 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
           fed fabricated demo rows. Join Group runs through
           handleJoinPropertyGroup, so it works from here exactly as it does in
           the chat — wrapped to dismiss this sheet first, see the call site. ── */}
-      {console.log('[MATCHING] Rendering modal, showMatching:', showMatching, 'matchingLoading:', matchingLoading, 'visibleMatches.length:', visibleMatches.length)}
+      {/* A bare `{console.log(...)}` debug child used to sit here. It returned
+          `void`, which is not a valid ReactNode, so it was the source of the
+          file's only TypeScript error (TS2769 reported on the enclosing
+          KeyboardAvoidingView) and it logged on every single render. */}
       <Modal visible={showMatching} transparent animationType="slide" onRequestClose={() => { console.log('[MATCHING] Modal onRequestClose'); setShowMatching(false); }}>
         <Pressable style={pd.overlay} onPress={() => { console.log('[MATCHING] Overlay tapped'); setShowMatching(false); }}>
           <Pressable style={pd.sheet} onPress={() => {}}>
@@ -6800,18 +6767,17 @@ const s = StyleSheet.create({
     letterSpacing: 0.2,
   },
 
+  // Still live: both AI dropdowns (End Chat / Exit Chat / Disappearing) use
+  // these three. The deleted project-room dropdown shared them, which is why
+  // they are NOT orphans despite that deletion.
   menu: { position: 'absolute', right: 8, top: 52, backgroundColor: colors.white, borderRadius: 12, borderWidth: 1, borderColor: colors.line, paddingVertical: 4, minWidth: 180, zIndex: 30, shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 8 },
   menuItem: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 11 },
   menuText: { fontSize: 12.5, fontWeight: '600', color: colors.muted2 },
-  banner: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: colors.blueBg, borderBottomWidth: 1, borderBottomColor: colors.blueBorder, paddingHorizontal: 14, paddingVertical: 10 },
-  bannerIcon: { width: 34, height: 34, borderRadius: 9, backgroundColor: colors.white, alignItems: 'center', justifyContent: 'center' },
-  bannerThumb: { width: 42, height: 42, borderRadius: 9, backgroundColor: colors.white },
-  bannerName: { fontSize: 12.5, fontWeight: '800', color: colors.blueText },
-  bannerMeta: { fontSize: 10, color: colors.blueText, marginTop: 1 },
-  bannerMenuBtn: {
-    width: 34, height: 34, borderRadius: 17,
-    alignItems: 'center', justifyContent: 'center',
-  },
+  // `banner`, `bannerIcon`, `bannerThumb`, `bannerName`, `bannerMeta` and
+  // `bannerMenuBtn` used to sit here. They styled the blue property banner under
+  // the thread header, which the user asked to be removed; the JSX went first and
+  // left six keys with no consumer anywhere in the file. The drawer (pd.drawer*)
+  // carries that information now.
   // Kept mounted but visually outside the viewport only while exporting a QR.
   // opacity:0 is not used because some native SVG renderers skip rasterisation
   // for fully transparent trees.
@@ -7173,9 +7139,11 @@ const cs = StyleSheet.create({
 
 const mbs = StyleSheet.create({
   system: { textAlign: 'center', fontSize: 10, color: colors.muted2, backgroundColor: colors.slateBg, alignSelf: 'center', paddingHorizontal: 12, paddingVertical: 5, borderRadius: 12, overflow: 'hidden' },
-  unitPill: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'center', maxWidth: '92%', backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line, borderRadius: 14, paddingHorizontal: 12, paddingVertical: 6 },
-  unitDot: { width: 10, height: 10, borderRadius: 2 },
-  unitPillText: { flexShrink: 1, fontSize: 12, color: colors.ink },
+  // `unitPill` / `unitPillText` used to sit here. They styled the ONE pill per
+  // unit_update message; those became one summary pill per day, which left both
+  // keys unused. `unitDot` stays — it is shared by the summary segments AND the
+  // expanded rows, so it must not be resized for one of them.
+  unitDot: { width: 10, height: 10, borderRadius: 5 },
   cardWrap: { width: '92%', maxWidth: 380, minWidth: 0 },
   card: { borderWidth: 1, borderRadius: 16, padding: 12, gap: 4 },
   cardTag: { fontSize: 10, fontWeight: '800' },
