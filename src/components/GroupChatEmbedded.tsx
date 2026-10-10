@@ -4384,6 +4384,17 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
           </View>
         )}
 
+        {/* Property room menu — fallback for when banner doesn't render (proj undefined).
+            Normally property rooms show the ⋮ button in the blue banner below, but if
+            activeRoom.project is missing from the backend response, the banner never
+            renders and the user has no way to access property details. This adds the
+            button to the header as a fallback. */}
+        {activeRoom.roomType === 'project' && !proj && (
+          <Pressable onPress={() => setShowRoomMenu(v => !v)} style={s.headerAiDots} hitSlop={8}>
+            <MoreVertical size={18} color={colors.ink} />
+          </Pressable>
+        )}
+
         {/* The temporary orange "📸 Test" button that opened the profile-picture
             sheet from here has been removed. It was debug scaffolding from when
             the save path was broken; the real entry point is the WhatsApp-style
@@ -4428,18 +4439,25 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
         {showRoomMenu && (
           <View style={s.menu}>
             {/* View Property Details — opens the full property detail modal with
-                unit grid, gallery, etc. Only shown in property groups. */}
-            {activeRoom.roomType === 'project' && activeRoom.project?.id && (
-              <Pressable
-                style={s.menuItem}
-                onPress={() => {
-                  setShowRoomMenu(false);
-                  if (activeRoom.project?.id) handlePropertyViewDetails(activeRoom.project.id);
-                }}
-              >
-                <Eye size={15} color={colors.muted2} /><Text style={s.menuText}>View Property Details</Text>
-              </Pressable>
-            )}
+                unit grid, gallery, etc. Only shown in property groups. Falls back
+                to scanning messages for a project ID when activeRoom.project is
+                undefined (backend didn't populate it). */}
+            {activeRoom.roomType === 'project' && (() => {
+              const projId = activeRoom.project?.id ||
+                messages.find(m => m.messageType === 'unit_update' && m.unitUpdate?.project)?.unitUpdate?.project;
+              if (!projId) return null;
+              return (
+                <Pressable
+                  style={s.menuItem}
+                  onPress={() => {
+                    setShowRoomMenu(false);
+                    handlePropertyViewDetails(projId);
+                  }}
+                >
+                  <Eye size={15} color={colors.muted2} /><Text style={s.menuText}>View Property Details</Text>
+                </Pressable>
+              );
+            })()}
             {hasProjectMedia && (
               <>
                 <Pressable style={s.menuItem} onPress={handleShareLink}>
