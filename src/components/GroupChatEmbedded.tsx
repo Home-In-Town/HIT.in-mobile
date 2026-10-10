@@ -1392,6 +1392,14 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const [groupMedia, setGroupMedia] = useState<{ media: GroupMedia[]; links: GroupLink[] } | null>(null);
   const [loadingGroupMedia, setLoadingGroupMedia] = useState(false);
   
+  // Property drawer (bottom sheet) for project rooms — replaces the blue banner
+  // that was removed. Opened by the ⋮ button in the thread header.
+  const [propertyDrawerVisible, setPropertyDrawerVisible] = useState(false);
+  
+  // Unit update daily summary state — tracks which dates are expanded to show
+  // individual unit pills. Without this, unit_update messages flood the chat.
+  const [expandedUnitDates, setExpandedUnitDates] = useState<Set<string>>(new Set());
+  
   // Profile picture upload modal states
   const [showProfilePicModal, setShowProfilePicModal] = useState(false);
   const [updatingProfilePic, setUpdatingProfilePic] = useState(false);
@@ -3703,9 +3711,12 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
         canModerate={canUploadMedia}
         projectId={(activeRoom?.project as any)?.id || (activeRoom?.project as any)?._id || ''}
         highlighted={msg.id === highlightedMessageId}
+        messages={messages}
+        expandedUnitDates={expandedUnitDates}
+        setExpandedUnitDates={setExpandedUnitDates}
       />
     ),
-    [user?.id, handleInterested, handlePropertyViewDetails, handlePropertyCall, handleJoinPropertyGroup, handlePreviewMatch, handleDeleteMessage, canUploadMedia, activeRoom?.project, highlightedMessageId]
+    [user?.id, handleInterested, handlePropertyViewDetails, handlePropertyCall, handleJoinPropertyGroup, handlePreviewMatch, handleDeleteMessage, canUploadMedia, activeRoom?.project, highlightedMessageId, messages, expandedUnitDates, setExpandedUnitDates]
   );
 
   // ── Project media menu ──
@@ -4384,13 +4395,21 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
           </View>
         )}
 
-        {/* Property room menu — fallback for when banner doesn't render (proj undefined).
-            Normally property rooms show the ⋮ button in the blue banner below, but if
-            activeRoom.project is missing from the backend response, the banner never
-            renders and the user has no way to access property details. This adds the
-            button to the header as a fallback. */}
-        {activeRoom.roomType === 'project' && !proj && (
-          <Pressable onPress={() => setShowRoomMenu(v => !v)} style={s.headerAiDots} hitSlop={8}>
+        {/* Property room three-dot menu — opens the property drawer.
+            Previous behavior: button only showed as fallback when proj was undefined,
+            and when proj existed the button was in the blue banner below.
+            Why it was wrong: after removing the blue banner (user requirement), project
+            rooms had no consistent way to access property details.
+            Now shows for ALL project rooms, opening the new property drawer with details,
+            unit grid, and action buttons. */}
+        {activeRoom.roomType === 'project' && (
+          <Pressable 
+            onPress={() => setPropertyDrawerVisible(true)} 
+            style={s.headerAiDots} 
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Property details and actions"
+          >
             <MoreVertical size={18} color={colors.ink} />
           </Pressable>
         )}
@@ -4475,54 +4494,13 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
         </>
       )}
 
-      {/* Property banner — the group's linked project, straight from the DB.
-          Shows the cover image plus every detail that exists on the project, so
-          the group always reflects the latest property data. */}
-      {proj && (
-        <View style={s.banner}>
-          {proj.media?.coverImage?.url ? (
-            <Image source={{ uri: proj.media.coverImage.url }} style={s.bannerThumb} />
-          ) : (
-            <View style={s.bannerIcon}><Building2 size={16} color={colors.blueText} /></View>
-          )}
-          <View style={{ flex: 1 }}>
-            <Text style={s.bannerName} numberOfLines={1}>{proj.projectName || activeRoom.name}</Text>
-
-            {!![proj.location, proj.city].filter(Boolean).length && (
-              <Text style={s.bannerMeta} numberOfLines={1}>
-                📍 {[proj.location, proj.city].filter(Boolean).join(', ')}
-              </Text>
-            )}
-
-            <Text style={s.bannerMeta} numberOfLines={1}>
-              {[
-                proj.pricing?.startingPrice ? `💰 ${fmtPrice(proj.pricing.startingPrice)}+` : '',
-                proj.configuration?.bhkOptions?.length ? `🏠 ${proj.configuration.bhkOptions.join('/')}` : '',
-                proj.configuration?.carpetAreaRange || proj.configuration?.plotSizeRange
-                  ? `📐 ${proj.configuration.carpetAreaRange || proj.configuration.plotSizeRange}` : '',
-              ].filter(Boolean).join('  ')}
-            </Text>
-
-            <Text style={s.bannerMeta} numberOfLines={1}>
-              {[
-                proj.propertyType || proj.category ? `🏷️ ${proj.propertyType || proj.category}` : '',
-                proj.projectStatus ? `🔄 ${proj.projectStatus}` : '',
-                proj.pricing?.bankLoanAvailable ? '🏦 Loan' : '',
-                proj.reraNumber || proj.reraApproved ? '📑 RERA' : '',
-              ].filter(Boolean).join('  ')}
-            </Text>
-          </View>
-          <Pressable
-            onPress={() => setShowRoomMenu(v => !v)}
-            style={s.bannerMenuBtn}
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel="Group options"
-          >
-            <MoreVertical size={18} color={colors.blueText} />
-          </Pressable>
-        </View>
-      )}
+      {/* Blue banner removed — user requirement: property details moved to drawer.
+          Previous behavior: showed property cover, name, location, price, BHK, area,
+          type, status, loan, RERA in a prominent blue banner below the thread header,
+          with a three-dot menu button for group actions.
+          Why it was wrong: took up significant vertical space, duplicated information
+          that is now organized in the property drawer, and the layout felt cluttered.
+          The drawer is more scalable and groups all property actions in one place. */}
 
       {/* ── Company group: that builder's properties ──
           A company group's purpose is to show what the builder has, so their
@@ -5414,6 +5392,165 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
         </Pressable>
       </Modal>
 
+      {/* ── Property Drawer (Bottom Sheet) ──
+          Replaces the removed blue banner. Shows property details, unit grid, and
+          action buttons. Opened by tapping the ⋮ button in project room headers. */}
+      <Modal 
+        visible={propertyDrawerVisible} 
+        transparent 
+        animationType="slide" 
+        onRequestClose={() => setPropertyDrawerVisible(false)}
+      >
+        <Pressable style={pd.drawerOverlay} onPress={() => setPropertyDrawerVisible(false)}>
+          <Pressable style={pd.drawerSheet} onPress={() => {}}>
+            {/* Header with close button */}
+            <View style={pd.drawerHeader}>
+              <Text style={pd.drawerTitle}>Property Details</Text>
+              <Pressable onPress={() => setPropertyDrawerVisible(false)} hitSlop={8}>
+                <X size={20} color={colors.ink} />
+              </Pressable>
+            </View>
+
+            <ScrollView 
+              style={pd.drawerScroll} 
+              contentContainerStyle={pd.drawerContent} 
+              showsVerticalScrollIndicator={false}
+            >
+              {/* Property header section */}
+              {proj && (
+                <View style={pd.drawerPropertyHeader}>
+                  {proj.media?.coverImage?.url ? (
+                    <Image 
+                      source={{ uri: proj.media.coverImage.url }} 
+                      style={pd.drawerThumb} 
+                      resizeMode="cover" 
+                    />
+                  ) : (
+                    <View style={pd.drawerIconBox}>
+                      <Building2 size={24} color={colors.brand} />
+                    </View>
+                  )}
+                  <View style={{ flex: 1 }}>
+                    <Text style={pd.drawerPropertyName} numberOfLines={2}>
+                      {proj.projectName || activeRoom.name}
+                    </Text>
+                    {!![proj.location, proj.city].filter(Boolean).length && (
+                      <Text style={pd.drawerPropertyMeta} numberOfLines={1}>
+                        📍 {[proj.location, proj.city].filter(Boolean).join(', ')}
+                      </Text>
+                    )}
+                    {proj.pricing?.startingPrice && (
+                      <Text style={pd.drawerPropertyPrice}>
+                        {fmtPrice(proj.pricing.startingPrice)}+
+                      </Text>
+                    )}
+                  </View>
+                </View>
+              )}
+
+              {/* Unit Availability Grid */}
+              {proj?.units && proj.units.length > 0 && (
+                <View style={pd.drawerSection}>
+                  <Text style={pd.drawerSectionTitle}>Unit Availability</Text>
+                  <UnitGrid
+                    units={proj.units}
+                    canEdit={false}
+                    onChangeStatus={async () => {}}
+                    busyUnitId={null}
+                  />
+                </View>
+              )}
+
+              {/* Action buttons section */}
+              <View style={pd.drawerSection}>
+                <Text style={pd.drawerSectionTitle}>Actions</Text>
+                
+                <Pressable style={pd.drawerActionRow} onPress={handleDownloadPdf}>
+                  <FileText size={20} color={colors.brand} />
+                  <Text style={pd.drawerActionLabel}>Share PDF</Text>
+                  <ChevronLeft 
+                    size={16} 
+                    color={colors.muted} 
+                    style={{ transform: [{ rotate: '180deg' }], marginLeft: 'auto' }} 
+                  />
+                </Pressable>
+
+                <Pressable style={pd.drawerActionRow} onPress={handleDownloadGallery}>
+                  <ImageIcon size={20} color={colors.brand} />
+                  <Text style={pd.drawerActionLabel}>Share Gallery</Text>
+                  <ChevronLeft 
+                    size={16} 
+                    color={colors.muted} 
+                    style={{ transform: [{ rotate: '180deg' }], marginLeft: 'auto' }} 
+                  />
+                </Pressable>
+
+                <Pressable style={pd.drawerActionRow} onPress={handleShareLink}>
+                  <LinkIcon size={20} color={colors.brand} />
+                  <Text style={pd.drawerActionLabel}>Share Property Link</Text>
+                  <ChevronLeft 
+                    size={16} 
+                    color={colors.muted} 
+                    style={{ transform: [{ rotate: '180deg' }], marginLeft: 'auto' }} 
+                  />
+                </Pressable>
+
+                <Pressable style={pd.drawerActionRow} onPress={handleDownloadQr}>
+                  <QrCode size={20} color={colors.brand} />
+                  <Text style={pd.drawerActionLabel}>Share QR Code</Text>
+                  <ChevronLeft 
+                    size={16} 
+                    color={colors.muted} 
+                    style={{ transform: [{ rotate: '180deg' }], marginLeft: 'auto' }} 
+                  />
+                </Pressable>
+
+                {/* Open in Map */}
+                <Pressable 
+                  style={pd.drawerActionRow}
+                  onPress={() => {
+                    const lat = proj?.latitude;
+                    const lng = proj?.longitude;
+                    const mapUrl = proj?.googleMapLink || (lat && lng ? `https://www.google.com/maps?q=${lat},${lng}` : null);
+                    if (mapUrl) {
+                      Linking.openURL(mapUrl).catch(() => toast.show('Could not open map', 'error'));
+                    } else {
+                      toast.show('No map location available', 'error');
+                    }
+                  }}
+                >
+                  <MapPin size={20} color={colors.brand} />
+                  <Text style={pd.drawerActionLabel}>Open in Map</Text>
+                  <ExternalLink size={16} color={colors.muted} style={{ marginLeft: 'auto' }} />
+                </Pressable>
+
+                {/* View Full Details - opens the existing handlePropertyViewDetails */}
+                <Pressable 
+                  style={pd.drawerActionRow}
+                  onPress={() => {
+                    const projectId = proj?.id || (activeRoom?.project as any)?.id || (activeRoom?.project as any)?._id;
+                    if (projectId) {
+                      setPropertyDrawerVisible(false);
+                      handlePropertyViewDetails(String(projectId));
+                    } else {
+                      toast.show('No project details available', 'error');
+                    }
+                  }}
+                >
+                  <Eye size={20} color={colors.brand} />
+                  <Text style={pd.drawerActionLabel}>View Full Details</Text>
+                  <ChevronLeft 
+                    size={16} 
+                    color={colors.muted} 
+                    style={{ transform: [{ rotate: '180deg' }], marginLeft: 'auto' }} 
+                  />
+                </Pressable>
+              </View>
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
       {/* Off-screen QR renderer used only by Download QR. It is deliberately
           not a modal, so choosing a specific menu action never opens the generic
           Share bottom sheet shown in the bug screenshot. */}
@@ -6034,7 +6171,8 @@ const GroupMatchCard = React.memo(function GroupMatchCard({
 // Memoised: without this, every keystroke in the composer (whose state lives in
 // GroupChatEmbedded) re-rendered every visible bubble in the thread.
 const MessageBubble = React.memo(function MessageBubble({ 
-  msg, meId, onInterested, onPropertyViewDetails, onPropertyCall, onJoinPropertyGroup, onPreviewMatch, onDeleteMessage, canModerate, projectId, highlighted 
+  msg, meId, onInterested, onPropertyViewDetails, onPropertyCall, onJoinPropertyGroup, onPreviewMatch, onDeleteMessage, canModerate, projectId, highlighted,
+  messages, expandedUnitDates, setExpandedUnitDates
 }: {
   msg: GroupMessage; 
   meId: string; 
@@ -6048,6 +6186,12 @@ const MessageBubble = React.memo(function MessageBubble({
   canModerate: boolean;
   projectId: string;
   highlighted: boolean;
+  /** All messages in the thread - needed for unit_update daily grouping */
+  messages: GroupMessage[];
+  /** Which unit_update dates are expanded */
+  expandedUnitDates: Set<string>;
+  /** Toggle a date's expanded state */
+  setExpandedUnitDates: React.Dispatch<React.SetStateAction<Set<string>>>;
 }) {
   // Toast context moved inside MessageBubble to avoid breaking memo on every
   // parent render. The ToastProvider returns { show, success, error } where
@@ -6063,27 +6207,122 @@ const MessageBubble = React.memo(function MessageBubble({
 
   // Unit status auto-message (server posts it on every PATCH that changes a
   // status). Without this branch it fell through to a plain text bubble that
-  // looked like the actor had typed it. Rendered as a centred pill coloured by
-  // the new status; tapping opens that property's detail sheet with the grid.
+  // Unit update pills — grouped by date into daily summaries.
+  // Previous behavior: each unit_update message rendered its own pill, so 20 updates
+  // = 20 pills flooding the chat with "A101 · Booked", "A102 · Vacant", etc.
+  // Why it was wrong: took massive vertical space, hard to scan, users complained.
+  // New behavior: one summary pill per day showing "Aaj: 3 Booked · 2 Vacant · 1 Hold",
+  // tap to expand full list. This implementation collects all unit_update messages,
+  // groups them by date, and renders only the FIRST message of each date as a
+  // summary pill (others return null).
   if (msg.messageType === 'unit_update' && msg.unitUpdate) {
     const uu = msg.unitUpdate;
-    const meta = statusMeta(uu.toStatus);
+    
+    // Group key: YYYY-MM-DD in local timezone
+    const msgDate = new Date(msg.createdAt);
+    const dateKey = msgDate.toISOString().split('T')[0];
+    
+    // Gather ALL unit_update messages for this date from the messages array
+    const todayUpdates = messages.filter(m => {
+      if (m.messageType !== 'unit_update' || !m.unitUpdate) return false;
+      const mDate = new Date(m.createdAt).toISOString().split('T')[0];
+      return mDate === dateKey;
+    });
+    
+    // Check if THIS message is the first one for this date
+    const isFirst = todayUpdates[0]?.id === msg.id;
+    
+    // If not the first, render nothing (it's included in the summary above)
+    if (!isFirst) {
+      return null;
+    }
+    
+    // Count by status
+    const counts: Record<string, number> = {};
+    todayUpdates.forEach(m => {
+      const status = m.unitUpdate!.toStatus;
+      counts[status] = (counts[status] || 0) + 1;
+    });
+    
+    // Format date label: "Aaj" for today, "Kal" for yesterday, otherwise "DD MMM"
+    const now = new Date();
+    const today = now.toISOString().split('T')[0];
+    const yesterday = new Date(now.getTime() - 86400000).toISOString().split('T')[0];
+    let dateLabel = dateKey;
+    if (dateKey === today) dateLabel = 'Aaj';
+    else if (dateKey === yesterday) dateLabel = 'Kal';
+    else {
+      const d = new Date(dateKey);
+      dateLabel = `${d.getDate()} ${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getMonth()]}`;
+    }
+    
+    // Build summary text: "3 Booked · 2 Vacant · 1 Hold"
+    const parts: { label: string; color: string; count: number }[] = [];
+    (['booked', 'available', 'sold', 'on-hold'] as UnitStatus[]).forEach(st => {
+      if (counts[st]) {
+        const meta = statusMeta(st);
+        parts.push({ label: meta.label, color: meta.color, count: counts[st] });
+      }
+    });
+    
+    const isExpanded = expandedUnitDates.has(dateKey);
+    
     return (
-      <Pressable
-        onPress={() => uu.project && onPropertyViewDetails(uu.project)}
-        style={mbs.unitPill}
-        accessibilityRole="button"
-        accessibilityLabel={`${uu.label} marked ${meta.label}${uu.projectName ? ` in ${uu.projectName}` : ''}. Open property`}
-      >
-        <View style={[mbs.unitDot, { backgroundColor: meta.color }]} />
-        <Text style={mbs.unitPillText} numberOfLines={2}>
-          <Text style={{ fontWeight: '700' }}>{uu.label}</Text>
-          {' · '}
-          <Text style={{ fontWeight: '700', color: meta.color }}>{meta.label}</Text>
-          {uu.projectName ? ` · ${uu.projectName}` : ''}
-          {uu.updatedByName ? ` · by ${uu.updatedByName}` : ''}
-        </Text>
-      </Pressable>
+      <View style={mbs.unitDaySummary}>
+        {/* Summary pill */}
+        <Pressable
+          onPress={() => {
+            setExpandedUnitDates(prev => {
+              const next = new Set(prev);
+              if (next.has(dateKey)) next.delete(dateKey);
+              else next.add(dateKey);
+              return next;
+            });
+          }}
+          style={mbs.unitDayPill}
+          accessibilityRole="button"
+          accessibilityLabel={`Unit updates for ${dateLabel}. Tap to ${isExpanded ? 'collapse' : 'expand'}`}
+        >
+          <Text style={mbs.unitDayLabel}>{dateLabel}:</Text>
+          <View style={mbs.unitDayStats}>
+            {parts.map((p, i) => (
+              <View key={i} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                <View style={[mbs.unitDot, { backgroundColor: p.color }]} />
+                <Text style={mbs.unitDayStatText}>
+                  <Text style={{ fontWeight: '700' }}>{p.count}</Text> {p.label}
+                </Text>
+              </View>
+            ))}
+          </View>
+          {isExpanded ? <ChevronUp size={16} color={colors.muted} /> : <ChevronDown size={16} color={colors.muted} />}
+        </Pressable>
+        
+        {/* Expanded list */}
+        {isExpanded && (
+          <View style={mbs.unitDayExpanded}>
+            {todayUpdates.map((m, i) => {
+              const u = m.unitUpdate!;
+              const meta = statusMeta(u.toStatus);
+              return (
+                <Pressable
+                  key={`${m.id}-${i}`}
+                  onPress={() => u.project && onPropertyViewDetails(u.project)}
+                  style={mbs.unitExpandedItem}
+                  accessibilityRole="button"
+                >
+                  <View style={[mbs.unitDot, { backgroundColor: meta.color }]} />
+                  <Text style={mbs.unitExpandedText} numberOfLines={1}>
+                    <Text style={{ fontWeight: '700' }}>{u.label}</Text>
+                    {' · '}
+                    <Text style={{ fontWeight: '700', color: meta.color }}>{meta.label}</Text>
+                    {u.updatedByName ? ` · by ${u.updatedByName}` : ''}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        )}
+      </View>
     );
   }
 
@@ -6784,6 +7023,113 @@ const pd = StyleSheet.create({
   // do not.
   removeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, padding: 14, backgroundColor: colors.redBg, borderRadius: 12, borderWidth: 1, borderColor: colors.redBorder },
   removeText: { fontSize: 14, fontWeight: '700', color: colors.redText },
+  // Property Drawer (bottom sheet modal) — replaces the removed blue banner.
+  // Opened by tapping ⋮ in project room headers. Shows property info, unit grid,
+  // and action buttons (Share PDF/Gallery/Link/QR, Open in Map, View Full Details).
+  drawerOverlay: { 
+    flex: 1, 
+    backgroundColor: 'rgba(0,0,0,0.5)', 
+    justifyContent: 'flex-end' 
+  },
+  drawerSheet: { 
+    backgroundColor: colors.white, 
+    borderTopLeftRadius: 20, 
+    borderTopRightRadius: 20, 
+    maxHeight: '85%',
+    shadowColor: '#000',
+    shadowOpacity: 0.25,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: -4 },
+    elevation: 16,
+  },
+  drawerHeader: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    justifyContent: 'space-between', 
+    paddingHorizontal: 16, 
+    paddingVertical: 14, 
+    borderBottomWidth: 1, 
+    borderBottomColor: colors.line 
+  },
+  drawerTitle: { 
+    fontSize: 17, 
+    fontWeight: '800', 
+    color: colors.ink 
+  },
+  drawerScroll: { 
+    flex: 1 
+  },
+  drawerContent: { 
+    paddingBottom: 24, 
+    gap: 16 
+  },
+  drawerPropertyHeader: { 
+    flexDirection: 'row', 
+    alignItems: 'flex-start', 
+    gap: 12, 
+    paddingHorizontal: 16, 
+    paddingTop: 16 
+  },
+  drawerThumb: { 
+    width: 64, 
+    height: 64, 
+    borderRadius: 12, 
+    backgroundColor: colors.cream 
+  },
+  drawerIconBox: { 
+    width: 64, 
+    height: 64, 
+    borderRadius: 12, 
+    backgroundColor: colors.brandTint, 
+    alignItems: 'center', 
+    justifyContent: 'center' 
+  },
+  drawerPropertyName: { 
+    fontSize: 16, 
+    fontWeight: '800', 
+    color: colors.ink, 
+    lineHeight: 22 
+  },
+  drawerPropertyMeta: { 
+    fontSize: 12, 
+    color: colors.muted2, 
+    marginTop: 3 
+  },
+  drawerPropertyPrice: { 
+    fontSize: 15, 
+    fontWeight: '700', 
+    color: colors.brand, 
+    marginTop: 4 
+  },
+  drawerSection: { 
+    paddingHorizontal: 16, 
+    gap: 10 
+  },
+  drawerSectionTitle: { 
+    fontSize: 13, 
+    fontWeight: '800', 
+    color: colors.muted2, 
+    letterSpacing: 0.3, 
+    textTransform: 'uppercase', 
+    marginBottom: 4 
+  },
+  drawerActionRow: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    gap: 12, 
+    paddingVertical: 14, 
+    paddingHorizontal: 12, 
+    backgroundColor: colors.white, 
+    borderWidth: 1, 
+    borderColor: colors.line, 
+    borderRadius: 12 
+  },
+  drawerActionLabel: { 
+    fontSize: 14, 
+    fontWeight: '600', 
+    color: colors.ink, 
+    flex: 1 
+  },
 });
 
 // Group info sheet — avatar / counts / admins / media / member rows / actions.
@@ -7028,6 +7374,66 @@ const mbs = StyleSheet.create({
   deleteHint: { fontSize: 8, color: colors.muted, textAlign: 'center', marginTop: 3, marginBottom: 1 },
   fileRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 2 },
   fileName: { fontSize: 12.5, fontWeight: '600', maxWidth: 180 },
+  // Unit update daily summary pills — groups unit_update messages by date.
+  // Previous behavior: each unit_update was its own pill (20 updates = 20 pills).
+  // Why it was wrong: flooded the chat, hard to scan, users complained.
+  // New behavior: one collapsible summary per day ("Aaj: 3 Booked · 2 Vacant").
+  unitDaySummary: { 
+    alignSelf: 'center', 
+    maxWidth: '90%', 
+    marginVertical: 6 
+  },
+  unitDayPill: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    gap: 10, 
+    paddingHorizontal: 14, 
+    paddingVertical: 10, 
+    backgroundColor: colors.white, 
+    borderWidth: 1, 
+    borderColor: colors.line, 
+    borderRadius: 16,
+    shadowColor: '#000',
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
+  },
+  unitDayLabel: { 
+    fontSize: 12, 
+    fontWeight: '800', 
+    color: colors.ink 
+  },
+  unitDayStats: { 
+    flex: 1, 
+    flexDirection: 'row', 
+    flexWrap: 'wrap', 
+    alignItems: 'center', 
+    gap: 10 
+  },
+  unitDayStatText: { 
+    fontSize: 11, 
+    color: colors.muted2 
+  },
+  unitDayExpanded: { 
+    marginTop: 6, 
+    gap: 4, 
+    paddingLeft: 8 
+  },
+  unitExpandedItem: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    gap: 8, 
+    paddingHorizontal: 12, 
+    paddingVertical: 8, 
+    backgroundColor: colors.cream, 
+    borderRadius: 12 
+  },
+  unitExpandedText: { 
+    flex: 1, 
+    fontSize: 11, 
+    color: colors.ink 
+  },
 });
 
 const sh = StyleSheet.create({
