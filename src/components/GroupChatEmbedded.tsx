@@ -1442,6 +1442,13 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const [publishedCountByOwner, setPublishedCountByOwner] = useState<Record<string, number> | null>(null);
   // Which discoverable room is mid-join (shows a spinner on its Join button).
   const [joiningId, setJoiningId] = useState<string | null>(null);
+  // Which ALREADY-JOINED property group is mid-open, keyed by project id. This
+  // cannot reuse `joiningId`: that one is set by handleJoinPropertyGroup and
+  // also guards it (`if (joiningId) return`), so driving the View Group spinner
+  // from it would make a plain open look like a join and could block a real join
+  // queued behind it. openRoom() does not touch joiningId at all, so without
+  // this the View Group row had no busy state while the room loaded.
+  const [openingGroupId, setOpeningGroupId] = useState<string | null>(null);
 
   // Thread UI state
   const [postMode, setPostMode] = useState<PostMode>('text');
@@ -2927,6 +2934,24 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
    */
   const joinedProjectIds = useMemo(
     () => new Set(myRooms.map(r => String(r.project?.id || '')).filter(Boolean)),
+    [myRooms],
+  );
+
+  /**
+   * The same membership truth as `joinedProjectIds` above, and deliberately the
+   * same `myRooms` source, so there is exactly one answer to "is this user in
+   * that property's group" and still zero extra requests: myRooms is
+   * GET /group-chat/rooms, every room where this user is a member (no roomType
+   * filter), so a room joined on another device or before a reinstall still
+   * counts.
+   *
+   * This keeps the ROOM and not just its id, because the detail sheet's
+   * "View Group" must open it with openRoom() and make NO join request — a
+   * second join on a room you are already in is a pointless write, and
+   * handleJoinPropertyGroup would also toast as if something had changed.
+   */
+  const roomByProjectId = useMemo(
+    () => new Map(myRooms.filter(r => r.project?.id).map(r => [String(r.project!.id), r])),
     [myRooms],
   );
   // WHY: Previously filtered out joined properties, showing empty state even when matches existed.
@@ -4745,6 +4770,20 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const showThreadHeader = !headerless || !isAiRoom;
   const showThreadBack = !hideThreadBack || (!isAiRoom && !!aiRoom);
 
+  // Membership resolution for the shared viewProperty detail sheet's group row.
+  // `shareProjectId` is the gate on purpose: it is set only on the real-project
+  // path, so a lead-only or match-only sheet resolves to '' here and the row is
+  // ABSENT rather than present-and-broken. That is the same signal the sheet's
+  // Share button already uses, so the two can never disagree about whether this
+  // sheet is backed by a project.
+  const vpPid = viewProperty?.shareProjectId ? String(viewProperty.shareProjectId) : '';
+  const vpRoom = vpPid ? roomByProjectId.get(vpPid) : undefined;
+  // Each branch watches the state that its own action actually sets — joiningId
+  // for the join (handleJoinPropertyGroup holds it for its whole duration),
+  // openingGroupId for the plain open — so the row can never spin on work it is
+  // not doing.
+  const vpGroupBusy = vpRoom ? openingGroupId === vpPid : joiningId === vpPid;
+
   return (
     <KeyboardAvoidingView style={{ flex: 1, paddingTop: topInset }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       {/* Thread header — hidden in headerless mode ONLY for the AI room, where the
@@ -5441,6 +5480,58 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
 
               {/* Action buttons — each row is icon + label, all brand-orange on white */}
               <View style={pd.actionSection}>
+                {/* The property's group, first row: it is the destination the user
+                    wants from a card's Details, the asset rows are secondary.
+                    Previous behaviour: the sheet offered no way in at all, so from
+                    a builder group the only route to a property room was the card's
+                    own Open/Join Group button — open Details and that route was
+                    gone.
+
+                    One row, two labels, decided by membership read from myRooms
+                    (see roomByProjectId): already a member -> "View Group" and a
+                    bare openRoom(), never a join; not a member -> "Join Group".
+                    The label stays "Join Group" on purpose — a button here once
+                    read "Chat Now" and was renamed because it called showInterest,
+                    which creates a DEAL room, not a chat, so the label lied.
+
+                    Rendered only when shareProjectId is set, so a lead-only or
+                    match-only sheet shows no group row: absent, not disabled and
+                    not a row that only toasts.
+
+                    The sheet is dismissed BEFORE navigating, following the
+                    precedent commented on the Your Matches list: nothing used to
+                    clear that full-screen modal, so it sat on top of the thread it
+                    had just opened and the tap read as "kuch bhi nahi hua" apart
+                    from a toast. */}
+                {!!vpPid && (
+                  <Pressable
+                    style={[pd.actionRow, vpGroupBusy && { opacity: 0.6 }]}
+                    disabled={vpGroupBusy}
+                    onPress={async () => {
+                      handleClosePropertyDetail();
+                      if (vpRoom) {
+                        setOpeningGroupId(vpPid);
+                        try {
+                          await openRoom(vpRoom);
+                        } finally {
+                          setOpeningGroupId(null);
+                        }
+                      } else {
+                        handleJoinPropertyGroup(vpPid);
+                      }
+                    }}
+                    accessibilityRole="button"
+                    accessibilityLabel={vpRoom ? 'View property group' : 'Join property group'}
+                  >
+                    {vpGroupBusy ? (
+                      <ActivityIndicator size="small" color={colors.brand} />
+                    ) : (
+                      <Users size={18} color={colors.brand} />
+                    )}
+                    <Text style={pd.actionLabel}>{vpRoom ? 'View Group' : 'Join Group'}</Text>
+                  </Pressable>
+                )}
+
                 {viewProperty?.brochureUrl && (
                   <Pressable
                     style={pd.actionRow}
