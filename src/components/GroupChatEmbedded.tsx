@@ -1530,9 +1530,19 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const [groupMedia, setGroupMedia] = useState<{ media: GroupMedia[]; links: GroupLink[] } | null>(null);
   const [loadingGroupMedia, setLoadingGroupMedia] = useState(false);
   
-  // Property drawer (bottom sheet) for project rooms — replaces the blue banner
-  // that was removed. Opened by the ⋮ button in the thread header.
+  // Property ACTIONS drawer (bottom sheet) for project rooms — replaces the blue
+  // banner that was removed. Opened by the ⋮ button in the thread header.
+  //
+  // This used to be the ONE drawer and it carried identity + Details + the unit
+  // grid + the share rows. The user objected to exactly that: the property's
+  // details were buried inside a 3-dot menu, which reads as "a menu", not as
+  // "the property". So the surface is split in two (see propertyDetailsVisible
+  // below) and this one keeps only the action rows.
   const [propertyDrawerVisible, setPropertyDrawerVisible] = useState(false);
+  // Property DETAILS drawer — the dedicated, first-class property surface:
+  // identity + the full details table + the read-only unit grid. Opened by its
+  // own building icon in the thread header, never from the ⋮ menu (one door).
+  const [propertyDetailsVisible, setPropertyDetailsVisible] = useState(false);
   /**
    * The FULL project behind the open drawer, fetched on open.
    *
@@ -1546,6 +1556,18 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
    */
   const [drawerProject, setDrawerProject] = useState<Project | null>(null);
   const [drawerLoading, setDrawerLoading] = useState(false);
+  /**
+   * Why an error state had to exist at all: the fetch below used to end in
+   * `.catch(() => {})`, so a rejection (a 429 from the general rate limiter is
+   * the documented, recurring one in this project) rendered EXACTLY the same
+   * thing as "no project id" and as "loaded fine" — nothing. That is the whole
+   * "the Details section vanishes" report: three states collapsed into one
+   * silent empty render. A loaded project can never be empty here, because
+   * transformProject defaults type='flat' and projectStatus='pre-launch', so
+   * dDetails always has at least the Type and Possession rows once the fetch
+   * succeeds.
+   */
+  const [drawerError, setDrawerError] = useState<string | null>(null);
   
   // Unit update daily summary state — tracks which dates are expanded to show
   // individual unit pills. Without this, unit_update messages flood the chat.
@@ -1910,29 +1932,64 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     [activeRoom?.project]
   );
 
+  // Mirror of drawerProjectId for the Retry handler below. Retry lives OUTSIDE
+  // the fetch effect, so it has no `alive` closure to check; without this ref a
+  // slow retry for room A could resolve after the user moved to room B and
+  // write A's project into B's drawer.
+  const drawerProjectIdRef = useRef('');
+  useEffect(() => { drawerProjectIdRef.current = drawerProjectId; }, [drawerProjectId]);
+
   // Clearing on a room switch is NOT cosmetic: without it the drawer's first
   // frame for room B renders room A's units, videos and brochure, because the
   // header comes from activeRoom.project instantly while the assets come from
-  // the previously fetched project.
-  useEffect(() => { setDrawerProject(null); }, [drawerProjectId]);
+  // the previously fetched project. drawerError is cleared for the same reason —
+  // room A's failure must not be reported as room B's.
+  useEffect(() => { setDrawerProject(null); setDrawerError(null); }, [drawerProjectId]);
 
-  // Fetch the full project when the drawer opens. getById is REUSED on purpose:
-  // it already has a short-TTL cache plus in-flight dedupe, so repeated opens
-  // cost nothing and no second fetch path is introduced. The catch is SILENT —
-  // an error toast over a sheet that still shows name / locality / price is
-  // noise, and it matches handlePropertyViewDetails' own silent catch. A failure
-  // is not retried while the drawer stays open; closing and reopening retries,
-  // and the cache makes a successful retry cheap.
+  // Fetch the full project when EITHER drawer opens. getById is REUSED on
+  // purpose: it already has a short-TTL cache plus in-flight dedupe, so repeated
+  // opens cost nothing and no second fetch path is introduced.
+  //
+  // Previous behaviour: this ran only for propertyDrawerVisible, which was fine
+  // while that was the only drawer. The Actions drawer still needs the fetch
+  // (dBrochure / dGallery / dVideos come from drawerProject, and the room
+  // projection is only the first-frame fallback), and the new Details drawer
+  // needs it for everything — so both flags open it.
+  //
+  // The catch used to be `.catch(() => {})` with a comment choosing silence.
+  // That was wrong for a user-initiated open: the sheet went short with no
+  // spinner, no message and no way to try again, which is indistinguishable
+  // from "this property has no data". The error is surfaced inline in the
+  // Details section instead of a toast, because that is where the missing
+  // content is.
   useEffect(() => {
-    if (!propertyDrawerVisible || !drawerProjectId) return;
+    if ((!propertyDrawerVisible && !propertyDetailsVisible) || !drawerProjectId) return;
     let alive = true;
+    setDrawerError(null);
     setDrawerLoading(true);
     projectsApiExtended.getById(drawerProjectId)
       .then(p => { if (alive) setDrawerProject(p); })
-      .catch(() => {})
+      .catch((e: any) => { if (alive) setDrawerError(e?.message || 'Could not load property details'); })
       .finally(() => { if (alive) setDrawerLoading(false); });
     return () => { alive = false; };
-  }, [propertyDrawerVisible, drawerProjectId]);
+  }, [propertyDrawerVisible, propertyDetailsVisible, drawerProjectId]);
+
+  // Retry for the Details section's error state. `force: true` skips getById's
+  // short-TTL cache — a plain call could serve the same failure window back
+  // instantly, so the button would do nothing visible. Re-running the effect is
+  // not an option here: nothing in its dep array changes when the user taps.
+  const retryDrawerFetch = useCallback(() => {
+    const forId = drawerProjectIdRef.current;
+    if (!forId) return;
+    setDrawerError(null);
+    setDrawerLoading(true);
+    projectsApiExtended.getById(forId, { force: true })
+      .then(p => { if (drawerProjectIdRef.current === forId) setDrawerProject(p); })
+      .catch((e: any) => {
+        if (drawerProjectIdRef.current === forId) setDrawerError(e?.message || 'Could not load property details');
+      })
+      .finally(() => { if (drawerProjectIdRef.current === forId) setDrawerLoading(false); });
+  }, []);
 
   // Live unit-grid updates. Someone else marked a unit (or regenerated the
   // grid) in a room this user has open: patch the open detail sheet if it shows
@@ -1989,6 +2046,12 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
       // while its visible flag stayed true — and then re-mounted already open
       // over the next room the user entered.
       setShowGroupInfo(false);
+      // Both property drawers need the same treatment, and neither used to get
+      // it. Their `visible={… && !!activeRoom}` gate only HID them once the room
+      // went away; the flag stayed true, so the drawer re-appeared unasked over
+      // the next project room the user opened.
+      setPropertyDrawerVisible(false);
+      setPropertyDetailsVisible(false);
       toast.show(data.message || 'This group was deleted', 'info');
     });
     return unsub;
@@ -2178,6 +2241,12 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     // Group info describes the room being left — leaving it open over the room
     // list would show a sheet whose Exit/Delete actions no longer have a target.
     setShowGroupInfo(false);
+    // Same for both property drawers, which previously were cleared NOWHERE.
+    // The `visible={… && !!activeRoom}` gate only hid them while no room was
+    // open, so the flag survived and the drawer popped straight back up over the
+    // next project room.
+    setPropertyDrawerVisible(false);
+    setPropertyDetailsVisible(false);
   };
 
   /**
@@ -4642,10 +4711,17 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
       : '';
   })();
 
-  // When every guard below is false the drawer would show a title and nothing
-  // else — which is exactly what the collapsed-sheet defect looked like. One
-  // honest line instead.
-  const dHasAnyAction = !!dBrochure || dGallery.length > 0 || dVideos.length > 0 || hasProjectMedia || !!dMapUrl;
+  // A "does this property have any action at all" constant used to live here,
+  // driving a "No shareable files for this property yet." fallback at the bottom
+  // of the Actions drawer. Both are DELETED, because the state they described
+  // cannot exist: the constant ORed in `hasProjectMedia`, which is
+  // `!!(proj?.slug || proj?.id || proj?._id)` and therefore true in every
+  // project room, so the fallback could never render. (The identifiers are not
+  // spelled out on purpose — the feature's verification greps for them and must
+  // come back empty.) The slimmed Actions drawer makes that structural rather than
+  // accidental — a project room always has at least the Share Property Link and
+  // Share QR Code rows. Contriving a guard for an impossible state would only
+  // have added a second thing to keep in sync.
   // Group info exists for every real group. Area rooms are included because
   // Exit Group moved into this sheet — leaving them out would strand area members
   // with no way to leave, since their 3-dot no longer carries it.
@@ -4752,7 +4828,35 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
           </View>
         )}
 
-        {/* The ONE and ONLY entry point to the property drawer, for every project
+        {/* Project rooms get TWO header controls: this building icon opens the
+            Property Details drawer, the ⋮ beside it opens the Actions drawer.
+
+            Why details needs its own first-class control. It used to live inside
+            the ⋮ drawer, and that is precisely what the user objected to — the
+            property's own details sitting behind a 3-dot "menu" affordance, so
+            they read as an incidental menu item rather than as the property. The
+            obvious alternative, the header title/avatar tap, is already taken:
+            it opens GROUP INFO (setShowGroupInfo(true) above), which is the
+            WhatsApp behaviour members expect, and hijacking it would trade one
+            buried surface for another. Hence a dedicated icon.
+
+            One door only: there is deliberately NO "Full Details" row inside the
+            Actions drawer. Two entry points to the same sheet is how the old
+            "View Full Details" row turned the drawer into a doorway into a
+            second property surface. */}
+        {activeRoom.roomType === 'project' && (
+          <Pressable
+            onPress={() => setPropertyDetailsVisible(true)}
+            style={s.headerAiDots}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Property details"
+          >
+            <Building2 size={18} color={colors.ink} />
+          </Pressable>
+        )}
+
+        {/* The entry point to the property ACTIONS drawer, for every project
             room. Previous behaviour: this ⋮ rendered only as a fallback for when
             `proj` was undefined, because when `proj` existed the real ⋮ sat in
             the blue banner below. Why that was wrong: the banner is gone (user
@@ -4765,7 +4869,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
             style={s.headerAiDots} 
             hitSlop={8}
             accessibilityRole="button"
-            accessibilityLabel="Property details and actions"
+            accessibilityLabel="Property actions"
           >
             <MoreVertical size={18} color={colors.ink} />
           </Pressable>
@@ -5717,40 +5821,51 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
         </Pressable>
       </Modal>
 
-      {/* ── Property Drawer (Bottom Sheet) ──
-          The single property surface for a project room, replacing the removed
-          blue banner. Opened by the ⋮ in the thread header.
+      {/* ── Property DETAILS Drawer (Bottom Sheet) ──
+          The dedicated property surface for a project room: identity, the full
+          details table and the read-only unit grid. Opened by the building icon
+          in the thread header.
+
+          This content used to live inside the ⋮ drawer together with the share
+          rows. Why that was wrong: the user reported the property's details
+          being hidden in a 3-dot menu and asked for a separate drawer for them.
+          The pd.drawer* styles are REUSED rather than forked, so the two drawers
+          cannot drift apart visually — including the pd.drawerScroll
+          `flexShrink: 1`, which is the documented fix for a scroller inside a
+          content-sized sheet (flex: 1 lays it out at height 0).
 
           `visible` is gated on activeRoom as well: the JSX below dereferences
           activeRoom.name with no optional chaining, and closeRoom() can race an
           open drawer (another member deleting the group does exactly that). */}
-      <Modal 
-        visible={propertyDrawerVisible && !!activeRoom} 
-        transparent 
-        animationType="slide" 
-        onRequestClose={() => setPropertyDrawerVisible(false)}
+      <Modal
+        visible={propertyDetailsVisible && !!activeRoom}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setPropertyDetailsVisible(false)}
       >
-        <Pressable style={pd.drawerOverlay} onPress={() => setPropertyDrawerVisible(false)}>
+        <Pressable style={pd.drawerOverlay} onPress={() => setPropertyDetailsVisible(false)}>
           <Pressable style={pd.drawerSheet} onPress={() => {}}>
-            {/* Header with close button */}
             <View style={pd.drawerHeader}>
               <Text style={pd.drawerTitle}>Property Details</Text>
-              <Pressable onPress={() => setPropertyDrawerVisible(false)} hitSlop={8}>
+              <Pressable onPress={() => setPropertyDetailsVisible(false)} hitSlop={8}>
                 <X size={20} color={colors.ink} />
               </Pressable>
             </View>
 
-            <ScrollView 
-              style={pd.drawerScroll} 
-              contentContainerStyle={pd.drawerContent} 
+            <ScrollView
+              style={pd.drawerScroll}
+              contentContainerStyle={pd.drawerContent}
               // The unit grid contains horizontal ScrollViews, so the vertical
               // parent has to allow nesting on Android.
               nestedScrollEnabled
-              // Was false. An invisible scrollbar is what made a sheet that DID
-              // have more content below read as "cut off".
+              // Was false in the old single drawer. An invisible scrollbar is
+              // what made a sheet that DID have more content below read as
+              // "cut off".
               showsVerticalScrollIndicator
             >
-              {/* Property header.
+              {/* Identity. Read from `proj` (the room projection), not from the
+                  fetched project, so it paints on the FIRST frame — the fetch
+                  below only fills the table and the grid.
                   This used to be wrapped in `{(proj || activeRoom.project) && (() => {
                   const property = proj || (activeRoom.project as any); … })()}` — a
                   tautology, because `proj` IS `activeRoom.project` (see its
@@ -5787,19 +5902,39 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
               )}
 
               {/* Details — the structured replacement for the suppressed `📋`
-                  server dump. While the fetch is in flight there is a spinner in
-                  its place; if the fetch FAILED the section is omitted entirely
-                  (the header above still carries name / locality / price) and no
-                  toast fires, because a half-loaded sheet is still useful. */}
-              {(drawerLoading && !drawerProject) ? (
-                <View style={pd.drawerSection}>
-                  <Text style={pd.drawerSectionTitle}>Details</Text>
+                  server dump.
+
+                  FOUR honest states, where there used to be effectively one.
+                  Previous behaviour: `loading && !project ? spinner : rows.length
+                  ? rows : null` — so "no project id on this room" (the fetch
+                  effect early-returns, so not even the spinner ran) and "the
+                  fetch rejected" (swallowed by `.catch(() => {})`) both rendered
+                  null, identical to a property that genuinely had nothing. That
+                  is the "Details section vanishes" defect: the user could not
+                  tell a failure from an empty property, and had no way to retry.
+                  A loaded project is never empty here — transformProject defaults
+                  type and projectStatus, so Type and Possession always exist. */}
+              <View style={pd.drawerSection}>
+                <Text style={pd.drawerSectionTitle}>Details</Text>
+                {!drawerProjectId ? (
+                  <Text style={pd.drawerNote}>No property linked to this group</Text>
+                ) : (drawerLoading && !drawerProject) ? (
                   <ActivityIndicator color={colors.brand} style={{ paddingVertical: 10 }} />
-                </View>
-              ) : dDetails.length > 0 ? (
-                <View style={pd.drawerSection}>
-                  <Text style={pd.drawerSectionTitle}>Details</Text>
-                  {dDetails.map(row => (
+                ) : drawerError ? (
+                  <View>
+                    <Text style={pd.drawerErrorText}>{drawerError}</Text>
+                    <Pressable
+                      style={pd.drawerRetryBtn}
+                      onPress={retryDrawerFetch}
+                      disabled={drawerLoading}
+                      accessibilityRole="button"
+                      accessibilityLabel="Retry loading property details"
+                    >
+                      <Text style={pd.drawerRetryText}>{drawerLoading ? 'Retrying…' : 'Retry'}</Text>
+                    </Pressable>
+                  </View>
+                ) : dDetails.length > 0 ? (
+                  dDetails.map(row => (
                     <View key={row.label} style={pd.drawerDetailRow}>
                       <Text style={pd.drawerDetailLabel}>{row.label}</Text>
                       <Text
@@ -5809,9 +5944,9 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                         {row.value}
                       </Text>
                     </View>
-                  ))}
-                </View>
-              ) : null}
+                  ))
+                ) : null}
+              </View>
 
               {/* Unit availability — READ-ONLY, deliberately (canEdit={false}).
                   The user asked for availability, not editing; owner editing stays
@@ -5839,15 +5974,56 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                   />
                 </View>
               )}
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
+      {/* ── Property ACTIONS Drawer (Bottom Sheet) ──
+          Opened by the ⋮ in the thread header. It used to also carry the
+          identity block, the Details table and the unit grid; all three MOVED to
+          the dedicated details drawer above, because burying the property's
+          details behind a 3-dot menu is exactly what the user objected to. What
+          is left is the seven share/open rows and nothing else.
+
+          Same activeRoom gate as the details drawer, for the same reason. */}
+      <Modal 
+        visible={propertyDrawerVisible && !!activeRoom} 
+        transparent 
+        animationType="slide" 
+        onRequestClose={() => setPropertyDrawerVisible(false)}
+      >
+        <Pressable style={pd.drawerOverlay} onPress={() => setPropertyDrawerVisible(false)}>
+          <Pressable style={pd.drawerSheet} onPress={() => {}}>
+            {/* Header with close button. Retitled from 'Property Details' to
+                'Actions': the details are no longer in here, so the old title
+                promised content this sheet does not have. */}
+            <View style={pd.drawerHeader}>
+              <Text style={pd.drawerTitle}>Actions</Text>
+              <Pressable onPress={() => setPropertyDrawerVisible(false)} hitSlop={8}>
+                <X size={20} color={colors.ink} />
+              </Pressable>
+            </View>
+
+            <ScrollView 
+              style={pd.drawerScroll} 
+              contentContainerStyle={pd.drawerContent} 
+              nestedScrollEnabled
+              // Was false. An invisible scrollbar is what made a sheet that DID
+              // have more content below read as "cut off".
+              showsVerticalScrollIndicator
+            >
               {/* Actions — the seven rows the user listed, in their order.
                   A row whose asset does not exist is NOT RENDERED: not rendered
                   and disabled, and not rendered-then-toasting. Open in Map used to
                   do the latter ("No map location available"), which is a dead
                   button that only admits it on tap. */}
+              {/* A `pd.drawerSectionTitle` reading "ACTIONS" used to open this
+                  block. It is gone because the sheet's own header now says
+                  Actions — it was only needed back when this section sat below
+                  Details and the unit grid and had to label itself. The View
+                  stays: it carries the section's horizontal padding. */}
               <View style={pd.drawerSection}>
-                <Text style={pd.drawerSectionTitle}>Actions</Text>
-
                 {/* Share PDF and Share Brochure are BOTH shipped on purpose and
                     share one guard, so they appear together or not at all. The
                     user listed "share pdf" and "share brochure" as separate items
@@ -5882,12 +6058,18 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                   </>
                 )}
 
+                {/* The label used to read `Share Gallery (N photos)` with
+                    N = dGallery.length. That number could LIE: it counts the
+                    project's media.galleryImages as this client sees them, while
+                    handleDownloadGallery goes through shareApi.galleryDownload(pid)
+                    and the SERVER decides what ends up in the zip. Sourcing both
+                    from one place would need a second request, so the count is
+                    dropped rather than guessed. dGallery.length > 0 stays as the
+                    render guard — that is a presence check, not a count claim. */}
                 {dGallery.length > 0 && (
                   <Pressable style={pd.drawerActionRow} onPress={handleDownloadGallery}>
                     <ImageIcon size={20} color={colors.brand} />
-                    <Text style={pd.drawerActionLabel}>
-                      Share Gallery ({dGallery.length} photo{dGallery.length === 1 ? '' : 's'})
-                    </Text>
+                    <Text style={pd.drawerActionLabel}>Share Gallery</Text>
                     <ChevronLeft 
                       size={16} 
                       color={colors.muted} 
@@ -5958,9 +6140,16 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                     property card → View Details → those actions. No doorway back
                     into viewProperty is to be re-added from inside a project
                     room. */}
-                {!dHasAnyAction && (
-                  <Text style={pd.drawerEmpty}>No shareable files for this property yet.</Text>
-                )}
+
+                {/* A "No shareable files for this property yet." fallback used
+                    to close this block, guarded by a has-any-action constant.
+                    The line, the constant and the muted empty-state style in
+                    `pd` are all DELETED, because the state they covered cannot
+                    happen: that constant ORed in `hasProjectMedia`, which is
+                    `!!(proj?.slug || proj?.id || proj?._id)` and so true in every
+                    project room. This drawer therefore always renders at least
+                    the Share Property Link and Share QR Code rows, which makes
+                    the fallback unreachable correctly rather than by accident. */}
               </View>
             </ScrollView>
           </Pressable>
@@ -7420,9 +7609,12 @@ const pd = StyleSheet.create({
   // do not.
   removeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, padding: 14, backgroundColor: colors.redBg, borderRadius: 12, borderWidth: 1, borderColor: colors.redBorder },
   removeText: { fontSize: 14, fontWeight: '700', color: colors.redText },
-  // Property Drawer (bottom sheet modal) — replaces the removed blue banner.
-  // Opened by tapping ⋮ in project room headers. Shows property info, unit grid,
-  // and action buttons (Share PDF/Gallery/Link/QR, Open in Map, View Full Details).
+  // Property drawers (bottom sheet modals) — they replace the removed blue
+  // banner, and ONE set of styles serves BOTH of them so they cannot drift:
+  // the Details drawer (building icon in a project room's header — identity,
+  // the details table, the read-only unit grid) and the Actions drawer (⋮ —
+  // Share PDF/Brochure/Gallery/Videos/Link/QR and Open in Map). It used to be a
+  // single drawer carrying all of that at once.
   drawerOverlay: { 
     flex: 1, 
     backgroundColor: 'rgba(0,0,0,0.5)', 
@@ -7570,11 +7762,38 @@ const pd = StyleSheet.create({
     fontSize: 12.5,
     color: colors.ink,
   },
-  drawerEmpty: {
+  // A muted centred empty-state style used to sit here, used by exactly one
+  // line: the Actions drawer's unreachable "No shareable files" fallback. Both
+  // the line and the style are deleted — see the comment at the end of the
+  // Actions drawer's row list for why that state could never render.
+  //
+  // The three below replace it, and they are the Details section's two silent
+  // states made visible: drawerNote for "this room has no linked project" and
+  // the error pair for a rejected fetch with a working Retry. Same shape as
+  // apm.retryBtn / apm.retryText in app/(dashboard)/projects.tsx, so the two
+  // retry affordances in this app read the same.
+  drawerNote: {
     fontSize: 12.5,
     color: colors.muted,
-    textAlign: 'center',
     paddingVertical: 10,
+  },
+  drawerErrorText: {
+    fontSize: 12.5,
+    color: colors.redText,
+    paddingVertical: 10,
+  },
+  drawerRetryBtn: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.brand,
+  },
+  drawerRetryText: {
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: colors.brand,
   },
 });
 
