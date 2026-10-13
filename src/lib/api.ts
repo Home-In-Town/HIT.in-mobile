@@ -983,6 +983,15 @@ export interface Project {
   // Co-captain ids. Needed by canEditUnits (src/lib/units.ts) to mirror the
   // server's authorizeProjectAccess rule; previously dropped by transformProject.
   coCaptains?: string[];
+  // The SAME co-captains, with the identity fields the server already sends.
+  // WHY a parallel field instead of widening coCaptains: getAll/getById in
+  // HIT_Backend/repositories/ProjectRepository.js populate coCaptains with
+  // 'name role companyName phone', so the names are on the wire — but
+  // transformProject was collapsing every entry to an id string and throwing the
+  // rest away, which left the UI with nothing but ObjectIds to show. coCaptains
+  // keeps its string[] shape because canEditUnits (src/lib/units.ts) and
+  // GroupChatEmbedded.tsx:3315 compare ids against it.
+  coCaptainDetails?: { id: string; name: string; role?: string; companyName?: string }[];
   // Flat unit inventory (server-generated; see HIT_Backend UnitInventoryService).
   units?: ProjectUnit[];
   createdAt?: string;
@@ -1078,6 +1087,22 @@ function transformProject(p: any): Project {
     assignedAgent: p?.assignedAgent ? { ...p.assignedAgent, id: String(p.assignedAgent.id || p.assignedAgent._id || '') } : null,
     // coCaptains arrives populated from getById ({ _id, name, … }) and as bare ids elsewhere.
     coCaptains: Array.isArray(p?.coCaptains) ? p.coCaptains.map((c: any) => String(c?._id || c?.id || c)).filter(Boolean) : [],
+    // Same raw array, read for its identity fields instead of just its ids.
+    // Only entries that really ARE populated objects with a usable name are kept:
+    // ProjectRepository.update() has no .populate(), so an assign response (and
+    // any other un-populated path) carries bare id strings — mapping those would
+    // fabricate rows named after an ObjectId. An empty list is the honest answer
+    // there, and the caller can fall back to coCaptains.length for a count.
+    coCaptainDetails: Array.isArray(p?.coCaptains)
+      ? p.coCaptains
+          .filter((c: any) => c && typeof c === 'object' && typeof c.name === 'string' && c.name.trim())
+          .map((c: any) => ({
+            id: String(c._id || c.id || ''),
+            name: String(c.name).trim(),
+            role: c.role,
+            companyName: c.companyName,
+          }))
+      : [],
     units: Array.isArray(p?.units) ? p.units.map(transformUnit) : [],
     createdAt: p?.createdAt,
   };
@@ -1198,6 +1223,23 @@ export const projectsApiExtended = {
   },
   async assignAgent(id: string, agentId: string): Promise<Project> {
     const r = await fetch(`${API_URL}/projects/${encodeURIComponent(id)}/assign-agent`, { method: 'PUT', headers: await authHeaders(), body: JSON.stringify({ agentId }) });
+    invalidateProject(id);
+    return transformProject(await handleResponse<any>(r));
+  },
+  /**
+   * Add or remove a co-captain. Field names are taken verbatim from
+   * HIT_Backend/controllers/ProjectController.js assignCoCaptain, which reads
+   * `const { captainId, action } = req.body` and treats anything other than the
+   * literal 'remove' as an add. Route is restrictTo('admin').
+   *
+   * The returned project is NOT populated — ProjectRepository.update() is a
+   * findByIdAndUpdate(...).lean() with no .populate(), unlike getAll/getById — so
+   * its coCaptains are bare ids and coCaptainDetails comes back empty. Callers
+   * must merge the candidate they picked into local state rather than trusting
+   * this response, the same way handleAssignSubmit already does for captain/agent.
+   */
+  async assignCoCaptain(id: string, captainId: string, action: 'add' | 'remove'): Promise<Project> {
+    const r = await fetch(`${API_URL}/projects/${encodeURIComponent(id)}/assign-co-captain`, { method: 'PUT', headers: await authHeaders(), body: JSON.stringify({ captainId, action }) });
     invalidateProject(id);
     return transformProject(await handleResponse<any>(r));
   },
