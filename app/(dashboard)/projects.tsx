@@ -93,7 +93,19 @@ function ProjectMenuBody({ project, user, onClose, onEdit, onLayout, onAnalytics
   // marketplace, AI and CRM surfaces, so an assignee line there would alter four
   // screens for one feature — and the 3-dot menu is where the user looks right after
   // assigning anyway.
-  const captainName = project.owner?.name;
+  //
+  // The role check on `owner` is load-bearing, not defensive. Server-side `owner`
+  // means "creator OR assigned captain": ProjectController.create (:202) sets
+  // `owner = user.id` for any builder/agent/admin/captain creator, and only
+  // ProjectService.assignCaptainToProject (:188) overwrites it with the captain.
+  // An admin's getAll returns EVERY project, and admin is the only role this row is
+  // shown to, so reading `owner.name` unconditionally — which is what this line did
+  // first — printed `Captain: <builder name> · Change` on projects that have never
+  // had a captain, asserting an assignment the database does not contain. `role` is
+  // already on the populated owner (ProjectRepository.js:17 populates
+  // 'name role companyName phone') so the gate costs no extra request. `assignedAgent`
+  // needs no equivalent: nothing but assign-agent ever writes it.
+  const captainName = project.owner?.role === 'captain' ? project.owner.name : undefined;
   const agentName = project.assignedAgent?.name;
   const items = [
     { key: 'edit', label: 'Edit Details', icon: <Pencil size={17} color={colors.ink} />, onPress: () => onEdit(project), show: true },

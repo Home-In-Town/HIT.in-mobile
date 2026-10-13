@@ -1442,13 +1442,13 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const [publishedCountByOwner, setPublishedCountByOwner] = useState<Record<string, number> | null>(null);
   // Which discoverable room is mid-join (shows a spinner on its Join button).
   const [joiningId, setJoiningId] = useState<string | null>(null);
-  // Which ALREADY-JOINED property group is mid-open, keyed by project id. This
-  // cannot reuse `joiningId`: that one is set by handleJoinPropertyGroup and
-  // also guards it (`if (joiningId) return`), so driving the View Group spinner
-  // from it would make a plain open look like a join and could block a real join
-  // queued behind it. openRoom() does not touch joiningId at all, so without
-  // this the View Group row had no busy state while the room loaded.
-  const [openingGroupId, setOpeningGroupId] = useState<string | null>(null);
+  // An `openingGroupId` state used to live here, to drive a spinner on the
+  // viewProperty sheet's View Group row while openRoom() ran. It was deleted
+  // because it could never be observed: that row dismisses the sheet FIRST
+  // (handleClosePropertyDetail, the deliberate dismiss-first precedent from the
+  // showMatching bug), so `viewProperty` is nulled in the same React batch and
+  // the row unmounts before any busy state could paint. The toast plus the
+  // thread appearing is the feedback there.
 
   // Thread UI state
   const [postMode, setPostMode] = useState<PostMode>('text');
@@ -4778,11 +4778,11 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   // sheet is backed by a project.
   const vpPid = viewProperty?.shareProjectId ? String(viewProperty.shareProjectId) : '';
   const vpRoom = vpPid ? roomByProjectId.get(vpPid) : undefined;
-  // Each branch watches the state that its own action actually sets — joiningId
-  // for the join (handleJoinPropertyGroup holds it for its whole duration),
-  // openingGroupId for the plain open — so the row can never spin on work it is
-  // not doing.
-  const vpGroupBusy = vpRoom ? openingGroupId === vpPid : joiningId === vpPid;
+  // A `vpGroupBusy` flag used to be derived here (openingGroupId for the open,
+  // joiningId for the join) to disable the row and swap its icon for a spinner.
+  // Both halves were unreachable for the same reason: the row closes the sheet
+  // before starting either action, so there is no row left to disable. See the
+  // deleted openingGroupId note above.
 
   return (
     <KeyboardAvoidingView style={{ flex: 1, paddingTop: topInset }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -5502,32 +5502,26 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                     precedent commented on the Your Matches list: nothing used to
                     clear that full-screen modal, so it sat on top of the thread it
                     had just opened and the tap read as "kuch bhi nahi hua" apart
-                    from a toast. */}
+                    from a toast.
+
+                    Which is also why this row carries NO busy state. It had one
+                    (openingGroupId / vpGroupBusy, a spinner in place of the icon),
+                    and it was dead code: the sheet unmounts in the same React
+                    batch as the dismiss, so the spinner could never paint. Both
+                    actions are fire-and-forget here, matching every other
+                    openRoom() caller in this file. */}
                 {!!vpPid && (
                   <Pressable
-                    style={[pd.actionRow, vpGroupBusy && { opacity: 0.6 }]}
-                    disabled={vpGroupBusy}
-                    onPress={async () => {
+                    style={pd.actionRow}
+                    onPress={() => {
                       handleClosePropertyDetail();
-                      if (vpRoom) {
-                        setOpeningGroupId(vpPid);
-                        try {
-                          await openRoom(vpRoom);
-                        } finally {
-                          setOpeningGroupId(null);
-                        }
-                      } else {
-                        handleJoinPropertyGroup(vpPid);
-                      }
+                      if (vpRoom) openRoom(vpRoom);
+                      else handleJoinPropertyGroup(vpPid);
                     }}
                     accessibilityRole="button"
                     accessibilityLabel={vpRoom ? 'View property group' : 'Join property group'}
                   >
-                    {vpGroupBusy ? (
-                      <ActivityIndicator size="small" color={colors.brand} />
-                    ) : (
-                      <Users size={18} color={colors.brand} />
-                    )}
+                    <Users size={18} color={colors.brand} />
                     <Text style={pd.actionLabel}>{vpRoom ? 'View Group' : 'Join Group'}</Text>
                   </Pressable>
                 )}
@@ -6004,39 +5998,56 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                   is the "Details section vanishes" defect: the user could not
                   tell a failure from an empty property, and had no way to retry.
                   A loaded project is never empty here — transformProject defaults
-                  type and projectStatus, so Type and Possession always exist. */}
+                  type and projectStatus, so Type and Possession always exist.
+
+                  The error is a BANNER ABOVE the rows, not a branch that replaces
+                  them. It used to be tested before `dDetails.length > 0`, which
+                  put this drawer back in the business of lying, only in the other
+                  direction: `drawerProject` survives until `drawerProjectId`
+                  changes while the fetch effect re-runs on EVERY drawer open, so
+                  a refresh that failed after a good load (a 429 past getById's
+                  TTL is the recurring case in this app) replaced the whole table
+                  while the identity block above and the unit grid below —
+                  `dUnits`, read off that same `drawerProject` — kept rendering
+                  the project. A failed REFRESH must not hide data still in
+                  state; only a failed FIRST load may show nothing, and that
+                  still happens for free because `dDetails` is [] until a project
+                  lands. */}
               <View style={pd.drawerSection}>
                 <Text style={pd.drawerSectionTitle}>Details</Text>
                 {!drawerProjectId ? (
                   <Text style={pd.drawerNote}>No property linked to this group</Text>
                 ) : (drawerLoading && !drawerProject) ? (
                   <ActivityIndicator color={colors.brand} style={{ paddingVertical: 10 }} />
-                ) : drawerError ? (
-                  <View>
-                    <Text style={pd.drawerErrorText}>{drawerError}</Text>
-                    <Pressable
-                      style={pd.drawerRetryBtn}
-                      onPress={retryDrawerFetch}
-                      disabled={drawerLoading}
-                      accessibilityRole="button"
-                      accessibilityLabel="Retry loading property details"
-                    >
-                      <Text style={pd.drawerRetryText}>{drawerLoading ? 'Retrying…' : 'Retry'}</Text>
-                    </Pressable>
-                  </View>
-                ) : dDetails.length > 0 ? (
-                  dDetails.map(row => (
-                    <View key={row.label} style={pd.drawerDetailRow}>
-                      <Text style={pd.drawerDetailLabel}>{row.label}</Text>
-                      <Text
-                        style={pd.drawerDetailValue}
-                        numberOfLines={row.label === 'Amenities' ? 2 : undefined}
-                      >
-                        {row.value}
-                      </Text>
-                    </View>
-                  ))
-                ) : null}
+                ) : (
+                  <>
+                    {!!drawerError && (
+                      <View style={pd.drawerErrorBlock}>
+                        <Text style={pd.drawerErrorText}>{drawerError}</Text>
+                        <Pressable
+                          style={pd.drawerRetryBtn}
+                          onPress={retryDrawerFetch}
+                          disabled={drawerLoading}
+                          accessibilityRole="button"
+                          accessibilityLabel="Retry loading property details"
+                        >
+                          <Text style={pd.drawerRetryText}>{drawerLoading ? 'Retrying…' : 'Retry'}</Text>
+                        </Pressable>
+                      </View>
+                    )}
+                    {dDetails.map(row => (
+                      <View key={row.label} style={pd.drawerDetailRow}>
+                        <Text style={pd.drawerDetailLabel}>{row.label}</Text>
+                        <Text
+                          style={pd.drawerDetailValue}
+                          numberOfLines={row.label === 'Amenities' ? 2 : undefined}
+                        >
+                          {row.value}
+                        </Text>
+                      </View>
+                    ))}
+                  </>
+                )}
               </View>
 
               {/* Unit availability — READ-ONLY, deliberately (canEdit={false}).
@@ -7872,6 +7883,12 @@ const pd = StyleSheet.create({
     fontSize: 12.5,
     color: colors.redText,
     paddingVertical: 10,
+  },
+  // The error text + Retry now sit ABOVE the detail rows instead of replacing
+  // them, so the pair needs its own bottom gap; without it the Retry button
+  // touched the first row's label.
+  drawerErrorBlock: {
+    marginBottom: 10,
   },
   drawerRetryBtn: {
     alignSelf: 'flex-start',
