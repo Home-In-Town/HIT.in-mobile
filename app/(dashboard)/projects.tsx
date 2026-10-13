@@ -443,7 +443,14 @@ const apm = StyleSheet.create({
   currentWrap: { marginHorizontal: 6, marginBottom: spacing.sm },
   currentLabel: { fontSize: 11, fontWeight: '800', color: colors.muted2, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: spacing.xs },
   currentEmpty: { fontSize: 12.5, color: colors.muted, paddingVertical: spacing.sm },
-  currentList: { maxHeight: 148 },
+  // maxHeight caps it at ~3 rows; flexShrink: 1 is the load-bearing half — RN
+  // defaults children to flexShrink: 0, and inside the sheet's maxHeight 70%
+  // clamp a non-shrinking scroll view is simply cropped at the bottom with no way
+  // to reach the rest (the same Yoga mistake as the candidate FlatList below and
+  // the three precedents in GroupChatEmbedded.tsx). With both set, this list
+  // scrolls internally AND yields space to the candidate list when the sheet is
+  // short.
+  currentList: { maxHeight: 148, flexShrink: 1 },
   currentRow: {
     flexDirection: 'row',
     alignItems: 'center',
