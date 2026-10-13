@@ -605,10 +605,38 @@ export default function ProjectsScreen() {
   // Clearing menuProject while setting assignProject in the same handler swaps the
   // host modal's body in place (React batches both, so the Modal never flips to
   // invisible and there is no second dialog to lose).
+  // "Assign Captain" is an ownership TRANSFER, not an addition: the backend's
+  // ProjectService.assignCaptainToProject writes `{ owner: captainId }`, replacing
+  // project.owner outright. PREVIOUS BEHAVIOUR / WHY it was wrong: the row said only
+  // "Assign Captain" and the picker opened straight away, so an admin could hand a
+  // project away without being told that (a) the old owner loses it from their list
+  // and loses unit-edit rights — canEditUnits in src/lib/units.ts keys off
+  // owner/coCaptains/assignedAgent, (b) the project moves to the new owner's company
+  // group because UniversalGroupService resolves it via ensureBuilderGroup(project.owner),
+  // and (c) the property card's builder identity changes, since the announcement
+  // snapshot reads owner.name / companyName / isVerifiedBuilder / rating.
+  // Same treatment and same reason as Delete Project above: destructive, hard to
+  // undo, so confirm first. The dialog is shown BEFORE the picker because the
+  // consequence belongs to the whole flow, not to one candidate — confirming once
+  // and then browsing the list beats a second dialog on every tap.
   const handleAssignCaptain = (p: Project) => {
     setMenuProject(null);
-    setAssignProject(p);
-    setAssignMode('captain');
+    Alert.alert(
+      'Transfer project ownership?',
+      'The captain you pick becomes the owner of this project. The current owner loses it from their list, loses unit-edit rights, and their company stops appearing on the property card.',
+      [
+        // Cancel leaves assignProject/assignMode untouched (still null), so there is
+        // no half-open sheet and no stale picker state to clean up.
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Continue',
+          onPress: () => {
+            setAssignProject(p);
+            setAssignMode('captain');
+          },
+        },
+      ]
+    );
   };
 
   // Same in-place body swap as the other two rows — no setTimeout, no second Modal.
