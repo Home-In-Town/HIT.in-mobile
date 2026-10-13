@@ -3319,7 +3319,30 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
     } catch {
       // Project fetch failed (deleted / not visible) — still show the card data
       // rather than leaving the button looking broken.
-      if (fallback) setViewProperty({ ...sheetFromCard(fallback), sourceMessageId });
+      //
+      // `shareProjectId` is carried over from the argument on purpose. Previous
+      // behaviour: the fallback sheet set only title/subtitle/price/image/fields,
+      // so `shareProjectId` was undefined and EVERY control gated on it vanished
+      // — including the Join Group / View Group row the user asked for. And this
+      // is not a rare path: a failing getById here (a 429 past the cache TTL is
+      // the recurring case) is the already-diagnosed cause of the "drawer shows
+      // only buttons, no details" complaint, so the one control that matters
+      // disappeared exactly when the sheet was already degraded.
+      //
+      // A card-backed fallback IS a real project — we hold its id — so the gate's
+      // original intent ("offer Share only for a real project") is still honoured.
+      // Nothing gated on it needs the FETCHED project object: handleShareProject
+      // and handleDownloadPropertyQR both take the id and fetch for themselves,
+      // each with its own error toast, so if the project really is gone they fail
+      // loudly instead of a control silently going missing. The unit grid and its
+      // Setup/Edit doorway stay hidden regardless, because canEditViewUnits also
+      // needs `unitPerms`, which only the success path sets and canEditUnits
+      // treats as "no project" → false.
+      //
+      // Sheets with NO project at all (AI match cards, "Also posted by members"
+      // matches, post drafts) never reach this line and still carry no
+      // shareProjectId, so they keep showing no group row and no Share.
+      if (fallback) setViewProperty({ ...sheetFromCard(fallback), shareProjectId: projectId, sourceMessageId });
       else toast.show('Could not load property details', 'error');
     }
   }, [toast]);
@@ -4778,6 +4801,17 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   // sheet is backed by a project.
   const vpPid = viewProperty?.shareProjectId ? String(viewProperty.shareProjectId) : '';
   const vpRoom = vpPid ? roomByProjectId.get(vpPid) : undefined;
+  // True when the sheet's project IS the room the user is reading right now.
+  // Reachable: the unit_update expanded-row tap inside a project room opens this
+  // sheet for that room's own project, so membership resolves to the active room
+  // and the row read "View Group". Previous behaviour: tapping it dismissed the
+  // sheet and called openRoom() on the current room, which clears `messages`,
+  // re-joins the socket and refetches the thread — the user watched the
+  // conversation they were already in blank out and reload, to arrive nowhere.
+  // The row is SUPPRESSED rather than relabelled to a plain dismiss: a row whose
+  // only effect is closing the sheet is indistinguishable from the X and the
+  // backdrop, so it would be a third no-op control instead of an answer.
+  const vpRoomIsActive = !!vpRoom && !!activeRoom?.id && vpRoom.id === activeRoom.id;
   // A `vpGroupBusy` flag used to be derived here (openingGroupId for the open,
   // joiningId for the join) to disable the row and swap its icon for a spinner.
   // Both halves were unreachable for the same reason: the row closes the sheet
@@ -5509,8 +5543,12 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                     and it was dead code: the sheet unmounts in the same React
                     batch as the dismiss, so the spinner could never paint. Both
                     actions are fire-and-forget here, matching every other
-                    openRoom() caller in this file. */}
-                {!!vpPid && (
+                    openRoom() caller in this file.
+
+                    `!vpRoomIsActive` keeps the row out when the destination is
+                    the room already on screen — see the note where it is derived
+                    for the reload that used to cause. */}
+                {!!vpPid && !vpRoomIsActive && (
                   <Pressable
                     style={pd.actionRow}
                     onPress={() => {
@@ -6126,6 +6164,38 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                   Details and the unit grid and had to label itself. The View
                   stays: it carries the section's horizontal padding. */}
               <View style={pd.drawerSection}>
+                {/* Failed fetch, said out loud — the same banner-over-the-rows
+                    treatment the Details section got, for the same reason.
+                    Previous behaviour: `drawerError` is set for EITHER drawer by
+                    the shared fetch effect, but only Details rendered it, so a
+                    rejected getById here collapsed this sheet to Share Property
+                    Link + Share QR Code (those two hang off hasProjectMedia,
+                    which needs only the room projection) with nothing to say why
+                    the brochure, gallery and video rows were gone. It looked
+                    exactly like a property with no assets.
+
+                    A banner, not a branch: the rows below come from
+                    `drawerProject`, which survives a failed REFRESH, so replacing
+                    them would hide assets that are still usable. And the
+                    "genuinely nothing to share" case can never wear this banner,
+                    because it renders only when drawerError is set — it is the
+                    presence of this block that separates "could not load" from
+                    "nothing here". */}
+                {!!drawerError && (
+                  <View style={pd.drawerErrorBlock}>
+                    <Text style={pd.drawerErrorText}>{drawerError}</Text>
+                    <Pressable
+                      style={pd.drawerRetryBtn}
+                      onPress={retryDrawerFetch}
+                      disabled={drawerLoading}
+                      accessibilityRole="button"
+                      accessibilityLabel="Retry loading property actions"
+                    >
+                      <Text style={pd.drawerRetryText}>{drawerLoading ? 'Retrying…' : 'Retry'}</Text>
+                    </Pressable>
+                  </View>
+                )}
+
                 {/* Share PDF and Share Brochure are BOTH shipped on purpose and
                     share one guard, so they appear together or not at all. The
                     user listed "share pdf" and "share brochure" as separate items
