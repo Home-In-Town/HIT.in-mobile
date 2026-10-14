@@ -23,7 +23,7 @@ import QRCode from 'react-native-qrcode-svg';
 import {
   Users, Plus, Globe, ChevronLeft, Send, X, MoreVertical, Building2,
   Link as LinkIcon, FileText, QrCode, Image as ImageIcon, LogOut, Trash2,
-  Search, MapPin, Check, Camera, Paperclip, Sparkles, ChevronDown, ChevronUp, Clock,
+  Search, MapPin, Check, CheckCircle2, Camera, Paperclip, Sparkles, ChevronDown, ChevronUp, Clock,
   Phone, Eye, UserPlus, BadgeCheck, Share2, MessageCircle, Download, Edit3, Pencil, ExternalLink,
 } from 'lucide-react-native';
 import { groupChatApi, shareApi, mediaApi, leadMatchingApi, invalidateLeadsCache, projectsApiExtended, fetchPublicProjectsRaw, GroupRoom, GroupMessage, InventoryCard, OwnerPortfolioProject, Project, GroupMedia, GroupLink } from '../lib/api';
@@ -2770,10 +2770,8 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
    * prefetch whose only job is to put a number on the pill.
    */
   const loadMyMatches = useCallback(async (opts?: { silent?: boolean }) => {
-    console.log('[MATCHING] loadMyMatches called, opts:', opts);
     const silent = !!opts?.silent;
     if (!silent) {
-      console.log('[MATCHING] Setting showMatching=true, matchingLoading=true');
       setShowMatching(true);
       setMatchingLoading(true);
       setMatchingError(null);
@@ -2799,10 +2797,8 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
       // less harmful failure.
       const MAX_PAGES = 20;
 
-      console.log('[MATCHING] Fetching leads from API...');
       const first = await leadMatchingApi.getLeads({ mineOnly: true, limit: LIMIT, page: 1 });
       const leads = Array.isArray(first?.leads) ? [...first.leads] : [];
-      console.log('[MATCHING] First page leads count:', leads.length);
 
       // Trust `pages` when the server sends it; derive it from total/limit only as
       // a fallback, because an older deploy may send one and not the other.
@@ -2860,7 +2856,6 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
       setMatchingError(null);
       setMatchCountKnown(true);
     } catch (e: any) {
-      console.log('[MATCHING] Error:', e?.message || e);
       // Only a THROWN request is an error. An empty list is a legitimate answer
       // and gets the honest empty state in the sheet instead — showing an error
       // for it would read as "something broke" when nothing did.
@@ -3059,7 +3054,6 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   // `[builderProjects]`, which changed identity on every portfolio load and
   // needlessly re-fired the onActionsReady publish effect below.)
   const aiMatching = useCallback(() => {
-    console.log('[MATCHING] aiMatching called');
     loadMyMatches();
   }, [loadMyMatches]);
   // Quick-start: user picked Sell / Buy / Rent. Enter AI mode and let the
@@ -3128,7 +3122,6 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   const aiResetToLanding = useCallback(() => {
     const api = aiApiRef.current;
     setShowPost(false);
-    console.log('[MATCHING] aiResetToLanding clearing showMatching');
     setShowMatching(false);
     setShowAiMenu(false);
     setShowDisappear(false);
@@ -3160,7 +3153,6 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
   // safe — the previous version captured the first render's `aiMode` (always
   // false), which is why "My Post" and "Matching" sometimes did nothing.
   useEffect(() => {
-    console.log('[MATCHING] Publishing actions to parent, aiPost:', !!aiPost, 'aiMatching:', !!aiMatching, 'aiResetToLanding:', !!aiResetToLanding);
     onActionsReady?.({ post: aiPost, matching: aiMatching, resetToLanding: aiResetToLanding });
   }, [onActionsReady, aiPost, aiMatching, aiResetToLanding]);
 
@@ -6408,8 +6400,8 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
           `void`, which is not a valid ReactNode, so it was the source of the
           file's only TypeScript error (TS2769 reported on the enclosing
           KeyboardAvoidingView) and it logged on every single render. */}
-      <Modal visible={showMatching} transparent animationType="slide" onRequestClose={() => { console.log('[MATCHING] Modal onRequestClose'); setShowMatching(false); }}>
-        <Pressable style={pd.overlay} onPress={() => { console.log('[MATCHING] Overlay tapped'); setShowMatching(false); }}>
+      <Modal visible={showMatching} transparent animationType="slide" onRequestClose={() => setShowMatching(false)}>
+        <Pressable style={pd.overlay} onPress={() => setShowMatching(false)}>
           <Pressable style={pd.sheet} onPress={() => {}}>
             <View style={pd.head}>
               <Search size={18} color={colors.brand} />
@@ -6429,7 +6421,7 @@ export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, auto
                       : 'Lead → Inventory auto-match'}
                 </Text>
               </View>
-              <Pressable onPress={() => { console.log('[MATCHING] X button tapped'); setShowMatching(false); }} hitSlop={8}><X size={20} color={colors.ink} /></Pressable>
+              <Pressable onPress={() => setShowMatching(false)} hitSlop={8}><X size={20} color={colors.ink} /></Pressable>
             </View>
 
             {matchingLoading ? (
@@ -6810,6 +6802,22 @@ function normalizeMsg(m: any, roomId: string): GroupMessage {
     unitUpdate: m.unitUpdate
       ? { ...m.unitUpdate, project: String(m.unitUpdate.project?._id || m.unitUpdate.project || '') }
       : undefined,
+    // Must stay in sync with groupChatApi.getMessages — mapping a typed message
+    // in only ONE of the two mappers is how history-loaded unit_update messages
+    // once fell through to a plain text bubble (live arrival drew a card, the
+    // same message after a reload did not).
+    siteVisit: m.siteVisit
+      ? {
+        ...m.siteVisit,
+        project: String(m.siteVisit.project?._id || m.siteVisit.project || ''),
+        visit: String(m.siteVisit.visit?._id || m.siteVisit.visit || ''),
+      }
+      : undefined,
+    // Same two-mapper rule as siteVisit above. This one was never mapped at all,
+    // which is why project announcements rendered as grey text bubbles.
+    projectAnnouncement: m.projectAnnouncement
+      ? { ...m.projectAnnouncement, project: String(m.projectAnnouncement.project?._id || m.projectAnnouncement.project || '') }
+      : undefined,
     createdAt: m.createdAt || new Date().toISOString(),
   };
 }
@@ -7081,6 +7089,93 @@ const MessageBubble = React.memo(function MessageBubble({
             })}
           </View>
         )}
+      </View>
+    );
+  }
+
+  // Site visit arrival / completion, posted BY THE SERVER when an agent's phone
+  // crosses the project geofence and again once they have dwelled there.
+  //
+  // Previous behaviour: the collaborator's build had the CLIENT post this as
+  // `messageType: 'text'` with an emoji blob in `content`. That could not be
+  // styled, filtered or counted, and any client could forge it. The snapshot now
+  // comes from the server (GroupMessage.siteVisit), so the card cannot be faked
+  // and stays readable after the lead is renamed or the project edited.
+  //
+  // Same `&& msg.siteVisit` conjunct as unit_update above: a malformed payload
+  // must keep falling through to a plain text bubble rather than vanishing here.
+  if (msg.messageType === 'site_visit' && msg.siteVisit) {
+    const sv = msg.siteVisit;
+    const done = sv.kind === 'completed';
+    // Palette per the established card spec: white card on colors.line with
+    // brand-orange accents. Completion keeps the green tick because, like the
+    // status pills, it carries meaning — the visit actually happened.
+    const accent = done ? colors.greenText : colors.brand;
+    const when = messageClock(done ? (sv.completedAt || msg.createdAt) : (sv.arrivedAt || msg.createdAt));
+
+    return (
+      <View style={[mbs.cardWrap, { alignSelf: 'center' }]}>
+        <Pressable
+          onPress={() => sv.project && onPropertyViewDetails(sv.project)}
+          style={mbs.visitCard}
+          accessibilityRole="button"
+          accessibilityLabel={`${done ? 'Site visit completed' : 'Arrived'} at ${sv.projectName || 'the site'}. Tap to open the project.`}
+        >
+          <View style={mbs.visitHeaderRow}>
+            {done
+              ? <CheckCircle2 size={15} color={accent} />
+              : <MapPin size={15} color={accent} />}
+            <Text style={[mbs.visitTag, { color: accent }]} numberOfLines={1}>
+              {done ? 'Site visit completed' : 'Arrived on site'}
+            </Text>
+            {when ? <Text style={mbs.visitClock}>{when}</Text> : null}
+          </View>
+
+          <Text style={mbs.visitProject} numberOfLines={1}>{sv.projectName || 'the site'}</Text>
+          <Text style={mbs.visitSub} numberOfLines={2}>
+            {`with ${sv.leadName || 'a client'}`}
+            {sv.performedByName ? ` · by ${sv.performedByName}` : ''}
+          </Text>
+
+          {/* `dwellMinutes` is undefined when the server never measured a dwell,
+              which is NOT the same as a 0-minute visit — so the line is omitted
+              rather than printing "0 min on site". */}
+          {done && typeof sv.dwellMinutes === 'number' ? (
+            <Text style={[mbs.visitDwell, { color: accent }]}>{`${sv.dwellMinutes} min on site`}</Text>
+          ) : null}
+        </Pressable>
+      </View>
+    );
+  }
+
+  // Project announcement. GroupMessage has supported this type on the server for
+  // a while, but MessageBubble had NO branch, so an announcement rendered as a
+  // stray grey text bubble. site_visit is deliberately not being left in the same
+  // state, so the gap is closed in the same change.
+  //
+  // Minimal and honest: the snapshot carries far more (cover image, price, BHK,
+  // RERA, builder identity) but only the title, location and a tap-through are
+  // drawn, rather than inventing a richer card than anyone asked for.
+  if (msg.messageType === 'project_announcement' && msg.projectAnnouncement) {
+    const pa = msg.projectAnnouncement;
+    const where = [pa.location, pa.city].filter(Boolean).join(', ');
+
+    return (
+      <View style={[mbs.cardWrap, { alignSelf: 'center' }]}>
+        <Pressable
+          onPress={() => pa.project && onPropertyViewDetails(pa.project)}
+          style={mbs.visitCard}
+          accessibilityRole="button"
+          accessibilityLabel={`Project ${pa.projectName || 'announcement'}. Tap to open the project.`}
+        >
+          <View style={mbs.visitHeaderRow}>
+            <Building2 size={15} color={colors.brand} />
+            <Text style={[mbs.visitTag, { color: colors.brand }]} numberOfLines={1}>New project</Text>
+            <Text style={mbs.visitClock}>{messageClock(msg.createdAt)}</Text>
+          </View>
+          <Text style={mbs.visitProject} numberOfLines={1}>{pa.projectName || 'Project'}</Text>
+          {where ? <Text style={mbs.visitSub} numberOfLines={1}>{where}</Text> : null}
+        </Pressable>
       </View>
     );
   }
@@ -8298,6 +8393,57 @@ const mbs = StyleSheet.create({
     flex: 1, 
     fontSize: 11, 
     color: colors.ink 
+  },
+  // Site visit + project announcement cards. One surface for both: a compact
+  // white card on colors.line, centred like the unit-day pill because both are
+  // SERVER events about the room, not something a member said. Colour comes only
+  // from the leading icon and the accent text.
+  //
+  // Explicit margins, no `gap`: `gap` inside a centred content-sized subtree has
+  // produced a layout bug twice in this file (see unitDayPill).
+  visitCard: {
+    backgroundColor: colors.white,
+    borderWidth: 1,
+    borderColor: colors.line,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+  },
+  visitHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minWidth: 0,
+  },
+  visitTag: {
+    flexShrink: 1,
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.2,
+    marginLeft: 5,
+  },
+  visitClock: {
+    // Pushed to the right edge without flex on the text itself, so a long tag
+    // wraps/truncates instead of squeezing the clock to zero width.
+    marginLeft: 'auto',
+    paddingLeft: 8,
+    fontSize: 9.5,
+    color: colors.muted,
+  },
+  visitProject: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: colors.ink,
+    marginTop: 4,
+  },
+  visitSub: {
+    fontSize: 11,
+    color: colors.muted2,
+    marginTop: 1,
+  },
+  visitDwell: {
+    fontSize: 11,
+    fontWeight: '700',
+    marginTop: 3,
   },
 });
 

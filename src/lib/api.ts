@@ -800,6 +800,125 @@ export const humanLeadsApi = {
   },
 };
 
+// ── Site visits ─────────────────────────────────────────────
+// A lead owns the SCHEDULE (siteVisitDate / siteVisitTime, set through
+// humanLeadsApi.update above); a SiteVisit owns the EXECUTION — arrival,
+// completion, the two coordinate pairs and the dwell. They are separate
+// collections server-side for that reason, so the two clients sit side by side
+// here rather than one wrapping the other.
+
+/** Where a fix was taken. `accuracy` is whatever the OS reported, in metres. */
+export interface SiteVisitCoords {
+  latitude: number;
+  longitude: number;
+  accuracy?: number;
+}
+
+/**
+ * One field check-in. This is the server's flattened shape, ids as strings.
+ *
+ * `distanceMeters` / `dwellSeconds` are `number | null` and never undefined,
+ * because the server normalises them — null means "not measured", which the UI
+ * must be able to tell apart from zero.
+ *
+ * scheduledFor / scheduledTime are STRINGS copied off the lead, not Dates: the
+ * lead stores them as free text the agent typed.
+ */
+export interface SiteVisit {
+  id: string;
+  lead: string;
+  leadName: string;
+  project: string;
+  projectName: string;
+  scheduledFor?: string;
+  scheduledTime?: string;
+  status: 'scheduled' | 'arrived' | 'completed' | 'cancelled';
+  performedBy: string;
+  arrivedAt?: string;
+  completedAt?: string;
+  arrivalCoords: SiteVisitCoords | null;
+  completionCoords: SiteVisitCoords | null;
+  distanceMeters: number | null;
+  dwellSeconds: number | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const siteVisitsApi = {
+  /**
+   * Start (or resume) a visit. `created` is false when a non-terminal visit for
+   * the same (lead, performer) already existed — the server resumes it instead
+   * of duplicating, and `target` is then absent, so the caller must already hold
+   * the project coordinates.
+   *
+   * The server refuses to create a visit for a project with no latitude /
+   * longitude, so a 400 here is the honest "this project is not trackable"
+   * answer rather than a watcher that can never fire.
+   */
+  async create(input: { leadId: string; projectId?: string }): Promise<{ visit: SiteVisit; created: boolean; target?: { latitude: number; longitude: number } }> {
+    const response = await fetch(`${API_URL}/site-visits`, {
+      method: 'POST',
+      headers: await authHeaders(),
+      body: JSON.stringify(input),
+    });
+    const data = await handleResponse<{ visit: SiteVisit; created?: boolean; target?: { latitude: number; longitude: number } }>(response);
+    return { visit: data.visit, created: data.created === true, target: data.target };
+  },
+
+  async list(params?: { leadId?: string; status?: SiteVisit['status'] }): Promise<SiteVisit[]> {
+    const query = new URLSearchParams();
+    if (params?.leadId) query.set('leadId', params.leadId);
+    if (params?.status) query.set('status', params.status);
+    const qs = query.toString() ? `?${query.toString()}` : '';
+    const response = await fetch(`${API_URL}/site-visits${qs}`, { headers: await authHeaders() });
+    const data = await handleResponse<{ visits: SiteVisit[] }>(response);
+    return data.visits || [];
+  },
+
+  /**
+   * Record arrival. Idempotent server-side: calling it on a visit that is
+   * already arrived or completed returns the stored document with
+   * `posted: false` and creates no second group card. `posted` says whether a
+   * site_visit card went into the project room — it is false, legitimately,
+   * when the performer is not a member of that room.
+   */
+  async arrive(id: string, body: { latitude: number; longitude: number; accuracy?: number; distanceMeters?: number }): Promise<{ visit: SiteVisit; posted: boolean }> {
+    const response = await fetch(`${API_URL}/site-visits/${encodeURIComponent(id)}/arrive`, {
+      method: 'POST',
+      headers: await authHeaders(),
+      body: JSON.stringify(body),
+    });
+    const data = await handleResponse<{ visit: SiteVisit; posted?: boolean }>(response);
+    return { visit: data.visit, posted: data.posted === true };
+  },
+
+  /**
+   * Complete the visit. Also idempotent. `leadStage` is the lead's stage AFTER
+   * the server's one-way advance rule ran: it only moves 'Site Visit Scheduled'
+   * to 'Site Visit Done' and never drags a lead backwards from Negotiation or
+   * later, so the caller should trust this value over its own optimism.
+   */
+  async complete(id: string, body: { latitude?: number; longitude?: number; dwellSeconds?: number }): Promise<{ visit: SiteVisit; posted: boolean; leadStage: string | null }> {
+    const response = await fetch(`${API_URL}/site-visits/${encodeURIComponent(id)}/complete`, {
+      method: 'POST',
+      headers: await authHeaders(),
+      body: JSON.stringify(body),
+    });
+    const data = await handleResponse<{ visit: SiteVisit; posted?: boolean; leadStage?: string | null }>(response);
+    return { visit: data.visit, posted: data.posted === true, leadStage: data.leadStage ?? null };
+  },
+
+  /** Abandon a visit. Posts no group card. */
+  async cancel(id: string): Promise<SiteVisit> {
+    const response = await fetch(`${API_URL}/site-visits/${encodeURIComponent(id)}/cancel`, {
+      method: 'POST',
+      headers: await authHeaders(),
+    });
+    const data = await handleResponse<{ visit: SiteVisit }>(response);
+    return data.visit;
+  },
+};
+
 // ── Users / Profile ─────────────────────────────────────────
 export interface UpdateProfileInput {
   name?: string;
@@ -1779,7 +1898,14 @@ export interface GroupMessage {
      */
     phone?: string;
   };
-  messageType: 'text' | 'requirement_card' | 'inventory_card' | 'system' | 'image' | 'file' | 'unit_update';
+  /**
+   * 'site_visit' and 'project_announcement' were both already in the server's
+   * GroupMessage enum with no client member here, so a message of either type
+   * arrived typed as the union it was not in. 'project_announcement' is the
+   * older of the two gaps — the server has posted it for a while and the client
+   * had no branch at all, so it rendered as a stray text bubble.
+   */
+  messageType: 'text' | 'requirement_card' | 'inventory_card' | 'system' | 'image' | 'file' | 'unit_update' | 'site_visit' | 'project_announcement';
   content: string;
   attachment?: { name?: string; mimeType?: string; size?: number; key?: string };
   requirementCard?: any;
@@ -1807,6 +1933,49 @@ export interface GroupMessage {
     fromStatus?: UnitStatus;
     toStatus: UnitStatus;
     updatedByName?: string;
+  };
+  /**
+   * Server auto-message when an agent arrives at / finishes a site visit.
+   * Snapshot for the same reason unitUpdate is one: the card must stay readable
+   * after the lead is renamed or the project edited, and after the SiteVisit
+   * document itself is gone.
+   *
+   * `dwellMinutes` is deliberately optional rather than defaulted to 0 — the
+   * server leaves it undefined when the dwell was never measured, which is a
+   * different thing from a 0-minute visit.
+   *
+   * Previously the collaborator's build posted this as messageType 'text' with
+   * an emoji blob in `content`, which could not be styled, filtered or counted,
+   * and which any client could forge.
+   */
+  siteVisit?: {
+    visit: string;
+    kind: 'arrived' | 'completed';
+    project: string;
+    projectName?: string;
+    leadName?: string;
+    performedByName?: string;
+    arrivedAt?: string;
+    completedAt?: string;
+    dwellMinutes?: number;
+    distanceMeters?: number;
+  };
+  /**
+   * Server auto-message when a project is published or updated. The server has
+   * carried this snapshot (and `messageType: 'project_announcement'`) for a
+   * while, but the client had NO field for it and no render branch, so every
+   * announcement arrived as a stray grey text bubble built from `content`.
+   *
+   * Only the four fields the card actually draws are typed. The server snapshot
+   * is wider (cover image, price, BHK options, RERA, builder identity); adding
+   * them here would imply a richer card than exists, so they stay off the wire
+   * type until something renders them.
+   */
+  projectAnnouncement?: {
+    project: string;
+    projectName?: string;
+    location?: string;
+    city?: string;
   };
   createdAt: string;
 }
@@ -1986,6 +2155,28 @@ export const groupChatApi = {
       // missed the pill branch and rendered as the actor's own text bubble.
       unitUpdate: m.unitUpdate
         ? { ...m.unitUpdate, project: String(m.unitUpdate.project?._id || m.unitUpdate.project || '') }
+        : undefined,
+      // Mapped here AND in normalizeMsg (GroupChatEmbedded) in the same change,
+      // because mapping a typed message in only one of the two places is exactly
+      // how history-loaded unit_update messages once fell through to a plain
+      // text bubble: the live socket arrival rendered as a card and the same
+      // message after a reload did not. `project` and `visit` get the same
+      // String(x?._id || x || '') idiom unitUpdate uses, since either can arrive
+      // populated or as a bare ObjectId depending on the path.
+      siteVisit: m.siteVisit
+        ? {
+          ...m.siteVisit,
+          project: String(m.siteVisit.project?._id || m.siteVisit.project || ''),
+          visit: String(m.siteVisit.visit?._id || m.siteVisit.visit || ''),
+        }
+        : undefined,
+      // Same two-mapper rule as siteVisit above. This one was never mapped at
+      // all, which is why project announcements rendered as grey text bubbles.
+      projectAnnouncement: m.projectAnnouncement
+        ? {
+          ...m.projectAnnouncement,
+          project: String(m.projectAnnouncement.project?._id || m.projectAnnouncement.project || ''),
+        }
         : undefined,
       createdAt: m.createdAt || '',
     }));

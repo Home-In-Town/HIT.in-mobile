@@ -2,11 +2,12 @@ import React, { useState, useEffect, useCallback } from 'react';
 import {
   View, Text, TextInput, Pressable, ScrollView, Modal, Linking, ActivityIndicator, StyleSheet,
 } from 'react-native';
-import { Plus, Search, X, ChevronRight, AlertTriangle, Clock, Calendar } from 'lucide-react-native';
+import { Plus, Search, X, ChevronRight, AlertTriangle, Clock, Calendar, MapPin, CheckCircle2 } from 'lucide-react-native';
 import {
   projectsApi, ProjectLite, ProjectAsset, humanLeadsApi,
   HumanLead, LeadPerson, LeadStage, QUALIFIED_STAGE, LeadRequirementsInput,
 } from '../../lib/api';
+import { useSiteVisitTracking, SiteVisitTrackingState, DWELL_MS } from '../../hooks/useSiteVisitTracking';
 import { useToast } from '../Toast';
 import { useAuth } from '../../lib/authContext';
 import LeadDetailView from './LeadDetailView';
@@ -61,6 +62,23 @@ export function leadTypeColor(type: LeadType): { bg: string; text: string; borde
 const HOME_TYPES = ['1 BHK', '2 BHK', '3 BHK', '4 BHK', '5 BHK+', 'Villa', 'Row House', 'Duplex', 'Penthouse', 'Plot', 'Shop', 'Office'];
 const BUYING_TYPES = ['Self-use', 'Investment', 'Rental income', 'Upgrade', 'Second home', 'NRI purchase'];
 const SOURCES = ['Meta Ad', 'WhatsApp', 'Website', 'Google Ad', 'Walk-in', 'Referral', 'Broker', 'Cold Database', 'Cold Call', 'Other'];
+
+// Quoted in the check-in copy instead of a hard-coded "5 minutes", so the number
+// on screen can never drift from the dwell the tracking engine actually enforces.
+const MS_PER_MINUTE = 60 * 1000;
+const DWELL_MINUTES = Math.round(DWELL_MS / MS_PER_MINUTE);
+
+/** One line describing where an in-progress site-visit check-in has got to. */
+function checkInStatusLabel(st: SiteVisitTrackingState): string {
+  switch (st.phase) {
+    case 'locating': return 'Locating…';
+    case 'watching': return st.distanceMeters === null ? 'Tracking…' : `Tracking · ${st.distanceMeters} m away`;
+    // Arrival is already recorded server-side at this point, so the useful thing
+    // to say is what still has to happen, not that something is pending.
+    case 'arrived': return `Arrived · completes after ${DWELL_MINUTES} min on site`;
+    case 'completed': return 'Visit completed';
+  }
+}
 
 export function stageColor(stage: string): { bg: string; text: string; border: string } {
   switch (stage) {
@@ -119,6 +137,16 @@ export default function HumanLeadManager({ onNavigateToLearn }: { onNavigateToLe
   const [teamAgents, setTeamAgents] = useState<{ id: string; name: string; role: string }[]>([]);
   const [assigningLead, setAssigningLead] = useState<DemoLead | null>(null);
 
+  // Auto check-in. Scheduling itself is untouched (it already persists through
+  // humanLeadsApi.update); this only adds the geofence/dwell execution half, and
+  // exactly one visit is trackable at a time by design — see the hook.
+  const {
+    tracking: checkInActive,
+    start: startCheckIn,
+    stop: stopCheckIn,
+    state: checkInState,
+  } = useSiteVisitTracking();
+
   const loadLeads = useCallback(async () => {
     setLoading(true);
     setLoadError(null);
@@ -153,6 +181,28 @@ export default function HumanLeadManager({ onNavigateToLearn }: { onNavigateToLe
     const diffDays = (new Date(lead.siteVisitDate).getTime() - Date.now()) / 86400000;
     if (diffDays <= 2 && diffDays >= 0) return 'close';
     return null;
+  };
+
+  /**
+   * Resolve the lead's project id from the list that is ALREADY loaded above.
+   *
+   * HumanLead stores `project` as a NAME string, not an id — the same reason
+   * assetsForLead matches on `p.name`. Tracking needs the id (to read the
+   * project's latitude/longitude), so it comes from the same list rather than a
+   * second fetch.
+   */
+  const handleStartCheckIn = (lead: DemoLead) => {
+    const project = projectsList.find((p) => p.name === lead.project);
+    if (!project) {
+      toast.error('Link this lead to a project first');
+      return;
+    }
+    void startCheckIn({
+      leadId: lead.id,
+      leadName: lead.name,
+      projectId: project.id,
+      projectName: project.name,
+    });
   };
 
   const handleScheduleVisit = async () => {
@@ -482,6 +532,47 @@ export default function HumanLeadManager({ onNavigateToLearn }: { onNavigateToLe
                     <Calendar size={12} color="#0E7490" />
                     <Text style={{ fontSize: 9, fontWeight: '500', color: '#0E7490' }}>{lead.siteVisitDate} at {lead.siteVisitTime}</Text>
                   </View>
+                )}
+
+                {/* ── Auto check-in ──
+                    Hangs off the scheduling that already exists rather than a
+                    second form: the date/time above is the schedule, this is the
+                    execution. Rendered for every scheduled visit with a date,
+                    including the 'close' alert case — that is precisely when an
+                    agent is on their way and wants to start tracking.
+
+                    "Works while the app is open" is there because it is TRUE and
+                    because the collaborator's version promised automatic
+                    check-in while requesting a background-location permission it
+                    never used. Foreground-only is the honest capability, so the
+                    copy states it instead of letting the agent assume the phone
+                    is watching from their pocket. */}
+                {lead.stage === 'Site Visit Scheduled' && lead.siteVisitDate && (
+                  checkInState?.leadId === lead.id ? (
+                    <View style={s.checkInBox}>
+                      <View style={s.checkInRow}>
+                        {checkInState.phase === 'completed'
+                          ? <CheckCircle2 size={12} color={colors.green} />
+                          : <MapPin size={12} color={colors.brand} />}
+                        <Text style={s.checkInStatus} numberOfLines={1}>{checkInStatusLabel(checkInState)}</Text>
+                        {/* Same control either way — it ends the session and
+                            clears this box — but a session that is already over
+                            is being dismissed, not stopped. */}
+                        <Pressable onPress={stopCheckIn} style={s.checkInStopBtn}>
+                          <Text style={s.checkInStopText}>
+                            {checkInState.phase === 'completed' || checkInState.error ? 'Dismiss' : 'Stop'}
+                          </Text>
+                        </Pressable>
+                      </View>
+                      {checkInState.error && <Text style={s.checkInError}>{checkInState.error}</Text>}
+                      <Text style={s.checkInHint}>Works while the app is open</Text>
+                    </View>
+                  ) : !checkInActive ? (
+                    <Pressable onPress={() => handleStartCheckIn(lead)} style={s.checkInBtn}>
+                      <MapPin size={11} color={colors.brand} />
+                      <Text style={s.checkInBtnText}>Start check-in</Text>
+                    </Pressable>
+                  ) : null
                 )}
               </View>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
@@ -859,6 +950,21 @@ const s = StyleSheet.create({
   alertText: { fontSize: 9, fontWeight: 'bold', color: '#DC2626' },
   alertScheduleBtn: { marginLeft: 4, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, backgroundColor: '#FEE2E2' },
   alertScheduleText: { fontSize: 8, fontWeight: 'bold', color: '#B91C1C' },
+
+  // Site-visit auto check-in. White/cream card on the neutral line colour with a
+  // brand-orange action, matching the established card palette; only the error
+  // line and the completed tick carry their own colour, because those two mean
+  // something.
+  checkInBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 6, alignSelf: 'flex-start', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, backgroundColor: colors.brandTint, borderWidth: 1, borderColor: colors.brand },
+  checkInBtnText: { fontSize: 9, fontWeight: 'bold', color: colors.brand },
+  checkInBox: { marginTop: 6, paddingHorizontal: 8, paddingVertical: 6, borderRadius: 8, backgroundColor: colors.cream, borderWidth: 1, borderColor: colors.line, gap: 2 },
+  checkInRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  checkInStatus: { flex: 1, fontSize: 9, fontWeight: 'bold', color: colors.muted2 },
+  checkInStopBtn: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line },
+  checkInStopText: { fontSize: 8, fontWeight: 'bold', color: colors.muted2 },
+  checkInHint: { fontSize: 8, color: colors.muted },
+  checkInError: { fontSize: 8, fontWeight: 'bold', color: colors.red },
+
   dateText: { fontSize: 9, color: colors.muted },
   modalOverlayCenter: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.4)', padding: 16 },
   modalOverlayBottom: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.4)' },
