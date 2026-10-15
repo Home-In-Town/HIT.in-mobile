@@ -42,9 +42,9 @@ import { timeStr, messageClock, fmtPrice, fmtCooldownLeft, noop } from '../lib/g
 import { mediaUrls, oneUrl } from '../lib/groupChat/media';
 import { CARD_GAP, BUILDER_STRIP_AUTOSCROLL_MS, cardStride } from '../lib/groupChat/stripGeometry';
 import { isProjectSummaryMessage, matchReason, normalizeMsg } from '../lib/groupChat/messages';
-import { localDateKey, unitStatusMeta, buildUnitDayGroups } from '../lib/groupChat/unitSummaries';
+import { unitStatusMeta, buildUnitDayGroups } from '../lib/groupChat/unitSummaries';
 import type { UnitDayGroup } from '../lib/groupChat/unitSummaries';
-import { ROOM_ICON, GROUP_FILTERS, GROUP_FILTER_LABELS, isOwnerProfileIncomplete, isOrphanedPropertyGroup, isPropertyRoomType, roomDisplayName, roomLines, activityLabel, roomTypeLabel } from '../lib/groupChat/rooms';
+import { ROOM_ICON, GROUP_FILTERS, GROUP_FILTER_LABELS, isOrphanedPropertyGroup, isPropertyRoomType, roomDisplayName, roomLines, activityLabel, roomTypeLabel } from '../lib/groupChat/rooms';
 import type { GroupFilterKey } from '../lib/groupChat/rooms';
 import { PROPERTY_ICONS, PROFILE_STORAGE_KEY, AVATAR_DIR, roomProfileKey, discardReplacedAvatar, avatarErrorMessage, resolveRoomAvatar } from '../lib/groupChat/avatars';
 import type { RoomProfile, CacheWriteResult } from '../lib/groupChat/avatars';
