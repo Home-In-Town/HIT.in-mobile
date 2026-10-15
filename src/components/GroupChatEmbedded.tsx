@@ -35,9 +35,15 @@ import { useSocket } from '../hooks/useSocket';
 import { useToast } from './Toast';
 import { colors, unitColors } from '../theme';
 import type { ProjectUnit, UnitStatus } from '../lib/api';
-import { canEditUnits, statusMeta, setupFromUnits, previewUnitSetup, UNIT_STATUS } from '../lib/units';
+import { canEditUnits, statusMeta, setupFromUnits, previewUnitSetup } from '../lib/units';
 import UnitGrid from './units/UnitGrid';
 import UnitSetupForm, { UnitSetupDraft, draftFromSetup, draftToSetup, emptyUnitDraft } from './units/UnitSetupForm';
+import { timeStr, messageClock, fmtPrice, fmtLakhs, fmtCooldownLeft, fmtMoney, noop } from '../lib/groupChat/formatting';
+import { mediaUrls, oneUrl } from '../lib/groupChat/media';
+import { CARD_GAP, BUILDER_STRIP_AUTOSCROLL_MS, cardStride } from '../lib/groupChat/stripGeometry';
+import { isProjectSummaryMessage, matchReason, normalizeMsg } from '../lib/groupChat/messages';
+import { localDateKey, unitStatusMeta, buildUnitDayGroups } from '../lib/groupChat/unitSummaries';
+import type { UnitDayGroup } from '../lib/groupChat/unitSummaries';
 
 const ROOM_ICON: Record<string, string> = { project: '🏗', builder: '🏢', area: '📍', universal: '🌐' };
 
@@ -536,170 +542,7 @@ function RoomAvatar({ room, cache, size = 17, imageSize, style }: {
   );
 }
 
-function timeStr(iso: string) {
-  if (!iso) return '';
-  const d = Date.now() - new Date(iso).getTime();
-  const m = Math.floor(d / 60000);
-  if (m < 1) return 'now';
-  if (m < 60) return `${m}m`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h`;
-  return `${Math.floor(h / 24)}d`;
-}
-
-function messageClock(iso: string): string {
-  if (!iso) return '';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
-}
-
-function fmtPrice(v: number): string {
-  if (!v) return '—';
-  if (v >= 10000000) return `₹${(v / 10000000).toFixed(1)}Cr`;
-  if (v >= 100000) return `₹${(v / 100000).toFixed(0)}L`;
-  return `₹${v.toLocaleString('en-IN')}`;
-}
-
-// ── Media coercion ────────────────────────────────────────────────────────────
-// Lifted to module scope from inside handlePropertyViewDetails' useCallback body
-// so the property drawer uses the SAME coercion as the detail sheet instead of a
-// second, drifting copy. A media entry is either a bare URL string or a
-// `{ url }` file object depending on which endpoint produced it (the room
-// projection nests `{ url }` objects under `media`, transformProject hands back
-// whatever Mongo stored), so every consumer must tolerate both shapes.
-const mediaUrls = (arr: any): string[] =>
-  (Array.isArray(arr) ? arr : []).map((x: any) => (typeof x === 'string' ? x : x?.url)).filter(Boolean);
-const oneUrl = (v: any): string => (typeof v === 'string' ? v : v?.url || '');
-
-// ── The server's pinned project-summary dump ──────────────────────────────────
-//
-// The backend's buildProjectDetailsContent opens with `📋 ${project.projectName}`,
-// so the old test — `msg.content?.startsWith('📋 Project:')` — could NEVER match
-// and the whole multi-line property dump rendered as a grey system bubble at the
-// top of every project thread. The flag is the real test; the `^📋` content check
-// is NOT just legacy support: refreshProjectSubGroupPin is a live second writer
-// that `create()`s UNFLAGGED `📋` system messages on every project edit, because
-// its own lookup regex ('^📋 Project:') can never match what it writes either.
-//
-// What still renders: join / exit notices, '<subject> deleted by X', and
-// '<agent> joined — requirement matched …' are plain text and none start with 📋.
-// The `messageType === 'system'` conjunct means a USER typing '📋 …' (a `text`
-// message) is never suppressed.
-//
-// Accepted scope (design review #9): getMessages is paginated at 50 server-side
-// and the client asks for no page, so the summary — usually the room's OLDEST
-// message — is often not even in the loaded window. Suppression therefore
-// operates on the loaded page only. No pagination work is in scope.
-const isProjectSummaryMessage = (msg: GroupMessage) =>
-  msg.messageType === 'system' &&
-  (msg.isProjectDetails === true || (msg.content ?? '').trimStart().startsWith('📋'));
-
-// ── unit_update day summaries ─────────────────────────────────────────────────
-//
-// Local-date key. The previous code keyed on `toISOString().split('T')[0]`, i.e.
-// UTC, so in IST every update posted between 00:00 and 05:29 was filed under the
-// PREVIOUS day — and 'Aaj' was computed the same wrong way, so the two could
-// disagree. It also re-parsed the 'YYYY-MM-DD' key with `new Date(key)`, which
-// JS reads as UTC midnight, shifting the printed 'DD MMM' back a day again.
-const localDateKey = (d: Date) =>
-  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-
-// Display ORDER preference only — never the loop source. The old code iterated
-// this list and read counts off it, so any status key outside it would have been
-// silently dropped from the summary.
-const UNIT_SUMMARY_ORDER: UnitStatus[] = ['booked', 'available', 'sold', 'on-hold'];
-
-// One status→{label,color} helper shared by the summary segments AND the
-// expanded rows, so the two can never disagree (design review #8). `statusMeta`
-// falls back to UNIT_STATUS.available for an unknown key, which would label a
-// status the client has never heard of "Vacant" — worse than showing the raw
-// key, because it asserts something false about a unit.
-const unitStatusMeta = (s: string): { label: string; color: string } =>
-  s in UNIT_STATUS
-    ? statusMeta(s)
-    : { label: s.charAt(0).toUpperCase() + s.slice(1), color: colors.muted2 };
-
-interface UnitDaySegment { key: string; label: string; color: string; count: number }
-interface UnitDayGroup { dateKey: string; dateLabel: string; segments: UnitDaySegment[]; items: GroupMessage[] }
-
-const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-/**
- * Build one day group per local calendar day of unit_update messages, keyed on
- * the id of that day's FIRST update.
- *
- * Previously each memoised bubble filtered the WHOLE `messages` array to find
- * its own day-mates and decide whether it was the day's first — O(n²) over the
- * thread, recomputed on every render of every bubble, so one composer keystroke
- * re-ran the lot. Now the parent builds this once in a useMemo and each bubble
- * gets its own group (or undefined) as a prop.
- *
- * `now` is a parameter so the Aaj/Kal boundary is injectable rather than read
- * from the clock deep inside the loop.
- */
-function buildUnitDayGroups(messages: GroupMessage[], now: Date): Map<string, UnitDayGroup> {
-  const byDate = new Map<string, { firstId: string; first: Date; items: GroupMessage[] }>();
-  // The FlatList is not `inverted`, so array order is chronological ascending
-  // and the first unit_update seen for a day is that day's earliest.
-  for (const m of messages) {
-    if (m.messageType !== 'unit_update' || !m.unitUpdate) continue;
-    const d = new Date(m.createdAt);
-    if (Number.isNaN(d.getTime())) continue;
-    const key = localDateKey(d);
-    const bucket = byDate.get(key);
-    if (bucket) bucket.items.push(m);
-    else byDate.set(key, { firstId: m.id, first: d, items: [m] });
-  }
-
-  const todayKey = localDateKey(now);
-  const yesterdayKey = localDateKey(new Date(now.getTime() - 86400000));
-  const out = new Map<string, UnitDayGroup>();
-
-  byDate.forEach((bucket, dateKey) => {
-    // Segments come from the statuses actually PRESENT, ordered by preference
-    // with anything unknown appended (Infinity) rather than dropped.
-    const counts = new Map<string, number>();
-    for (const m of bucket.items) {
-      const st = m.unitUpdate!.toStatus as string;
-      counts.set(st, (counts.get(st) || 0) + 1);
-    }
-    const segments: UnitDaySegment[] = Array.from(counts.entries())
-      .map(([key, count]) => {
-        const meta = unitStatusMeta(key);
-        return { key, label: meta.label, color: meta.color, count };
-      })
-      // A FINITE rank, not Infinity: `Infinity - Infinity` is NaN, and a
-      // comparator that returns NaN leaves the order of two unknown statuses
-      // undefined. This keeps them after the known ones and stable among
-      // themselves (insertion order, i.e. first seen in the thread).
-      .sort((a, b) => {
-        const rank = (k: string) => {
-          const i = UNIT_SUMMARY_ORDER.indexOf(k as UnitStatus);
-          return i < 0 ? UNIT_SUMMARY_ORDER.length : i;
-        };
-        return rank(a.key) - rank(b.key);
-      });
-
-    // 'DD MMM' is formatted from the group's OWN first Date, never from
-    // `new Date(dateKey)` — see localDateKey's comment for why that re-parse was
-    // a second off-by-one-day bug.
-    const dateLabel = dateKey === todayKey
-      ? 'Aaj'
-      : dateKey === yesterdayKey
-        ? 'Kal'
-        : `${bucket.first.getDate()} ${MONTH_SHORT[bucket.first.getMonth()]}`;
-
-    out.set(bucket.firstId, { dateKey, dateLabel, segments, items: bucket.items });
-  });
-
-  return out;
-}
-
 // Display name override: the universal / "HIT Community" room shows as "AI Lead Matching".
-/** Stable no-op, so passing one as a prop doesn't change identity each render. */
-const noop = () => {};
-
 function roomDisplayName(room?: GroupRoom | null): string {
   if (!room) return '';
   if (room.isUniversal || /hit community/i.test(room.name)) return 'AI Lead Matching';
@@ -791,21 +634,6 @@ function activityLabel(iso?: string): string {
   return weeks < 5 ? `Active ${weeks}w ago` : 'Active a while ago';
 }
 
-/**
- * Explains WHY a property matched, quoting the requirement the user actually
- * entered. Built from the requirement card on the same message, so it needs no
- * extra data from the server.
- */
-function matchReason(req: any): string {
-  if (!req) return '';
-  const need = [
-    req.bhkType,
-    req.area ? `in ${req.area}` : '',
-    req.budget ? `under ${req.budget}L` : '',
-  ].filter(Boolean).join(' ');
-  return need ? `Teri need "${need}" se match` : '';
-}
-
 /** Short label for the row's type chip. Universal rooms don't get one. */
 function roomTypeLabel(room: GroupRoom): string {
   if (room.isUniversal) return '';
@@ -831,13 +659,6 @@ const POSSESSION_STATUS = [
 // Per-property "Post to Group" cooldown (8 hours). After posting, the button is
 // disabled/faded until this elapses, then returns to normal.
 const POST_COOLDOWN_MS = 8 * 60 * 60 * 1000;
-
-// Format a lakh amount the way the rest of the app does.
-function fmtLakhs(lakhs?: number | null): string {
-  if (!lakhs || lakhs <= 0) return '—';
-  if (lakhs >= 100) return `₹${(lakhs / 100).toFixed(1)} Cr`;
-  return `₹${Math.round(lakhs)} L`;
-}
 
 // Map a backend ExtractedLead (sell/rent) into the shape PostCard renders.
 // This is what makes the Post list survive a reinstall — the data comes from
@@ -900,21 +721,6 @@ const DISAPPEAR_OPTIONS: { label: string; ms: number }[] = [
   { label: 'Never', ms: 0 },
 ];
 const disappearLabel = (ms: number) => DISAPPEAR_OPTIONS.find(o => o.ms === ms)?.label || 'Never';
-
-function fmtCooldownLeft(ms: number): string {
-  const h = Math.floor(ms / 3600000);
-  const m = Math.floor((ms % 3600000) / 60000);
-  if (h > 0) return `${h}h ${m}m`;
-  return `${m}m`;
-}
-
-// Rupees → short label (₹80L / ₹1.2Cr).
-function fmtMoney(v: number): string {
-  if (!v || v <= 0) return '';
-  if (v >= 10000000) return `₹${(v / 10000000).toFixed(v % 10000000 === 0 ? 0 : 1)}Cr`;
-  if (v >= 100000) return `₹${Math.round(v / 100000)}L`;
-  return `₹${v.toLocaleString('en-IN')}`;
-}
 
 // A backend project → the common display shape used by PostCard / View Property.
 // Every non-empty field comes from the real Project document. Raw AI prompts and
@@ -1154,46 +960,6 @@ const portfolioFallback = (p: OwnerPortfolioProject): InventoryCard => ({
   bhkOptions: p.bhkOptions,
   priceRange: p.startingPrice ? { min: p.startingPrice / 100000 } : undefined,
 });
-
-// Geometry of the builder property strip, lifted out of the StyleSheet because
-// the auto-scroll stride is derived from it. The timer used to carry its own
-// hardcoded `const cardWidth = 196` (186 card + 10 gap) with no link back to
-// `bp.card` / `bp.stripRow`, so the two could silently disagree the moment either
-// style was touched. Now the styles and the stride math read the same constants
-// and the stride itself is derived from the ScrollView's MEASURED content width —
-// see cardStride() below.
-const CARD_GAP = 10;
-const STRIP_PADDING_H = 14;
-
-// How long each card holds still before the strip advances. The brief originally
-// asked for "3-4 seconds" and this was 3500 ms, the middle of that band — but on
-// the device that read as sluggish, so it is now 2000 ms. The number was once
-// hardcoded inside the setInterval call, where "make it faster" meant editing a
-// magic literal buried in the scroll maths. It lives here now so the pace is ONE
-// line to change, independently of the stride/wrap logic. Note what the number
-// does and does not control: it is the DWELL between ticks, not the glide. The
-// glide is `scrollTo({ animated: true })`, handed to the platform animator at a
-// fixed duration (~250 ms on Android) that this constant cannot influence — so
-// lowering this is the only lever on perceived pace, and dropping it much below
-// ~1500 ms would start cutting into the time needed to read a card's price.
-const BUILDER_STRIP_AUTOSCROLL_MS = 2000;
-
-/**
- * One card plus one gap, in px — how far the carousel must travel per tick.
- *
- * Derived from what the ScrollView actually measured rather than from a hardcoded
- * pixel guess: `contentWidth = 2*padding + n*cardWidth + (n-1)*gap`, so
- * `cardWidth + gap = (contentWidth - 2*padding + gap) / n`. Measuring beats
- * guessing here because the card is a fixed 186 dp today but nothing enforces
- * that, and a stale stride desyncs the strip silently (it scrolls, just to the
- * wrong place). Falls back to the literal 186 + gap only when the content has not
- * been measured yet.
- */
-function cardStride(contentWidth: number, count: number): number {
-  if (count < 1 || contentWidth <= 0) return 186 + CARD_GAP;
-  const measured = (contentWidth - 2 * STRIP_PADDING_H + CARD_GAP) / count;
-  return measured > 1 ? measured : 186 + CARD_GAP;
-}
 
 // ── Builder property card ──
 // Shown as a horizontal strip inside a company group: the properties that
@@ -6769,57 +6535,6 @@ function Field({ label, required, flex, children }: { label: string; required?: 
       {children}
     </View>
   );
-}
-
-// Normalize a posted message from REST/socket into our GroupMessage shape.
-let _msgSeq = 0;
-function normalizeMsg(m: any, roomId: string): GroupMessage {
-  return {
-    id: String(m._id || m.id || `tmp_${Date.now()}_${_msgSeq++}`),
-    room: String(m.room || roomId),
-    sender: {
-      id: String(m.sender?._id || m.sender?.id || ''),
-      name: m.sender?.name || '',
-      role: m.sender?.role || '',
-      companyName: m.sender?.companyName,
-      isVerified: m.sender?.isVerified === true,
-      verificationStatus: m.sender?.verificationStatus,
-      // Present on inventory cards only — the card's Call button dials it.
-      phone: m.sender?.phone,
-    },
-    messageType: m.messageType || 'text',
-    content: m.content || '',
-    attachment: m.attachment,
-    requirementCard: m.requirementCard,
-    inventoryCard: m.inventoryCard,
-    matchResults: m.matchResults,
-    // Socket arrivals and post echoes come through here, not through
-    // groupChatApi.getMessages. Without this line a summary that arrived LIVE
-    // (project edited while the room is open) would only be caught by the weaker
-    // `^📋` content fallback.
-    isProjectDetails: m.isProjectDetails === true,
-    // project arrives as an ObjectId string, or populated on some REST paths.
-    unitUpdate: m.unitUpdate
-      ? { ...m.unitUpdate, project: String(m.unitUpdate.project?._id || m.unitUpdate.project || '') }
-      : undefined,
-    // Must stay in sync with groupChatApi.getMessages — mapping a typed message
-    // in only ONE of the two mappers is how history-loaded unit_update messages
-    // once fell through to a plain text bubble (live arrival drew a card, the
-    // same message after a reload did not).
-    siteVisit: m.siteVisit
-      ? {
-        ...m.siteVisit,
-        project: String(m.siteVisit.project?._id || m.siteVisit.project || ''),
-        visit: String(m.siteVisit.visit?._id || m.siteVisit.visit || ''),
-      }
-      : undefined,
-    // Same two-mapper rule as siteVisit above. This one was never mapped at all,
-    // which is why project announcements rendered as grey text bubbles.
-    projectAnnouncement: m.projectAnnouncement
-      ? { ...m.projectAnnouncement, project: String(m.projectAnnouncement.project?._id || m.projectAnnouncement.project || '') }
-      : undefined,
-    createdAt: m.createdAt || new Date().toISOString(),
-  };
 }
 
 // ── Shared card action row ──
