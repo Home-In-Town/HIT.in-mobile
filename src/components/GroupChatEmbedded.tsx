@@ -45,8 +45,12 @@ import PostCard from './groupChat/PostCard';
 import BuilderPropertyCard from './groupChat/BuilderPropertyCard';
 import Field from './groupChat/Field';
 import Tag from './groupChat/Tag';
-import Chips from './groupChat/Chips';
-import SelectRow from './groupChat/SelectRow';
+// `Chips` and `SelectRow` are deliberately NOT imported here. The phase-2 plan
+// assumed the two sheets in this file rendered them, so the extraction added
+// `import Chips` / `import SelectRow` back; in fact `<Chips` and `<SelectRow`
+// had ZERO call sites in this file even before the extraction (they were dead
+// code already), so those two imports pulled in a module nothing rendered.
+// They now live in src/components/groupChat/ for whoever needs them next.
 import { propertyCardShared } from './groupChat/sharedStyles';
 import { messageClock, fmtPrice, noop } from '../lib/groupChat/formatting';
 import { mediaUrls, oneUrl } from '../lib/groupChat/media';
