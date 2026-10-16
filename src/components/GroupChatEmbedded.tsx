@@ -46,9 +46,8 @@ import BuilderPropertyCard from './groupChat/BuilderPropertyCard';
 import Field from './groupChat/Field';
 import Tag from './groupChat/Tag';
 import Chips from './groupChat/Chips';
+import SelectRow from './groupChat/SelectRow';
 import { propertyCardShared } from './groupChat/sharedStyles';
-// TEMPORARY: SelectRow is still defined below and reads cs.*; this import goes away with it.
-import { cs } from './groupChat/sharedStyles';
 import { messageClock, fmtPrice, noop } from '../lib/groupChat/formatting';
 import { mediaUrls, oneUrl } from '../lib/groupChat/media';
 import { CARD_GAP, BUILDER_STRIP_AUTOSCROLL_MS, cardStride } from '../lib/groupChat/stripGeometry';
@@ -6274,21 +6273,6 @@ const MessageBubble = React.memo(function MessageBubble({
     </View>
   );
 });
-
-function SelectRow({ label, options, value, onChange }: { label: string; options: { v: string; l: string }[]; value: string; onChange: (v: string) => void }) {
-  return (
-    <View style={{ gap: 5 }}>
-      <Text style={cs.selLabel}>{label}</Text>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
-        {options.map(o => (
-          <Pressable key={o.v} onPress={() => onChange(o.v)} style={[cs.chip, value === o.v && cs.chipOn]}>
-            <Text style={[cs.chipText, value === o.v && cs.chipTextOn]}>{o.l}</Text>
-          </Pressable>
-        ))}
-      </ScrollView>
-    </View>
-  );
-}
 
 const s = StyleSheet.create({
   searchRow: { flexDirection: 'row', alignItems: 'center', gap: 8, margin: 12, marginBottom: 6, backgroundColor: colors.white, borderWidth: 1, borderColor: colors.line, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 9 },
