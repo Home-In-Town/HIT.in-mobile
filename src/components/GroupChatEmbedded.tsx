@@ -33,7 +33,7 @@ import { postedListStorage, disappearStorage } from '../lib/storage';
 import { useAuth } from '../lib/authContext';
 import { useSocket } from '../hooks/useSocket';
 import { useToast } from './Toast';
-import { colors, unitColors } from '../theme';
+import { colors } from '../theme';
 import type { ProjectUnit, UnitStatus } from '../lib/api';
 import { canEditUnits, statusMeta, setupFromUnits, previewUnitSetup } from '../lib/units';
 import UnitGrid from './units/UnitGrid';
@@ -42,6 +42,7 @@ import RoomAvatar from './groupChat/RoomAvatar';
 import RoomSeparator from './groupChat/RoomSeparator';
 import GroupRow from './groupChat/GroupRow';
 import PostCard from './groupChat/PostCard';
+import BuilderPropertyCard from './groupChat/BuilderPropertyCard';
 import { propertyCardShared } from './groupChat/sharedStyles';
 import { messageClock, fmtPrice, noop } from '../lib/groupChat/formatting';
 import { mediaUrls, oneUrl } from '../lib/groupChat/media';
@@ -190,98 +191,6 @@ type MatchGroupInfo = {
 };
 
 // ─── Draggable "AI Lead Assist" FAB ──────────────────────────────────────────
-
-// ── Builder property card ──
-// Shown as a horizontal strip inside a company group: the properties that
-// builder has published. Three actions, because they answer different questions —
-// Details is "what is this property", Open Group is "take me to its discussion",
-// Share is "send this to a client".
-//
-// The cover + body are now a Pressable that opens the SAME detail view as the
-// Details button. Before this, the card body was inert: tapping the photo or the
-// name did nothing, which read as "card pr click kiya to detail nahi dhikhti".
-// `bp.actions` is deliberately left OUTSIDE that Pressable — nesting the two
-// buttons inside a pressable parent swallows their own taps.
-const BuilderPropertyCard = React.memo(function BuilderPropertyCard({ project, opening, sharing, loadingDetails, onDetails, onOpenGroup, onShare }: {
-  project: OwnerPortfolioProject;
-  opening: boolean;
-  sharing: boolean;
-  /** Details is awaiting the project fetch for THIS card — see onDetails below. */
-  loadingDetails: boolean;
-  onDetails: (project: OwnerPortfolioProject) => void;
-  onOpenGroup: (project: OwnerPortfolioProject) => void;
-  onShare: (project: OwnerPortfolioProject) => void;
-}) {
-  const where = [project.location, project.city].filter(Boolean).join(', ');
-  const price = project.startingPrice ? fmtPrice(project.startingPrice) : '';
-  const bhk = (project.bhkOptions || []).filter(Boolean).join('/');
-
-  return (
-    <View style={bp.card}>
-      {/* Card body tap opens the property detail sheet (unit grid, gallery,
-          brochure, Share). It previously opened the Share sheet directly, which
-          hid the grid and media behind an extra step; Share is still one tap
-          away in the sheet's header and its "Share Property Link" row. */}
-      <Pressable
-        onPress={() => onDetails(project)}
-        disabled={loadingDetails}
-        style={({ pressed }) => [pressed && { opacity: 0.7 }]}
-        accessibilityRole="button"
-        accessibilityLabel={`${project.name}. View details`}
-      >
-        {project.coverImage ? (
-          <Image source={{ uri: project.coverImage }} style={bp.cover} resizeMode="cover" />
-        ) : (
-          <View style={[bp.cover, bp.coverFallback]}>
-            <Building2 size={18} color={colors.greenText} />
-          </View>
-        )}
-
-        <View style={bp.body}>
-          <Text style={bp.name} numberOfLines={1}>{project.name}</Text>
-          {!!where && <Text style={bp.meta} numberOfLines={1}>📍 {where}</Text>}
-          {!!(price || bhk) && (
-            <Text style={bp.price} numberOfLines={1}>
-              {[price, bhk].filter(Boolean).join(' · ')}
-            </Text>
-          )}
-        </View>
-      </Pressable>
-
-      {/* Vacant/booked summary from the public portfolio's unitCounts (counts
-          only — that endpoint never returns unit-level data). Hidden when the
-          project has no grid, so cards without units look as they did.
-          It is its own tap target, OUTSIDE the body Pressable (nested
-          pressables swallow taps), and opens the detail sheet with the full
-          grid — the body tap is Share, so without this the grid would not be
-          reachable from a builder group at all. */}
-      {project.unitCounts && project.unitCounts.total > 0 ? (
-        <Pressable
-          onPress={() => onDetails(project)}
-          disabled={loadingDetails}
-          style={({ pressed }) => [bp.unitRow, pressed && { opacity: 0.7 }]}
-          accessibilityRole="button"
-          accessibilityLabel={`${project.unitCounts.available} of ${project.unitCounts.total} units vacant. View unit availability`}
-        >
-          {([
-            ['available', project.unitCounts.available],
-            ['booked', project.unitCounts.booked],
-            ['sold', project.unitCounts.sold],
-            ['on-hold', project.unitCounts.onHold],
-          ] as [UnitStatus, number][])
-            .filter(([st, n]) => n > 0 || st === 'available')
-            .map(([st, n]) => (
-              <View key={st} style={bp.unitItem}>
-                <View style={[bp.unitDot, { backgroundColor: unitColors[st] }]} />
-                <Text style={bp.unitText}>{n} {statusMeta(st).label.toLowerCase()}</Text>
-              </View>
-            ))}
-          {loadingDetails ? <ActivityIndicator size="small" color={colors.brand} /> : <Text style={bp.unitMore}>›</Text>}
-        </Pressable>
-      ) : null}
-    </View>
-  );
-});
 
 export default function GroupChatEmbedded({ onRoomOpenChange, topInset = 0, autoOpenUniversal = false, hideThreadBack = false, headerless = false, onActionsReady, onMatchCountChange, onAiAvailableChange, autoOpenProjectId, onAutoJoinFailed }: {
   onRoomOpenChange?: (open: boolean) => void;
@@ -6580,31 +6489,12 @@ const ld = StyleSheet.create({
 // Sell / Buy / Rent starter chips shown above the composer.
 // Builder property cards — the horizontal strip inside a company group.
 const bp = StyleSheet.create({
-  unitRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 6, paddingHorizontal: 10, paddingBottom: 8 },
-  unitMore: { fontSize: 14, color: colors.brand, fontWeight: '700' },
-  unitItem: { flexDirection: 'row', alignItems: 'center', gap: 3 },
-  unitDot: { width: 8, height: 8, borderRadius: 2 },
-  unitText: { fontSize: 10, color: colors.muted2 },
   strip: { backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.line, paddingTop: 10, paddingBottom: 10 },
   stripHead: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, marginBottom: 8 },
   stripTitle: { fontSize: 10, fontWeight: '800', color: colors.muted, letterSpacing: 0.4, textTransform: 'uppercase' },
   stripCount: { fontSize: 9.5, fontWeight: '800', color: colors.brand },
   stripRow: { paddingHorizontal: 14, gap: CARD_GAP },
   stripEmpty: { paddingHorizontal: 14, fontSize: 11.5, color: colors.muted },
-  card: {
-    width: 186,
-    backgroundColor: colors.cream,
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 12,
-    overflow: 'hidden',
-  },
-  cover: { width: '100%', height: 84, backgroundColor: '#DCFCE7' },
-  coverFallback: { alignItems: 'center', justifyContent: 'center' },
-  body: { paddingHorizontal: 9, paddingTop: 7, gap: 1 },
-  name: { fontSize: 12, fontWeight: '800', color: colors.ink },
-  meta: { fontSize: 10, color: colors.muted2 },
-  price: { fontSize: 11, fontWeight: '800', color: colors.greenText, marginTop: 1 },
   actions: { flexDirection: 'row', gap: 6, paddingHorizontal: 9, paddingVertical: 8 },
   btn: {
     flex: 1,
