@@ -2642,16 +2642,47 @@ export const shareApi = {
 };
 
 // ── Admin Users ──────────────────────────────────────────────
+// The seven values the backend's own role validation accepts on
+// PUT /users/:id/role. Kept as a union (not `string`) so a typo in a caller is
+// a compile error instead of a 400 at runtime.
+export type AdminUserRole = 'admin' | 'builder' | 'agent' | 'captain' | 'employee' | 'unassigned' | 'user';
+
+// What GET /api/users actually returns per row. PREVIOUS BEHAVIOUR: getUsers
+// was typed `Promise<any[]>`, so the admin screen indexed an untyped bag and a
+// misspelled field read as `undefined` silently.
+export interface AdminUser {
+  id: string;
+  _id?: string;
+  name: string;
+  email?: string;
+  role: AdminUserRole;
+  companyName?: string;
+  phone: string;
+  isActive: boolean;
+  rating?: number;
+  ratingCount?: number;
+  verificationStatus?: string;
+  businessCity?: string;
+  businessLogoUrl?: string;
+  profilePictureUrl?: string;
+  createdAt?: string;
+  // Not in the documented list projection, but the admin screen's Verify toggle
+  // reads it, so it stays optional rather than being asserted into existence.
+  isVerified?: boolean;
+}
+
 export const adminApi = {
-  async getUsers(role?: string): Promise<any[]> {
+  async getUsers(role?: AdminUserRole): Promise<AdminUser[]> {
     const q = role ? `?role=${encodeURIComponent(role)}` : '';
     const r = await fetch(`${API_URL}/users${q}`, { headers: await authHeaders() });
-    const data = await handleResponse<any>(r);
+    // The endpoint answers with a bare array; the `{ users: [] }` fallback is
+    // cheap defence in case that envelope ever comes back.
+    const data = await handleResponse<AdminUser[] | { users?: AdminUser[] }>(r);
     return Array.isArray(data) ? data : (data.users || []);
   },
-  async setRole(userId: string, role: string): Promise<any> {
+  async setRole(userId: string, role: AdminUserRole): Promise<AdminUser> {
     const r = await fetch(`${API_URL}/users/${encodeURIComponent(userId)}/role`, { method: 'PUT', headers: await authHeaders(), body: JSON.stringify({ role }) });
-    return handleResponse<any>(r);
+    return handleResponse<AdminUser>(r);
   },
   async setVerified(userId: string, verified: boolean): Promise<any> {
     const r = await fetch(`${API_URL}/users/${encodeURIComponent(userId)}/verify`, { method: 'PUT', headers: await authHeaders(), body: JSON.stringify({ verified }) });
