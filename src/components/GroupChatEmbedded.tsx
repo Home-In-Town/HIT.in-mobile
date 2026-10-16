@@ -40,13 +40,14 @@ import UnitGrid from './units/UnitGrid';
 import UnitSetupForm, { UnitSetupDraft, draftFromSetup, draftToSetup, emptyUnitDraft } from './units/UnitSetupForm';
 import RoomAvatar from './groupChat/RoomAvatar';
 import RoomSeparator from './groupChat/RoomSeparator';
-import { timeStr, messageClock, fmtPrice, fmtCooldownLeft, noop } from '../lib/groupChat/formatting';
+import GroupRow from './groupChat/GroupRow';
+import { messageClock, fmtPrice, fmtCooldownLeft, noop } from '../lib/groupChat/formatting';
 import { mediaUrls, oneUrl } from '../lib/groupChat/media';
 import { CARD_GAP, BUILDER_STRIP_AUTOSCROLL_MS, cardStride } from '../lib/groupChat/stripGeometry';
 import { isProjectSummaryMessage, matchReason, normalizeMsg } from '../lib/groupChat/messages';
 import { unitStatusMeta, buildUnitDayGroups } from '../lib/groupChat/unitSummaries';
 import type { UnitDayGroup } from '../lib/groupChat/unitSummaries';
-import { GROUP_FILTERS, GROUP_FILTER_LABELS, isOrphanedPropertyGroup, isPropertyRoomType, roomDisplayName, roomLines, activityLabel, roomTypeLabel } from '../lib/groupChat/rooms';
+import { GROUP_FILTERS, GROUP_FILTER_LABELS, isOrphanedPropertyGroup, isPropertyRoomType, roomDisplayName, activityLabel } from '../lib/groupChat/rooms';
 import type { GroupFilterKey } from '../lib/groupChat/rooms';
 import { PROPERTY_ICONS, PROFILE_STORAGE_KEY, AVATAR_DIR, roomProfileKey, discardReplacedAvatar, avatarErrorMessage, resolveRoomAvatar } from '../lib/groupChat/avatars';
 import type { RoomProfile, CacheWriteResult } from '../lib/groupChat/avatars';
@@ -339,79 +340,6 @@ const BuilderPropertyCard = React.memo(function BuilderPropertyCard({ project, o
         </Pressable>
       ) : null}
     </View>
-  );
-});
-
-// ── Room list row ──
-// One row for BOTH sections. Joined and discoverable rows previously had their
-// own near-identical components (and the discover variant was additionally
-// duplicated between an inline list and a modal), which let the two drift apart.
-// `joined` is the only thing that differs: the trailing slot shows either
-// activity time + unread badge, or a Join button.
-const GroupRow = React.memo(function GroupRow({ room, joined, joining, onPress, onJoin, cache }: {
-  room: GroupRoom;
-  joined: boolean;
-  joining?: boolean;
-  onPress?: (room: GroupRoom) => void;
-  onJoin?: (room: GroupRoom) => void;
-  // The avatar fallback cache, not the avatar itself — the row's picture comes
-  // from room.avatar when the server has one. Renamed from `profilePictures`
-  // (and off `any`) so that subordinate role is legible at the call site.
-  cache: Record<string, RoomProfile>;
-}) {
-  const { primary, secondary } = roomLines(room);
-  const typeLabel = roomTypeLabel(room);
-  const unread = joined ? (room.unreadCount || 0) : 0;
-
-  return (
-    <Pressable
-      onPress={joined ? () => onPress?.(room) : undefined}
-      disabled={!joined}
-      style={[s.roomRow, room.isUniversal && s.roomRowPinned]}
-    >
-      <View style={[s.roomAvatar, room.isUniversal && { backgroundColor: colors.brand }]}>
-        <RoomAvatar room={room} cache={cache} />
-      </View>
-
-      <View style={{ flex: 1, minWidth: 0 }}>
-        <View style={s.roomNameRow}>
-          <Text style={[s.roomName, room.isUniversal && { color: colors.brand }]} numberOfLines={1}>
-            {roomDisplayName(room)}
-          </Text>
-          {!!typeLabel && (
-            <View style={s.roomTypeChip}>
-              <Text style={s.roomTypeChipText}>{typeLabel}</Text>
-            </View>
-          )}
-        </View>
-
-        <Text style={s.roomMeta} numberOfLines={1}>{primary}</Text>
-        {!!secondary && <Text style={s.roomMetaSecondary} numberOfLines={1}>{secondary}</Text>}
-      </View>
-
-      {joined ? (
-        <View style={s.roomTrailing}>
-          <Text style={s.roomTime}>{timeStr(room.lastActivity)}</Text>
-          {unread > 0 && (
-            <View style={s.unreadBadge}>
-              <Text style={s.unreadBadgeText}>{unread > 99 ? '99+' : unread}</Text>
-            </View>
-          )}
-        </View>
-      ) : (
-        <Pressable
-          onPress={() => onJoin?.(room)}
-          disabled={joining}
-          style={[s.smallJoin, joining && { opacity: 0.6 }]}
-          accessibilityRole="button"
-          accessibilityLabel={`Join ${roomDisplayName(room)}`}
-        >
-          {joining
-            ? <ActivityIndicator size="small" color={colors.brand} />
-            : <Text style={s.smallJoinText}>Join Group</Text>}
-        </Pressable>
-      )}
-    </Pressable>
   );
 });
 
@@ -6558,28 +6486,13 @@ const s = StyleSheet.create({
   filterPillActive: { backgroundColor: colors.brand, borderColor: colors.brand },
   filterPillText: { fontSize: 11.5, fontWeight: '700', color: colors.muted2 },
   filterPillTextActive: { color: '#fff' },
-  roomRow: { flexDirection: 'row', alignItems: 'center', padding: 12, gap: 12, backgroundColor: colors.white },
-  roomRowPinned: { backgroundColor: `${colors.brand}08` },
-  roomAvatar: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.brandTint, alignItems: 'center', justifyContent: 'center' },
   pinBadge: { backgroundColor: colors.brandTint, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 8 },
   pinText: { fontSize: 9, fontWeight: '800', color: colors.brand },
-  roomNameRow: { flexDirection: 'row', alignItems: 'center', gap: 6, minWidth: 0 },
-  roomName: { fontSize: 13.5, fontWeight: '700', color: colors.ink, flexShrink: 1 },
-  roomTypeChip: { flexShrink: 0, backgroundColor: colors.slateBg, paddingHorizontal: 6, paddingVertical: 1, borderRadius: 6 },
-  roomTypeChipText: { fontSize: 8.5, fontWeight: '800', color: colors.slateText, letterSpacing: 0.2 },
-  roomMeta: { fontSize: 10.5, color: colors.muted2, marginTop: 1 },
-  roomMetaSecondary: { fontSize: 10.5, fontWeight: '700', color: colors.slateText, marginTop: 1 },
-  roomTrailing: { alignItems: 'flex-end', gap: 5 },
-  roomTime: { fontSize: 10, color: colors.muted },
-  unreadBadge: { minWidth: 19, height: 19, borderRadius: 10, paddingHorizontal: 5, backgroundColor: colors.brand, alignItems: 'center', justifyContent: 'center' },
-  unreadBadgeText: { fontSize: 9.5, fontWeight: '800', color: '#fff' },
   empty: { alignItems: 'center', paddingVertical: 50, gap: 10 },
   emptyText: { fontSize: 13, color: colors.muted },
   emptyHint: { fontSize: 11.5, color: colors.muted2, textAlign: 'center', paddingHorizontal: 32, lineHeight: 17 },
   joinBtn: { paddingHorizontal: 16, paddingVertical: 9, backgroundColor: colors.brand, borderRadius: 12, marginTop: 4 },
   joinBtnText: { color: '#fff', fontWeight: '700', fontSize: 12 },
-  smallJoin: { minWidth: 76, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, backgroundColor: colors.brandTint, borderWidth: 1, borderColor: colors.brand },
-  smallJoinText: { fontSize: 11.5, fontWeight: '800', color: colors.brand },
 
   // Section headers for the single room SectionList (My Groups / Discover Groups).
   sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 14, paddingTop: 14, paddingBottom: 7, backgroundColor: colors.cream },
