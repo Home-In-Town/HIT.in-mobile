@@ -45,7 +45,10 @@ import PostCard from './groupChat/PostCard';
 import BuilderPropertyCard from './groupChat/BuilderPropertyCard';
 import Field from './groupChat/Field';
 import Tag from './groupChat/Tag';
+import Chips from './groupChat/Chips';
 import { propertyCardShared } from './groupChat/sharedStyles';
+// TEMPORARY: SelectRow is still defined below and reads cs.*; this import goes away with it.
+import { cs } from './groupChat/sharedStyles';
 import { messageClock, fmtPrice, noop } from '../lib/groupChat/formatting';
 import { mediaUrls, oneUrl } from '../lib/groupChat/media';
 import { CARD_GAP, BUILDER_STRIP_AUTOSCROLL_MS, cardStride } from '../lib/groupChat/stripGeometry';
@@ -6272,18 +6275,6 @@ const MessageBubble = React.memo(function MessageBubble({
   );
 });
 
-function Chips({ options, value, onChange, small }: { options: string[]; value: string; onChange: (v: string) => void; small?: boolean }) {
-  return (
-    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
-      {options.map(o => (
-        <Pressable key={o} onPress={() => onChange(o)} style={[cs.chip, value === o && cs.chipOn, small && { paddingVertical: 6 }]}>
-          <Text style={[cs.chipText, value === o && cs.chipTextOn]}>{o}</Text>
-        </Pressable>
-      ))}
-    </ScrollView>
-  );
-}
-
 function SelectRow({ label, options, value, onChange }: { label: string; options: { v: string; l: string }[]; value: string; onChange: (v: string) => void }) {
   return (
     <View style={{ gap: 5 }}>
@@ -6804,14 +6795,6 @@ const gi = StyleSheet.create({
   actions: { paddingTop: 12, gap: 2 },
   actionRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 12 },
   actionText: { fontSize: 13, fontWeight: '800', color: colors.muted2 },
-});
-
-const cs = StyleSheet.create({
-  chip: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 16, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.white },
-  chipOn: { backgroundColor: colors.brand, borderColor: colors.brand },
-  chipText: { fontSize: 11, fontWeight: '700', color: colors.muted2 },
-  chipTextOn: { color: '#fff' },
-  selLabel: { fontSize: 10, fontWeight: '700', color: colors.muted2 },
 });
 
 const mbs = StyleSheet.create({
