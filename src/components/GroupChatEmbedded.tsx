@@ -44,6 +44,7 @@ import GroupRow from './groupChat/GroupRow';
 import PostCard from './groupChat/PostCard';
 import BuilderPropertyCard from './groupChat/BuilderPropertyCard';
 import Field from './groupChat/Field';
+import Tag from './groupChat/Tag';
 import { propertyCardShared } from './groupChat/sharedStyles';
 import { messageClock, fmtPrice, noop } from '../lib/groupChat/formatting';
 import { mediaUrls, oneUrl } from '../lib/groupChat/media';
@@ -6271,14 +6272,6 @@ const MessageBubble = React.memo(function MessageBubble({
   );
 });
 
-function Tag({ text, brand }: { text: string; brand?: boolean }) {
-  return (
-    <View style={[mbs.tag, brand && { backgroundColor: colors.brandTint }]}>
-      <Text style={[mbs.tagText, brand && { color: colors.brand }]}>{text}</Text>
-    </View>
-  );
-}
-
 function Chips({ options, value, onChange, small }: { options: string[]; value: string; onChange: (v: string) => void; small?: boolean }) {
   return (
     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
@@ -6835,8 +6828,6 @@ const mbs = StyleSheet.create({
   cardSub: { fontSize: 11, color: colors.muted2 },
   cardNote: { fontSize: 10.5, color: colors.muted, marginTop: 2 },
   tagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 3 },
-  tag: { backgroundColor: colors.slateBg, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 10 },
-  tagText: { fontSize: 8.5, fontWeight: '700', color: colors.slateText },
   // Compact universal-group inventory card styles
   // Same surface as the AI Assist match card: a white card on a neutral border,
   // with brand accents. The card used to be green end to end, which read as a
