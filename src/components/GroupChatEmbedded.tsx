@@ -39,6 +39,7 @@ import { canEditUnits, statusMeta, setupFromUnits, previewUnitSetup } from '../l
 import UnitGrid from './units/UnitGrid';
 import UnitSetupForm, { UnitSetupDraft, draftFromSetup, draftToSetup, emptyUnitDraft } from './units/UnitSetupForm';
 import RoomAvatar from './groupChat/RoomAvatar';
+import RoomSeparator from './groupChat/RoomSeparator';
 import { timeStr, messageClock, fmtPrice, fmtCooldownLeft, noop } from '../lib/groupChat/formatting';
 import { mediaUrls, oneUrl } from '../lib/groupChat/media';
 import { CARD_GAP, BUILDER_STRIP_AUTOSCROLL_MS, cardStride } from '../lib/groupChat/stripGeometry';
@@ -347,10 +348,6 @@ const BuilderPropertyCard = React.memo(function BuilderPropertyCard({ project, o
 // duplicated between an inline list and a modal), which let the two drift apart.
 // `joined` is the only thing that differs: the trailing slot shows either
 // activity time + unread badge, or a Join button.
-const RoomSeparator = () => (
-  <View style={{ height: 1, backgroundColor: colors.line, marginLeft: 64 }} />
-);
-
 const GroupRow = React.memo(function GroupRow({ room, joined, joining, onPress, onJoin, cache }: {
   room: GroupRoom;
   joined: boolean;
