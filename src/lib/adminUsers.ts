@@ -22,6 +22,16 @@ export function normaliseRole(value: unknown): string {
   return String(value ?? '').trim().toLowerCase();
 }
 
+// The chip row's filter predicate. It lives here rather than inline in the
+// screen because an inline copy was the one piece of this feature with no test
+// coverage, while everything else in this module is pinned. `'all'` (and any
+// empty filter) passes everything through.
+export function matchesRoleFilter(user: Pick<AdminUser, 'role'>, roleFilter: string): boolean {
+  const f = normaliseRole(roleFilter);
+  if (!f || f === 'all') return true;
+  return normaliseRole(user.role) === f;
+}
+
 // Case-insensitive substring search across the four fields an admin would
 // actually type. Both sides are trimmed: stored names and phones in this DB
 // carry trailing whitespace, so an untrimmed compare misses real matches.
@@ -82,13 +92,31 @@ export function duplicatePhoneKeys(users: Pick<AdminUser, 'phone'>[]): Set<strin
 // guarantee — but it is the difference between an accident and a lockout.
 export function roleChangeBlock(args: {
   target: Pick<AdminUser, 'id' | 'role'>;
-  currentUserId: string;
+  // Widened from `string` so the empty/missing case is representable instead of
+  // being hidden behind the screen's `me?.id || ''`.
+  currentUserId: string | null | undefined;
   adminCount: number;
 }): string | null {
   const { target, currentUserId, adminCount } = args;
+  const actorId = String(currentUserId ?? '').trim();
+  const targetId = String(target.id ?? '').trim();
+
+  // FAIL CLOSED when either id is unknown. PREVIOUS BEHAVIOUR: the condition was
+  // `target.id && currentUserId && target.id === currentUserId`, so an empty
+  // actor id (auth context not resolved) short-circuited the comparison and the
+  // self-change was *allowed* — the guard quietly stopped being a guard exactly
+  // when it could not tell who was acting. That direction of failure is not
+  // acceptable here: PUT /api/users/:id/role is itself restrictTo('admin'), so a
+  // self-demotion locks the actor out of this screen and every admin endpoint
+  // permanently, with no route back from inside the app. The last-admin block
+  // below already fails closed (adminCount 0 on an unloaded list blocks any
+  // admin demotion); this now matches it.
+  if (!actorId || !targetId) {
+    return 'Could not confirm which account you are signed in as. Reload the screen and try again.';
+  }
   // Self-demotion takes the actor out of this screen and every admin endpoint
   // with no route back, so it is blocked outright rather than confirmed.
-  if (target.id && currentUserId && target.id === currentUserId) {
+  if (targetId === actorId) {
     return 'You cannot change your own role. Ask another admin.';
   }
   if (normaliseRole(target.role) === 'admin' && adminCount <= 1) {

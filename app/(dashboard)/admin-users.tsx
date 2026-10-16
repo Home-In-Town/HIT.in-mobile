@@ -20,6 +20,7 @@ import { adminApi, AdminUser, AdminUserRole } from '../../src/lib/api';
 import {
   ROLE_ORDER, matchesUserSearch, roleDistribution, phoneKey,
   duplicatePhoneKeys, roleChangeBlock, roleChangeConsequence,
+  normaliseRole, matchesRoleFilter,
 } from '../../src/lib/adminUsers';
 import { useAuth } from '../../src/lib/authContext';
 import { useToast } from '../../src/components/Toast';
@@ -69,10 +70,11 @@ export default function AdminUsersScreen() {
     dupeKeys: duplicatePhoneKeys(users),
   }), [users]);
 
+  // PREVIOUS BEHAVIOUR: this inlined `String(u.role ?? '').trim().toLowerCase()`
+  // instead of using the module's normaliser, so the filter predicate was a
+  // second, untested copy of logic that exists in one place on purpose.
   const filtered = useMemo(
-    () => users.filter(u =>
-      (roleFilter === 'all' || String(u.role ?? '').trim().toLowerCase() === roleFilter) &&
-      matchesUserSearch(u, search)),
+    () => users.filter(u => matchesRoleFilter(u, roleFilter) && matchesUserSearch(u, search)),
     [users, roleFilter, search],
   );
 
@@ -103,7 +105,10 @@ export default function AdminUsersScreen() {
     // Hard blocks are refusals: the API is not called at all.
     const block = roleChangeBlock({
       target,
-      currentUserId: me?.id || '',
+      // Passed through as-is (not `me?.id || ''`): roleChangeBlock now refuses
+      // when it cannot tell who is acting, so swallowing undefined here would
+      // hide the very case the guard needs to see.
+      currentUserId: me?.id,
       adminCount: distribution.admin || 0,
     });
     if (block) { toast.show(block, 'error'); return; }
@@ -236,7 +241,11 @@ export default function AdminUsersScreen() {
       ) : (
         <FlatList
           data={filtered}
-          keyExtractor={u => u.id || u._id || ''}
+          // PREVIOUS BEHAVIOUR: the key fell back to '', so rows missing both
+          // ids collided on one key and React reused the wrong row — the worst
+          // possible failure on a screen whose job is changing a specific
+          // person's role. The index keeps every key unique and stable.
+          keyExtractor={(u, i) => u.id || u._id || `row-${i}`}
           renderItem={renderRow}
           contentContainerStyle={{ padding: 16, gap: 10, paddingBottom: 32 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={colors.brand} />}
@@ -267,7 +276,7 @@ export default function AdminUsersScreen() {
             <Text style={s.sheetTitle}>{pickerUser?.name || 'User'}</Text>
             <Text style={s.sheetSub}>Current role: {pickerUser?.role}</Text>
             {ROLE_ORDER.map(r => {
-              const current = String(pickerUser?.role ?? '').trim().toLowerCase() === r;
+              const current = normaliseRole(pickerUser?.role) === r;
               return (
                 <Pressable
                   key={r}

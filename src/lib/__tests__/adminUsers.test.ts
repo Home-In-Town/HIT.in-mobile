@@ -4,6 +4,8 @@
 // are pinned here alongside the search and counting helpers the list is built
 // from.
 import {
+  normaliseRole,
+  matchesRoleFilter,
   matchesUserSearch,
   roleDistribution,
   phoneKey,
@@ -19,6 +21,56 @@ const u = (over: Partial<{ name: string; phone: string; email: string; companyNa
   email: 'asha@example.com',
   companyName: 'Patil Realty',
   ...over,
+});
+
+// normaliseRole and the chip predicate used to be inlined in the screen, where
+// jest (testEnvironment: node, .ts-only testMatch) could not reach them. Cases
+// are the ones the data actually contains: this DB has role values with
+// trailing whitespace, and a hand-edited document can carry odd casing.
+describe('normaliseRole', () => {
+  it('lowercases and trims', () => {
+    expect(normaliseRole('Captain')).toBe('captain');
+    expect(normaliseRole(' captain ')).toBe('captain');
+    expect(normaliseRole('ADMIN')).toBe('admin');
+  });
+
+  it('returns an unknown role unchanged apart from case and padding', () => {
+    expect(normaliseRole(' SuperUser ')).toBe('superuser');
+  });
+
+  it('gives empty string for empty, null or undefined', () => {
+    expect(normaliseRole('')).toBe('');
+    expect(normaliseRole('   ')).toBe('');
+    expect(normaliseRole(null)).toBe('');
+    expect(normaliseRole(undefined)).toBe('');
+  });
+});
+
+describe('matchesRoleFilter', () => {
+  it('passes everything through on "all" or an empty filter', () => {
+    expect(matchesRoleFilter({ role: 'agent' } as any, 'all')).toBe(true);
+    expect(matchesRoleFilter({ role: 'agent' } as any, '')).toBe(true);
+    expect(matchesRoleFilter({ role: undefined } as any, 'all')).toBe(true);
+  });
+
+  it('matches a role regardless of casing or padding on either side', () => {
+    expect(matchesRoleFilter({ role: ' Captain ' } as any, 'captain')).toBe(true);
+    expect(matchesRoleFilter({ role: 'captain' } as any, ' CAPTAIN ')).toBe(true);
+  });
+
+  it('rejects a different role', () => {
+    expect(matchesRoleFilter({ role: 'agent' } as any, 'captain')).toBe(false);
+  });
+
+  it('matches an unknown role against its own chip and nothing else', () => {
+    expect(matchesRoleFilter({ role: 'superuser' } as any, 'superuser')).toBe(true);
+    expect(matchesRoleFilter({ role: 'superuser' } as any, 'user')).toBe(false);
+  });
+
+  it('never matches a named role when the role is empty or missing', () => {
+    expect(matchesRoleFilter({ role: '' } as any, 'user')).toBe(false);
+    expect(matchesRoleFilter({ role: undefined } as any, 'user')).toBe(false);
+  });
 });
 
 describe('matchesUserSearch', () => {
@@ -117,6 +169,22 @@ describe('roleChangeBlock', () => {
   it('blocks demoting the last admin', () => {
     const msg = roleChangeBlock({ target: { id: 'other', role: 'admin' } as any, currentUserId: 'me', adminCount: 1 });
     expect(msg).toMatch(/last admin/i);
+  });
+
+  // The guard used to fall through and ALLOW the change when it could not tell
+  // who was acting. A self-demotion is unrecoverable from inside the app, so an
+  // unknown actor must refuse, matching the last-admin block's fail-closed
+  // behaviour on an unloaded list.
+  it('refuses when the current user id is empty, undefined or null', () => {
+    for (const actor of ['', '   ', undefined, null] as const) {
+      const msg = roleChangeBlock({ target: { id: 'other', role: 'agent' } as any, currentUserId: actor, adminCount: 5 });
+      expect(msg).toMatch(/could not confirm/i);
+    }
+  });
+
+  it('refuses when the target has no id to compare against', () => {
+    const msg = roleChangeBlock({ target: { role: 'agent' } as any, currentUserId: 'me', adminCount: 5 });
+    expect(msg).toMatch(/could not confirm/i);
   });
 
   it('allows another admin when there are several', () => {

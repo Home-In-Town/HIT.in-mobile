@@ -2647,6 +2647,10 @@ export const shareApi = {
 // a compile error instead of a 400 at runtime.
 export type AdminUserRole = 'admin' | 'builder' | 'agent' | 'captain' | 'employee' | 'unassigned' | 'user';
 
+// The enum on models/User.js `verificationStatus.{builder,agent}` and the only
+// values PUT /users/:id/verify accepts in its `{ status }` body.
+export type VerificationState = 'unverified' | 'pending' | 'verified';
+
 // What GET /api/users actually returns per row. PREVIOUS BEHAVIOUR: getUsers
 // was typed `Promise<any[]>`, so the admin screen indexed an untyped bag and a
 // misspelled field read as `undefined` silently.
@@ -2661,7 +2665,12 @@ export interface AdminUser {
   isActive: boolean;
   rating?: number;
   ratingCount?: number;
-  verificationStatus?: string;
+  // PREVIOUS BEHAVIOUR: typed `string`, which was simply wrong — models/User.js
+  // declares verificationStatus as a nested object and GET /users sends
+  // `u.verificationStatus || {}`, so `user.verificationStatus === 'verified'`
+  // type-checked and was always false. The per-user route (PUT /users/:id/verify)
+  // writes `{ ...status, builder }` from the same three-value enum.
+  verificationStatus?: { builder?: VerificationState; agent?: VerificationState };
   businessCity?: string;
   businessLogoUrl?: string;
   profilePictureUrl?: string;
