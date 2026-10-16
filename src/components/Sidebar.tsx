@@ -56,7 +56,13 @@ const NAV_ITEMS: NavItem[] = [
   { label: 'Marketplace',    route: '/(dashboard)/marketplace',   icon: ShoppingBag,     roles: ['admin', 'builder', 'captain'] },
   { label: 'Analytics',      route: '/(dashboard)/analytics',     icon: BarChart3,       roles: ['admin', 'builder'] },
   { label: 'Organizations',  route: '/(dashboard)/organizations', icon: Building,        roles: ['admin', 'builder'] },
-  { label: 'Users',          route: '/(dashboard)/admin-users',   icon: Shield,          roles: ['admin'] },
+  // Was labelled 'Users'. Same route, same screen — it is now the Role
+  // Distribution screen (search + per-role counts + role changes), so the label
+  // says what it does. `roles: ['admin']` means the entry is filtered out of
+  // `items` entirely for everyone else, not rendered disabled. That hiding is
+  // PRESENTATION ONLY: the real boundary is the server's restrictTo('admin') on
+  // GET /users and PUT /users/:id/role.
+  { label: 'Role Distribution', route: '/(dashboard)/admin-users', icon: Shield,       roles: ['admin'] },
   { label: 'Field Check-in', route: '/(dashboard)/field',         icon: Briefcase,       roles: ['employee'] },
   { label: 'Notifications',  route: '/(dashboard)/notifications', icon: Bell,            roles: ['*'] },
   { label: 'Profile',        route: '/(dashboard)/profile',       icon: User,            roles: ['*'] },
