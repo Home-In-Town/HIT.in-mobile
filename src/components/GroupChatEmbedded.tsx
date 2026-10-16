@@ -43,6 +43,7 @@ import RoomSeparator from './groupChat/RoomSeparator';
 import GroupRow from './groupChat/GroupRow';
 import PostCard from './groupChat/PostCard';
 import BuilderPropertyCard from './groupChat/BuilderPropertyCard';
+import Field from './groupChat/Field';
 import { propertyCardShared } from './groupChat/sharedStyles';
 import { messageClock, fmtPrice, noop } from '../lib/groupChat/formatting';
 import { mediaUrls, oneUrl } from '../lib/groupChat/media';
@@ -5590,15 +5591,6 @@ function InventorySheet({ visible, form, setForm, onClose, onSubmit }: {
   );
 }
 
-function Field({ label, required, flex, children }: { label: string; required?: boolean; flex?: boolean; children: React.ReactNode }) {
-  return (
-    <View style={[{ gap: 7 }, flex && { flex: 1 }]}>
-      <Text style={sh.label}>{label}{required ? <Text style={{ color: colors.red }}> *</Text> : null}</Text>
-      {children}
-    </View>
-  );
-}
-
 // ── Shared card action row ──
 // Used by all three property surfaces: the inventory card, the AI Match Found
 // card and each requirement match row. Before this existed the inventory card
@@ -7176,7 +7168,6 @@ const sh = StyleSheet.create({
   head: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 16 },
   headTitle: { fontSize: 15, fontWeight: '800', color: '#fff' },
   headSub: { fontSize: 10, color: 'rgba(255,255,255,0.75)', marginTop: 1 },
-  label: { fontSize: 11.5, fontWeight: '700', color: colors.muted2 },
   input: { borderWidth: 1, borderColor: colors.line, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, fontSize: 13.5, color: colors.ink, backgroundColor: colors.cream },
   row2: { flexDirection: 'row', gap: 12 },
   chipsWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
