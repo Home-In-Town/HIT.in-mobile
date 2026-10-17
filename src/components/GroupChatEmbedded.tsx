@@ -10,7 +10,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, FlatList, SectionList, Pressable, StyleSheet, ActivityIndicator,
-  TextInput, KeyboardAvoidingView, Platform, Modal, ScrollView, Switch, Alert, Share, Animated,
+  TextInput, KeyboardAvoidingView, Platform, Modal, ScrollView, Switch, Alert, Share,
 } from 'react-native';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
@@ -23,8 +23,8 @@ import QRCode from 'react-native-qrcode-svg';
 import {
   Users, Plus, Globe, ChevronLeft, Send, X, MoreVertical, Building2,
   Link as LinkIcon, FileText, QrCode, Image as ImageIcon, LogOut, Trash2,
-  Search, MapPin, Check, CheckCircle2, Camera, Paperclip, Sparkles, ChevronDown, ChevronUp, Clock,
-  Phone, Eye, UserPlus, BadgeCheck, Share2, MessageCircle, Download, Edit3, Pencil, ExternalLink,
+  Search, MapPin, Check, Camera, Paperclip, Sparkles, Clock,
+  Phone, Eye, BadgeCheck, Share2, MessageCircle, Download, Edit3, Pencil, ExternalLink,
 } from 'lucide-react-native';
 import { groupChatApi, shareApi, mediaApi, leadMatchingApi, invalidateLeadsCache, projectsApiExtended, fetchPublicProjectsRaw, GroupRoom, GroupMessage, InventoryCard, OwnerPortfolioProject, Project, GroupMedia, GroupLink } from '../lib/api';
 import { ShareModal } from './ShareActions';
@@ -44,10 +44,12 @@ import GroupRow from './groupChat/GroupRow';
 import PostCard from './groupChat/PostCard';
 import BuilderPropertyCard from './groupChat/BuilderPropertyCard';
 import Field from './groupChat/Field';
-import Tag from './groupChat/Tag';
-import CardActions, { type CardActionIcon } from './groupChat/CardActions';
-import GroupMatchCard from './groupChat/GroupMatchCard';
 import MessageBubble from './groupChat/MessageBubble';
+// `Tag`, `CardActions` and `GroupMatchCard` are deliberately NOT imported here
+// either: their only call sites in this file were inside MessageBubble, which
+// moved out in phase 3, so `<Tag`, `<CardActions` and `<GroupMatchCard` now
+// have ZERO call sites left in the parent. MessageBubble imports all three
+// directly.
 // `Chips` and `SelectRow` are deliberately NOT imported here. The phase-2 plan
 // assumed the two sheets in this file rendered them, so the extraction added
 // `import Chips` / `import SelectRow` back; in fact `<Chips` and `<SelectRow`
@@ -55,13 +57,15 @@ import MessageBubble from './groupChat/MessageBubble';
 // code already), so those two imports pulled in a module nothing rendered.
 // They now live in src/components/groupChat/ for whoever needs them next.
 import { propertyCardShared } from './groupChat/sharedStyles';
-import { messageClock, fmtPrice, noop } from '../lib/groupChat/formatting';
+import { fmtPrice, noop } from '../lib/groupChat/formatting';
 import { mediaUrls, oneUrl } from '../lib/groupChat/media';
 import { CARD_GAP, BUILDER_STRIP_AUTOSCROLL_MS, cardStride } from '../lib/groupChat/stripGeometry';
-import { isProjectSummaryMessage, matchReason, normalizeMsg } from '../lib/groupChat/messages';
-import { unitStatusMeta, buildUnitDayGroups } from '../lib/groupChat/unitSummaries';
-import type { UnitDayGroup } from '../lib/groupChat/unitSummaries';
-import { GROUP_FILTERS, GROUP_FILTER_LABELS, isOrphanedPropertyGroup, isPropertyRoomType, roomDisplayName, activityLabel } from '../lib/groupChat/rooms';
+import { normalizeMsg } from '../lib/groupChat/messages';
+// buildUnitDayGroups stays: the day grouping is still computed HERE, once, in a
+// useMemo, and handed to each bubble as a prop. unitStatusMeta went with
+// MessageBubble, which is the only thing that renders a status label.
+import { buildUnitDayGroups } from '../lib/groupChat/unitSummaries';
+import { GROUP_FILTERS, GROUP_FILTER_LABELS, isOrphanedPropertyGroup, isPropertyRoomType, roomDisplayName } from '../lib/groupChat/rooms';
 // MatchGroupInfo moved to lib/groupChat/rooms because it has a reader on each
 // side of the phase-3 split: handlePreviewMatch here and GroupMatchCard in
 // src/components/groupChat/. A child module must never import from its parent,
