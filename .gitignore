@@ -33,5 +33,12 @@ yarn-error.*
 # typescript
 *.tsbuildinfo
 
-# Workflow agent working notes (plans, reviews, build logs) — not application code.
+# Workflow agent working notes (plans, reviews, build logs) ï¿½ not application code.
 .agents/
+
+# Git worktrees. A worktree directory holds a full second copy of the source and
+# must never be committed. `.worktrees/group-chat-media` WAS tracked (as a
+# gitlink), which is why that stale copy kept turning up in greps, in file
+# searches and in `tsc --noEmit` output â€” and the workaround was to exclude it by
+# hand in every command. Untracked and ignored instead.
+.worktrees/
