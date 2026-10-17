@@ -60,7 +60,12 @@ import { isProjectSummaryMessage, matchReason, normalizeMsg } from '../lib/group
 import { unitStatusMeta, buildUnitDayGroups } from '../lib/groupChat/unitSummaries';
 import type { UnitDayGroup } from '../lib/groupChat/unitSummaries';
 import { GROUP_FILTERS, GROUP_FILTER_LABELS, isOrphanedPropertyGroup, isPropertyRoomType, roomDisplayName, activityLabel } from '../lib/groupChat/rooms';
-import type { GroupFilterKey } from '../lib/groupChat/rooms';
+// MatchGroupInfo moved to lib/groupChat/rooms because it has a reader on each
+// side of the phase-3 split: handlePreviewMatch here and GroupMatchCard in
+// src/components/groupChat/. A child module must never import from its parent,
+// not even a type, so the shared declaration lives in lib rather than being
+// duplicated in two files that would then drift apart.
+import type { GroupFilterKey, MatchGroupInfo } from '../lib/groupChat/rooms';
 import { PROPERTY_ICONS, PROFILE_STORAGE_KEY, AVATAR_DIR, roomProfileKey, discardReplacedAvatar, avatarErrorMessage, resolveRoomAvatar } from '../lib/groupChat/avatars';
 import type { RoomProfile, CacheWriteResult } from '../lib/groupChat/avatars';
 import { BHK_TYPES, POSSESSION_NEEDED, URGENCY, POSSESSION_STATUS, POST_COOLDOWN_MS, leadToDisplay, DISAPPEAR_OPTIONS, disappearLabel, projectToDisplay, buildProjectFromDraft, portfolioFallback } from '../lib/groupChat/postDraft';
@@ -190,14 +195,6 @@ async function loadRoomProfilePictures(): Promise<Record<string, RoomProfile>> {
     return {};
   }
 }
-
-/** Group info the backend attaches to each match result. */
-type MatchGroupInfo = {
-  id: string;
-  name: string;
-  membersCount: number;
-  lastActivity?: string;
-};
 
 // ─── Draggable "AI Lead Assist" FAB ──────────────────────────────────────────
 

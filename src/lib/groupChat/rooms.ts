@@ -34,6 +34,13 @@ export const GROUP_FILTER_LABELS = GROUP_FILTERS.reduce(
 // chip to default to, and defaulting to any of the three would hide two of
 // today's sections and make the pane look emptier than it used to.
 export type GroupFilterKey = 'mine' | 'discover' | 'property' | null;
+/** Group info the backend attaches to each match result. */
+export type MatchGroupInfo = {
+  id: string;
+  name: string;
+  membersCount: number;
+  lastActivity?: string;
+};
 
 /**
  * "This group cannot present a complete identity on its own row."
