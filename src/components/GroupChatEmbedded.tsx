@@ -45,6 +45,7 @@ import PostCard from './groupChat/PostCard';
 import BuilderPropertyCard from './groupChat/BuilderPropertyCard';
 import Field from './groupChat/Field';
 import Tag from './groupChat/Tag';
+import CardActions, { type CardActionIcon } from './groupChat/CardActions';
 // `Chips` and `SelectRow` are deliberately NOT imported here. The phase-2 plan
 // assumed the two sheets in this file rendered them, so the extraction added
 // `import Chips` / `import SelectRow` back; in fact `<Chips` and `<SelectRow`
@@ -5598,59 +5599,6 @@ function InventorySheet({ visible, form, setForm, onClose, onSubmit }: {
   );
 }
 
-// ── Shared card action row ──
-// Used by all three property surfaces: the inventory card, the AI Match Found
-// card and each requirement match row. Before this existed the inventory card
-// hand-rolled its own button row, the match rows had a single Interested button,
-// and the AI Match card had no actions at all — so "open this property" was
-// missing exactly where matching results appear.
-type CardActionIcon = 'details' | 'join' | 'call' | 'interested';
-
-const CARD_ACTION_ICON = {
-  details: Eye,
-  join: UserPlus,
-  call: Phone,
-  interested: Check,
-} as const;
-
-const CardActions = React.memo(function CardActions({ actions, tone }: {
-  actions: Array<{ key: string; label: string; icon: CardActionIcon; ghost?: boolean; onPress: () => void }>;
-  tone: 'green' | 'brand';
-}) {
-  const solidBg = tone === 'green' ? colors.greenText : colors.brand;
-  const accent = tone === 'green' ? colors.greenText : colors.brand;
-  const ghostBorder = tone === 'green' ? colors.greenBorder : `${colors.brand}55`;
-  const divider = tone === 'green' ? '#DCFCE7' : `${colors.brand}22`;
-
-  return (
-    <View style={[mbs.cardActions, { borderTopColor: divider }]}>
-      {actions.map(action => {
-        const Icon = CARD_ACTION_ICON[action.icon];
-        const color = action.ghost ? accent : '#fff';
-        return (
-          <Pressable
-            key={action.key}
-            onPress={action.onPress}
-            style={[
-              mbs.cardActionBtn,
-              action.ghost
-                ? { backgroundColor: colors.white, borderWidth: 1, borderColor: ghostBorder }
-                : { backgroundColor: solidBg },
-            ]}
-            accessibilityRole="button"
-            accessibilityLabel={action.label}
-          >
-            <Icon size={12} color={color} />
-            <Text style={[mbs.cardActionText, { color }]} numberOfLines={1} adjustsFontSizeToFit>
-              {action.label}
-            </Text>
-          </Pressable>
-        );
-      })}
-    </View>
-  );
-});
-
 // ── Group match card ──
 // Shown for every matching result. A match advertises the property's GROUP, not
 // just the property, because the point of a match is to get the user into the
@@ -6930,36 +6878,6 @@ const mbs = StyleSheet.create({
     fontSize: 8.5,
     fontWeight: '800',
     color: colors.white,
-  },
-  // Shared CardActions row — one definition for the inventory card, the AI match
-  // card and the requirement match rows. Colours come from the `tone` prop, so
-  // only geometry lives here. minWidth:0 is what lets three buttons shrink
-  // inside a narrow card instead of overflowing it.
-  cardActions: {
-    width: '100%',
-    minWidth: 0,
-    flexDirection: 'row',
-    gap: 6,
-    marginTop: 4,
-    paddingTop: 8,
-    borderTopWidth: 1,
-  },
-  cardActionBtn: {
-    flex: 1,
-    flexBasis: 0,
-    minWidth: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 4,
-    paddingVertical: 9,
-    paddingHorizontal: 2,
-    borderRadius: 9,
-  },
-  cardActionText: {
-    fontSize: 9.5,
-    fontWeight: '800',
-    textAlign: 'center',
   },
   // `propertyActions` / `propertyActionBtn` lived here and styled the icon-only
   // second action row on the inventory card. That row is gone (see the comment in
